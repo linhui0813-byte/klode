@@ -72,13 +72,13 @@ class Identity(unittest.TestCase):
         with self.assertRaises(ConfigError):
             Config.load(_write(self.tmp, "description = true\n"))
 
-    def test_real_kb01_config_without_identity_still_loads(self):
+    def test_real_kb01_config_loads_with_its_identity(self):
         real = REPO / "corpus" / "kb-01-storycraft" / "library.toml"
         if not real.exists():
             self.skipTest("kb-01 config not present")
         cfg = Config.load(real)
-        self.assertEqual(cfg.id, "kb-01-storycraft")   # derived from the directory name
-        self.assertEqual(cfg.tags, ())
+        self.assertEqual(cfg.id, "storycraft")         # explicit [library].id
+        self.assertTrue(cfg.description)               # self-describing for the catalog
 
     def test_slugify_helper(self):
         self.assertEqual(slugify("KB 01 Storycraft!"), "kb-01-storycraft")
