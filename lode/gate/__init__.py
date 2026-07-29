@@ -1,6 +1,6 @@
-"""loopb — a supervising agent (Loop B) built as a thin consumer of lodlib (Loop A).
+"""loopb — a supervising agent (Loop B) built as a thin consumer of lode (Loop A).
 
-It never touches lodlib internals: it imports the `lodlib` facade and grounds every cited defect
+It never touches lode internals: it imports the `lode` facade and grounds every cited defect
 through `lib.verify`. See README.md.
 """
 from .criteria import Criterion, Grounding, ground, load_criteria

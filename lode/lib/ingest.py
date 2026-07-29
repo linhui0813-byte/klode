@@ -12,8 +12,8 @@ layer is garbage — the exact genette (free) vs gerrig (needs OCR) split this p
 built from. Every ingest records provenance (source sha256 + tier + tool version + score)
 to `<lib>/PROVENANCE.jsonl`, so an ingested source is reproducible and its origin auditable.
 
-lodlib core stays dependency-free: poppler is a system binary called over subprocess, and
-the OCR tiers are lazy-imported — absent until `pipx inject lodlib kreuzberg` (or docling).
+lode core stays dependency-free: poppler is a system binary called over subprocess, and
+the OCR tiers are lazy-imported — absent until `pipx inject lode kreuzberg` (or docling).
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     try:
         from kreuzberg import extract_file_sync, ExtractionConfig
     except ImportError as e:
-        raise ImportError("xberg/kreuzberg not installed — `pipx inject lodlib kreuzberg` "
+        raise ImportError("xberg/kreuzberg not installed — `pipx inject lode kreuzberg` "
                           "(needs the tesseract binary too)") from e
     r = extract_file_sync(str(pdf), config=ExtractionConfig(force_ocr=True))
     return r.content or ""
@@ -79,7 +79,7 @@ def _docling(pdf: Path, lang: str = "eng") -> str:
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
         from docling.datamodel.base_models import InputFormat
     except ImportError as e:
-        raise ImportError("docling not installed — `pipx inject lodlib docling` "
+        raise ImportError("docling not installed — `pipx inject lode docling` "
                           "(heavy: torch + models). Reserve for complex-layout docs.") from e
     opts = PdfPipelineOptions()
     opts.do_ocr = True
@@ -225,5 +225,5 @@ def run(cfg: Config, args) -> int:
     print(f"  furniture : {r.furniture_stripped} lines stripped")
     print(f"  source  : {r.dest}")
     print(f"  provenance: {r.provenance}")
-    print(f"\nnext: add a BIBLIOGRAPHY row, `lib build`, write the grep-anchored Thin/Full, `lib check`")
+    print(f"\nnext: add a BIBLIOGRAPHY row, `lode build`, write the grep-anchored Thin/Full, `lode check`")
     return 0

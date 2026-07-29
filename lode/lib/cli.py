@@ -1,11 +1,11 @@
-"""`lib` — the command-line entry point for an lodlib library.
+"""`lode` — the command-line entry point for a lode library.
 
-  lib init        scaffold a new library (library.toml + dirs + .gitignore)
-  lib build       scaffold/refresh cards + the board (idempotent)
-  lib check       integrity + citation-rot linter (exit 1 on any ERROR)
-  lib normalize   grep-readiness preprocessor for the corpus .txt files
-  lib search      L0/L1 retrieval — "which sources are relevant?"
-  lib zoom        pull one level of a card — meta | thin | full | content
+  lode init        scaffold a new library (library.toml + dirs + .gitignore)
+  lode build       scaffold/refresh cards + the board (idempotent)
+  lode check       integrity + citation-rot linter (exit 1 on any ERROR)
+  lode normalize   grep-readiness preprocessor for the corpus .txt files
+  lode search      L0/L1 retrieval — "which sources are relevant?"
+  lode zoom        pull one level of a card — meta | thin | full | content
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .config import Config, ConfigError
 # init — scaffold a fresh library
 # ---------------------------------------------------------------------------
 _TOML_TEMPLATE = """\
-# library.toml — an lodlib knowledge library.
+# library.toml — a lode knowledge library.
 # One card per source, exposed at four Levels of Zoom (L0 meta / L1 thin / L2 full / L3 content).
 # See SPEC.md for the card format and the two disciplines that keep it from rotting.
 
@@ -40,7 +40,7 @@ dir = "frameworks"
 syntheses = "_syntheses"
 
 [copyright]
-guard = true              # fail `lib check` if any guarded .txt/.pdf is git-tracked
+guard = true              # fail `lode check` if any guarded .txt/.pdf is git-tracked
 extra_guard_dirs = []     # extra dirs (relative to the library dir) to also guard
 
 [normalize]
@@ -49,7 +49,7 @@ backup_keep = 3
 dict_path = "/usr/share/dict/words"
 """
 
-_GITIGNORE_BLOCK = "# lodlib: the corpus is copyrighted — sources stay local, cards are tracked\n{lines}\n"
+_GITIGNORE_BLOCK = "# lode: the corpus is copyrighted — sources stay local, cards are tracked\n{lines}\n"
 
 
 def cmd_init(args) -> int:
@@ -77,7 +77,7 @@ def cmd_init(args) -> int:
     gi = root / ".gitignore"
     block = _GITIGNORE_BLOCK.format(lines=ignore_lines)
     if gi.exists():
-        if "lodlib: the corpus is copyrighted" not in gi.read_text(encoding="utf-8"):
+        if "lode: the corpus is copyrighted" not in gi.read_text(encoding="utf-8"):
             gi.write_text(gi.read_text(encoding="utf-8").rstrip() + "\n\n" + block, encoding="utf-8")
     else:
         gi.write_text(block, encoding="utf-8")
@@ -85,7 +85,7 @@ def cmd_init(args) -> int:
     print(f"scaffolded library at {root}")
     print(f"  config : {cfg_path.relative_to(root)}")
     print(f"  shelves: {', '.join(shelves)}")
-    print("next: drop a .txt on a shelf, add a BIBLIOGRAPHY row, then `lib build`")
+    print("next: drop a .txt on a shelf, add a BIBLIOGRAPHY row, then `lode build`")
     return 0
 
 
@@ -137,7 +137,7 @@ def cmd_check(args) -> int:
 
 
 def cmd_ingest(args) -> int:
-    from . import ingest as ingest_mod       # lazy: OCR deps aren't needed to import `lib`
+    from . import ingest as ingest_mod       # lazy: OCR deps aren't needed to import `lode`
     return ingest_mod.run(_load(args), args)
 
 
@@ -191,7 +191,7 @@ def cmd_search(args) -> int:
 def cmd_zoom(args) -> int:
     cfg = _load(args)
     if not query.card_path(cfg, args.id):
-        print(f"no card: {args.id} (try `lib search`)", file=sys.stderr)
+        print(f"no card: {args.id} (try `lode search`)", file=sys.stderr)
         return 1
     level = args.level
     if level == "meta":
@@ -371,7 +371,7 @@ def cmd_diagnose(args) -> int:
         print(f"no diagnostics map — create {loc} (a `| symptom cues | dimensions |` table).", file=sys.stderr)
         return 1
     if not result:
-        print("no symptom matched. Browse with `lib consult`, or `lib search <terms>`.", file=sys.stderr)
+        print("no symptom matched. Browse with `lode consult`, or `lode search <terms>`.", file=sys.stderr)
         return 1
     print(f"“{symptom.lower()}” → consult these panels (most-relevant first):\n")
     for dn, q in result:
@@ -388,7 +388,7 @@ def _load(args) -> Config:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="lib", description="lodlib — a grep-grounded, level-of-zoom "
+    p = argparse.ArgumentParser(prog="lode", description="lode — a grep-grounded, level-of-zoom "
                                                         "knowledge library with a citation-rot linter.")
     p.add_argument("-c", "--config", help="path to library.toml (default: nearest in cwd/parents)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -411,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also WARN when a bare anchor resolves ambiguously (>1 place) — "
                          "pin it with before:/after:/#n")
     pc.add_argument("--entail", action="store_true",
-                    help="also run the OPT-IN, warn-only entailment check (needs `lodlib[entail]`): "
+                    help="also run the OPT-IN, warn-only entailment check (needs `lode[entail]`): "
                          "does the source window actually support each claim?")
     pc.add_argument("--entail-model", default=None,
                     help="override the pinned NLI/fact-check model (default: MiniCheck-Flan-T5-Large)")

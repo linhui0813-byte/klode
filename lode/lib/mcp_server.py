@@ -1,6 +1,6 @@
 """A dependency-free MCP server exposing one library to an agent.
 
-Why stdlib instead of the MCP SDK: lodlib's whole promise is stdlib-only and zero
+Why stdlib instead of the MCP SDK: lode's whole promise is stdlib-only and zero
 dependency, and MCP's stdio transport is just newline-delimited JSON-RPC 2.0. Taking
 the SDK would add a pinned dependency and a version treadmill to a tool whose selling
 point is that it has neither. The protocol subset below (initialize / tools/list /
@@ -9,7 +9,7 @@ tools/call) is all a tool server needs.
 Transport contract: **stdout carries protocol JSON and nothing else.** Every
 diagnostic goes to stderr, or it corrupts the stream.
 
-Run:  lodlib-mcp --config /path/to/library.toml
+Run:  lode-mcp --config /path/to/library.toml
       (falls back to $LODLIB_CONFIG, then the nearest library.toml above cwd)
 """
 from __future__ import annotations
@@ -25,21 +25,13 @@ from . import console, query
 from .config import Config, ConfigError
 
 PROTOCOL_VERSION = "2025-06-18"
-# Self-reported MCP name (serverInfo.name). It is derived PER-KB from the served KB's id
-# (`lode-<id>`) rather than a single hardcoded constant, so `/mcp` listings, logs, and any
-# client keyed on serverInfo.name identify WHICH KB this process serves.
-#   NB on tool namespacing: clients that derive the `mcp__<server>__*` tool prefix do so from the
-#   server KEY in their own MCP config (e.g. `.mcp.json`), not from serverInfo.name. Distinct tool
-#   namespaces therefore come from registering each per-KB server under a distinct config key (e.g.
-#   `lode-<id>`); a per-KB serverInfo.name keeps the two consistent. SERVER_NAME is the fallback base.
+# Self-reported MCP name (serverInfo.name): a single stable brand, "lode". It appears in `/mcp`
+# listings and logs. It is deliberately NOT per-KB — clients derive the `mcp__<server>__*` tool
+# prefix from the server KEY in their own MCP config (e.g. `.mcp.json`), not from serverInfo.name,
+# so distinct tool namespaces come from registering each server under a distinct client key; this
+# name stays "lode" regardless of which KB the process serves.
 SERVER_NAME = "lode"
 SERVER_VERSION = "0.1.0"
-
-
-def _server_name(cfg: Config) -> str:
-    """`lode-<kb-id>` — the per-KB MCP server name; the KB id is a validated slug, so the result
-    is itself a valid prefix-safe slug. Falls back to the bare base if no id resolves."""
-    return f"{SERVER_NAME}-{cfg.id}" if getattr(cfg, "id", "") else SERVER_NAME
 
 # JSON-RPC error codes we actually use
 PARSE_ERROR = -32700
@@ -268,7 +260,7 @@ def _tool_diagnose(cfg: Config, args: dict) -> str:
 
 def _resolve_or_msg(cfg: Config, raw: str):
     """Resolve a free-text name (stem / author / book title) to a lens — parity with the CLI's
-    `lib consult`. Returns (match, message): exactly one is non-None; `message` carries the shared
+    `lode consult`. Returns (match, message): exactly one is non-None; `message` carries the shared
     ambiguity / no-match note built in `query.resolve` (one source of truth, parity defect §6)."""
     r = query.resolve(cfg, raw)
     if r.outcome in ("ambiguous", "none"):
@@ -358,7 +350,7 @@ def _tool_consult_framework(cfg: Config, args: dict) -> str:
         out.append(f"**Aliases:** {fw['aliases']}")
     out.append("")
     shown: list[str] = []
-    for key in want:                      # substring match, matching the CLI `lib consult --section`
+    for key in want:                      # substring match, matching the CLI `lode consult --section`
         k = str(key).lower()
         for s in fw["sections"]:
             if k in s and s not in shown:
@@ -498,7 +490,7 @@ def handle(cfg: Config, msg: dict) -> None:
         _result(req_id, {
             "protocolVersion": client_version or PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": _server_name(cfg), "version": SERVER_VERSION},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
         })
         return
 
@@ -547,16 +539,16 @@ def _load_config(explicit: str | None) -> Config:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="lodlib-mcp", description="MCP server for an lodlib library.")
+    p = argparse.ArgumentParser(prog="lode-mcp", description="MCP server for a lode library.")
     p.add_argument("-c", "--config", help="path to library.toml (else $LODLIB_CONFIG, else nearest)")
     args = p.parse_args(argv)
 
     try:
         cfg = _load_config(args.config)
     except ConfigError as e:
-        print(f"lodlib-mcp: config error: {e}", file=sys.stderr)
+        print(f"lode-mcp: config error: {e}", file=sys.stderr)
         return 2
-    print(f"lodlib-mcp: serving {cfg.config_path}", file=sys.stderr)
+    print(f"lode-mcp: serving {cfg.config_path}", file=sys.stderr)
 
     for line in sys.stdin:
         line = line.strip()

@@ -3,11 +3,8 @@ silently (the parity report §2 was exactly this drift)."""
 import contextlib
 import io
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 from lode.lib import mcp_server as mcp
 from lode.lib.config import Config, _SLUG_RE
@@ -47,40 +44,23 @@ class McpSchema(unittest.TestCase):
 
 
 class ServerName(unittest.TestCase):
-    """WI-6 — serverInfo.name is derived per-KB from the id (`lode-<id>`), not a hardcoded constant,
-    so per-KB servers get distinct `mcp__<name>__*` tool namespaces."""
+    """serverInfo.name is the single stable brand 'lode'. Clients namespace tools by the client-config
+    KEY (e.g. `.mcp.json`), not by serverInfo.name, so this stays constant across KBs."""
     FIX = Path(__file__).resolve().parent / "fixtures" / "kb-fixture" / "library.toml"
 
-    def _cfg_with_id(self, kb_id: str) -> Config:
-        tmp = Path(tempfile.mkdtemp(prefix="lodlib-sn-"))
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        (tmp / "library").mkdir(parents=True)
-        (tmp / "library.toml").write_text(
-            f'[library]\nid = "{kb_id}"\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
-            "[bibliography]\nenabled = false\n", encoding="utf-8")
-        return Config.load(tmp / "library.toml")
+    def test_server_name_is_lode(self):
+        self.assertEqual(mcp.SERVER_NAME, "lode")
 
-    def test_name_derived_from_kb_id(self):
-        self.assertEqual(mcp._server_name(Config.load(self.FIX)), "lode-kb-fixture")
+    def test_server_name_is_prefix_safe_slug(self):
+        self.assertTrue(_SLUG_RE.fullmatch(mcp.SERVER_NAME))
 
-    def test_two_ids_yield_two_names(self):
-        a, b = self._cfg_with_id("alpha"), self._cfg_with_id("beta")
-        self.assertEqual(mcp._server_name(a), "lode-alpha")
-        self.assertNotEqual(mcp._server_name(a), mcp._server_name(b))
-
-    def test_fallback_when_no_id(self):
-        self.assertEqual(mcp._server_name(SimpleNamespace(id="")), "lode")
-
-    def test_derived_name_is_prefix_safe_slug(self):
-        self.assertTrue(_SLUG_RE.fullmatch(mcp._server_name(Config.load(self.FIX))))
-
-    def test_initialize_reports_the_derived_name(self):
+    def test_initialize_reports_lode(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             mcp.handle(Config.load(self.FIX),
                        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         reply = json.loads(buf.getvalue())
-        self.assertEqual(reply["result"]["serverInfo"]["name"], "lode-kb-fixture")
+        self.assertEqual(reply["result"]["serverInfo"]["name"], "lode")
 
 
 if __name__ == "__main__":

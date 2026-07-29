@@ -1,4 +1,4 @@
-"""`review_draft` — the supervising verb. The one thing lodlib itself deliberately does NOT have:
+"""`review_draft` — the supervising verb. The one thing lode itself deliberately does NOT have:
 submit a draft, score it against grounded criteria, and return a Cooper-style verdict whose every
 cited defect is verifiable against the source.
 

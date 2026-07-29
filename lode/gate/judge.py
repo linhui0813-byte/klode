@@ -3,7 +3,7 @@ dimension). Kept behind an interface so the WALKING SKELETON's chain (load → g
 testable without a model. The real LLM judge (two-step form-filling, position-bias-debiased,
 different-model-than-author, calibrated against a human gold set) is a drop-in `Judge` — same
 `score()` signature. It does NOT get to invent citations: grounding is enforced upstream by
-`criteria.ground`, which is lodlib's literal-grep verifier, not the judge's word.
+`criteria.ground`, which is lode's literal-grep verifier, not the judge's word.
 """
 from __future__ import annotations
 
