@@ -12,11 +12,33 @@ Fail loud: a malformed config raises `ConfigError` at load time, never a confusi
 """
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_NAME = "library.toml"
+
+# A KB id (and any name derived into a server/tool prefix) is a slug: lowercase
+# alphanumerics joined by single hyphens — no leading/trailing/double hyphen. One
+# definition, shared by the config validator and the MCP server-name derivation, so
+# the two cannot drift.
+_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def slugify(text: str) -> str:
+    """Best-effort slug: lowercase, collapse any run of non-alphanumerics to one hyphen, trim."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_line(text: str) -> str:
+    """Neutralize a one-line human field (name/description): drop control bytes — a terminal-escape
+    and catalog-spoofing vector once rendered — and collapse all whitespace, newlines included, to
+    single spaces, so the value can never inject extra lines into a catalog listing."""
+    return " ".join(_CTRL_RE.sub(" ", text).split())
 
 
 class ConfigError(Exception):
@@ -53,6 +75,12 @@ class Config:
     backup_keep: int
     dict_path: str
 
+    # --- identity (self-describing KB; every field optional in TOML) ---
+    id: str                    # slug; defaults to a slug of the config directory name
+    name: str                  # human-facing title ("" when unset)
+    description: str           # one-line purpose ("" when unset)
+    tags: tuple[str, ...]      # optional domain tags
+
     # ------------------------------------------------------------------
     @classmethod
     def find(cls, start: Path | None = None) -> Path:
@@ -74,12 +102,22 @@ class Config:
                 raw = tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
             raise ConfigError(f"{path}: invalid TOML — {e}") from e
+        except UnicodeDecodeError as e:
+            raise ConfigError(f"{path}: not valid UTF-8 — {e}") from e
         except OSError as e:
             raise ConfigError(f"{path}: cannot read — {e}") from e
 
         root = path.parent
 
-        lib_section = raw.get("library", {})
+        def _table(key: str) -> dict:
+            """Fetch a config section, failing loud if it is present but not a TOML table — so a
+            malformed `library = "x"` raises ConfigError here, not an AttributeError three modules deep."""
+            v = raw.get(key, {})
+            if not isinstance(v, dict):
+                raise ConfigError(f"[{key}] must be a table (got {type(v).__name__})")
+            return v
+
+        lib_section = _table("library")
         lib_dirname = str(lib_section.get("dir", "library"))
         lib = (root / lib_dirname).resolve()
         try:
@@ -102,11 +140,11 @@ class Config:
             if not isinstance(s, str) or "/" in s or s in ("", ".", ".."):
                 raise ConfigError(f"[library].shelves entry {s!r} must be a simple directory name")
 
-        bib_section = raw.get("bibliography", {})
+        bib_section = _table("bibliography")
         bib_enabled = bool(bib_section.get("enabled", True))
         bib = (lib / str(bib_section.get("path", "BIBLIOGRAPHY.md"))).resolve() if bib_enabled else None
 
-        fw_section = raw.get("frameworks", {})
+        fw_section = _table("frameworks")
         fw_enabled = bool(fw_section.get("enabled", False))
         frameworks = (lib / str(fw_section.get("dir", "frameworks"))).resolve() if fw_enabled else None
         syntheses = (
@@ -114,7 +152,7 @@ class Config:
             if fw_enabled and frameworks else None
         )
 
-        cp_section = raw.get("copyright", {})
+        cp_section = _table("copyright")
         copyright_guard = bool(cp_section.get("guard", True))
         extra = cp_section.get("extra_guard_dirs", []) or []
         if extra and not isinstance(extra, list):
@@ -128,7 +166,42 @@ class Config:
         except ValueError as e:
             raise ConfigError(f"a guard dir resolves outside the library root: {e}")
 
-        nz = raw.get("normalize", {})
+        # identity — self-describing KB metadata, all optional and backward-compatible.
+        # A config with no [library].id still loads: id falls back to a slug of the dir name.
+        raw_id = lib_section.get("id")
+        if raw_id is None:
+            kb_id = slugify(root.name)
+            if not kb_id:
+                # a dir name with no sluggable (ASCII alnum) content can't yield a distinct id;
+                # fail loud rather than collapse several such KBs to the same fallback name.
+                raise ConfigError(
+                    f"could not derive a KB id from directory name {root.name!r} — set an explicit "
+                    "[library].id (a slug: lowercase letters, digits, single hyphens)")
+        else:
+            if not isinstance(raw_id, str):
+                raise ConfigError("[library].id must be a string slug (lowercase a-z, 0-9, hyphens)")
+            kb_id = raw_id.strip()
+            if not _SLUG_RE.fullmatch(kb_id):
+                raise ConfigError(
+                    f"[library].id {raw_id!r} is not a valid slug — use lowercase letters, digits, "
+                    "and single hyphens (no leading/trailing/double hyphen)")
+        name = lib_section.get("name", "")
+        if not isinstance(name, str):
+            raise ConfigError("[library].name must be a string")
+        name = _clean_line(name)
+        description = lib_section.get("description", "")
+        if not isinstance(description, str):
+            raise ConfigError("[library].description must be a string")
+        description = _clean_line(description)
+        raw_tags = lib_section.get("tags", [])
+        if not isinstance(raw_tags, list):
+            raise ConfigError('[library].tags must be a list of strings, e.g. ["fiction", "craft"]')
+        for t in raw_tags:
+            if not isinstance(t, str):
+                raise ConfigError(f"[library].tags entry {t!r} must be a string")
+        tags = tuple(t.strip() for t in raw_tags if t.strip())
+
+        nz = _table("normalize")
         backup_raw = str(nz.get("backup_dir", "") or "").strip()
         backup_dir = (root / backup_raw).resolve() if backup_raw else None
         try:
@@ -144,4 +217,5 @@ class Config:
             fw_enabled=fw_enabled, frameworks=frameworks, syntheses=syntheses,
             copyright_guard=copyright_guard, guard_relpaths=guard_relpaths,
             backup_dir=backup_dir, backup_keep=backup_keep, dict_path=dict_path,
+            id=kb_id, name=name, description=description, tags=tags,
         )

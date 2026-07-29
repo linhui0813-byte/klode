@@ -345,6 +345,23 @@ def cmd_consult(args) -> int:
     return 1
 
 
+def cmd_kbs(args) -> int:
+    """List the KBs registered in a manifest — a passive catalog (id + description). It lists and
+    describes; it does not rank or recommend which KB to use. A broken entry is shown, not fatal."""
+    from . import registry                        # lazy: registry is only needed for this subcommand
+    entries = registry.load(args.registry)        # RegistryError (a ConfigError) → main() exit 2
+    if not entries:
+        print("no KBs registered — add one to a registry manifest "
+              "(--registry PATH, ./.lode/registry.toml, or ~/.lode/registry.toml).")
+        return 0
+    infos = registry.catalog(entries)
+    width = max(len(i.id) for i in infos)
+    for i in infos:
+        detail = (i.description or "(no description)") if i.ok else f"(unavailable: {i.error})"
+        print(f"  {i.id:<{width}}  {detail}")
+    return 0
+
+
 def cmd_diagnose(args) -> int:
     cfg = _load(args)
     symptom = " ".join(args.symptom)
@@ -442,6 +459,11 @@ def build_parser() -> argparse.ArgumentParser:
     pd = sub.add_parser("diagnose", help='route a symptom ("the reveal thudded") to the dimensions to consult')
     pd.add_argument("symptom", nargs="+", help="what feels wrong, in your own words")
     pd.set_defaults(func=cmd_diagnose)
+
+    pk = sub.add_parser("kbs", help="list the KBs registered in a manifest (id + description)")
+    pk.add_argument("--registry", help="path to a registry manifest "
+                                       "(else ./.lode/registry.toml, then ~/.lode/registry.toml)")
+    pk.set_defaults(func=cmd_kbs)
     return p
 
 

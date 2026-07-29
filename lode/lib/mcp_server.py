@@ -25,12 +25,21 @@ from . import console, query
 from .config import Config, ConfigError
 
 PROTOCOL_VERSION = "2025-06-18"
-# Self-reported MCP name (serverInfo.name). Clients display this and derive the
-# `mcp__<name>__*` tool prefix from it — NOT from the config key. Keep it aligned
-# with the registered server name (`craft-library`) so the /mcp list, the tool
-# prefix, and the config all read the same.
-SERVER_NAME = "craft-library"
+# Self-reported MCP name (serverInfo.name). It is derived PER-KB from the served KB's id
+# (`lode-<id>`) rather than a single hardcoded constant, so `/mcp` listings, logs, and any
+# client keyed on serverInfo.name identify WHICH KB this process serves.
+#   NB on tool namespacing: clients that derive the `mcp__<server>__*` tool prefix do so from the
+#   server KEY in their own MCP config (e.g. `.mcp.json`), not from serverInfo.name. Distinct tool
+#   namespaces therefore come from registering each per-KB server under a distinct config key (e.g.
+#   `lode-<id>`); a per-KB serverInfo.name keeps the two consistent. SERVER_NAME is the fallback base.
+SERVER_NAME = "lode"
 SERVER_VERSION = "0.1.0"
+
+
+def _server_name(cfg: Config) -> str:
+    """`lode-<kb-id>` — the per-KB MCP server name; the KB id is a validated slug, so the result
+    is itself a valid prefix-safe slug. Falls back to the bare base if no id resolves."""
+    return f"{SERVER_NAME}-{cfg.id}" if getattr(cfg, "id", "") else SERVER_NAME
 
 # JSON-RPC error codes we actually use
 PARSE_ERROR = -32700
@@ -193,6 +202,26 @@ TOOLS = [
                 "max_lines": {"type": "integer", "description": "Max matching lines to return.", "default": 10},
             },
             "required": ["id", "phrase"],
+        },
+    },
+    # ---- the registry: which knowledge bases exist to consult ----
+    {
+        "name": "list_kbs",
+        "description": (
+            "List the knowledge bases registered on this machine — each with its id and a "
+            "one-line description of what it covers. A passive catalog: it tells you which KBs "
+            "exist so you can choose one whose description fits your task. It does not choose for "
+            "you or order them by relevance. Optionally pass `registry` to read a specific manifest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry": {
+                    "type": "string",
+                    "description": "Optional path to a registry manifest "
+                                   "(else ./.lode/registry.toml, then ~/.lode/registry.toml).",
+                },
+            },
         },
     },
 ]
@@ -408,6 +437,23 @@ def _tool_verify(cfg: Config, args: dict) -> str:
     return f"VERIFIED — {phrase!r} occurs in {v.rel}:\n{body}"
 
 
+def _tool_list_kbs(cfg: Config, args: dict) -> str:
+    """The passive KB catalog — id + self-description for every registered KB. Lists and describes;
+    does not rank or recommend. Spans the whole registry, not just the currently-served KB."""
+    from . import registry                         # lazy: only the registry surface needs it
+    entries = registry.load(args.get("registry") or None)
+    if not entries:
+        return ("No KBs are registered. Add entries to a registry manifest "
+                "(./.lode/registry.toml or ~/.lode/registry.toml) to make more knowledge bases "
+                "discoverable here.")
+    lines = ["Registered knowledge bases — id and what each covers. "
+             "Each KB describes itself; choose the one whose description fits your task.", ""]
+    for i in registry.catalog(entries):
+        detail = (i.description or "(no description)") if i.ok else f"(unavailable: {i.error})"
+        lines.append(f"- {i.id} — {detail}")
+    return "\n".join(lines)
+
+
 DISPATCH = {
     # desk — distilled expertise, entered by craft problem
     "list_lenses": _tool_list_lenses,
@@ -418,6 +464,8 @@ DISPATCH = {
     "search_sources": _tool_search,
     "zoom_card": _tool_zoom,
     "verify_quote": _tool_verify,
+    # registry — which KBs exist to consult
+    "list_kbs": _tool_list_kbs,
 }
 
 
@@ -450,7 +498,7 @@ def handle(cfg: Config, msg: dict) -> None:
         _result(req_id, {
             "protocolVersion": client_version or PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "serverInfo": {"name": _server_name(cfg), "version": SERVER_VERSION},
         })
         return
 

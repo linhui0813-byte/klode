@@ -1,0 +1,29 @@
+# library.toml — a tiny synthetic fixture KB for the test suite.
+# Everything here is invented and non-copyrighted, so the source .txt are committed
+# (copyright guard off) and the whole KB travels with the repo. It exists so the gate
+# tests and the gate demo can run against a real KB on ANY checkout — no absolute paths,
+# no dependency on the copyrighted corpus/ shelf.
+
+[library]
+id = "kb-fixture"
+name = "Fixture KB"
+description = "A tiny synthetic knowledge base for tests — one craft dimension (pacing) over two invented sources."
+tags = ["test", "pacing"]
+dir = "library"
+cards = "cards"
+shelves = ["books"]
+
+[bibliography]
+enabled = false
+
+[frameworks]
+enabled = true
+dir = "frameworks"
+syntheses = "_syntheses"
+
+[copyright]
+guard = false            # invented sources — safe to commit; nothing to leak
+
+[normalize]
+backup_dir = ""
+backup_keep = 3

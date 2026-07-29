@@ -1,37 +1,37 @@
-"""Demo — review a deliberately info-dumpy worldbuilding draft against the worldbuilding dimension's
-grounded Craft criteria. Every cited defect is verified against a real source by lib.
+"""Demo — review a deliberately inert, over-specified draft against the fixture KB's `pacing`
+dimension's grounded Craft criteria. Every cited defect is verified against a real source by
+lib.verify. The KB is the committed synthetic fixture under tests/fixtures/, resolved relative
+to this file, so the demo runs on any checkout.
 
-    python3 demo.py
+    python3 examples/gate_demo.py
 """
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))   # a real deploy would `pip install lodlib`
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))   # a real deploy would `pip install lode`
 
 from lode import lib                                        # noqa: E402
 from lode.gate import FixtureJudge, review_draft         # noqa: E402
 
-DOXAI = Path("/Users/joker/github/xiaolai/myprojects/lode/corpus/kb-01-storycraft/library.toml")
+KB = HERE.parent / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 
 DRAFT = (
-    "The kingdom of Aldoria spans three continents. Its capital, Highspire, was founded 1,247 years "
-    "ago by King Eldric the Third, whose bloodline traces to the ancient Sundering. The economy runs "
-    "on tin, salt, and enchanted glass; the currency is the silver drake, subdivided into twelve "
-    "copper wings. There are nine noble houses, each with a sigil, a motto, and a hereditary seat on "
-    "the Grand Conclave, which convenes every equinox."
-)  # an iceberg of exposition — nothing deviates from the reader's assumed default, nothing left to fill in
+    "The room was rectangular and measured exactly four metres by five metres. It held twelve "
+    "chairs, each with four legs, arranged in three rows of four. The walls were painted off-white "
+    "and the ceiling was two and a half metres high. Every object was ordinary; nothing in the "
+    "room departed in any way from what one would expect a room to contain."
+)  # inert, fully-specified exposition — nothing deviates from the default, nothing left to infer
 
 
 def main() -> None:
-    cfg = lib.Config.load(DOXAI)
-    # A judge that (as an LLM rubric judge would) marks the omission moves LOW for this info-dump.
+    cfg = lib.Config.load(KB)
+    # A judge that (as an LLM rubric judge would) marks the pacing moves LOW for this inert draft.
     judge = FixtureJudge({
-        "C1": (2, "pure status-quo exposition — spends words where nothing deviates from the default"),
-        "C2": (3, "leaves no blanks; every atom specified, the reader given nothing to perform"),
+        "C1": (2, "spends words on what the reader could infer — inert specification"),
+        "C2": (3, "flat tempo; no variation of sentence length to steer the reader"),
     })
-    v = review_draft(cfg, DRAFT, "worldbuilding", judge)
+    v = review_draft(cfg, DRAFT, "pacing", judge)
     print(f"VERDICT: {v.decision}   score {v.score}/100 (hurdle {v.hurdle})")
     print(f"grounded criteria: {len(v.lines)}   ungrounded (dropped, flagged): {len(v.ungrounded)}\n")
     print("Defects sent back with Recycle — each citation grounded in a real source by lib.verify:")
