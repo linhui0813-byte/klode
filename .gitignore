@@ -5,6 +5,10 @@ __pycache__/
 dist/
 build/
 
+# macOS
+.DS_Store
+**/.DS_Store
+
 # tdd-guardian generated artifacts
 .claude/tdd-guardian/state.json
 
