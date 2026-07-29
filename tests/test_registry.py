@@ -69,6 +69,12 @@ class RegistryLoad(unittest.TestCase):
         with self.assertRaises(ConfigError):
             registry.load(self.tmp / "nope.toml")
 
+    def test_explicit_tilde_path_is_expanded(self):
+        # a `~/…` explicit path must expand (like manifest entries do), not be taken literally
+        with self.assertRaises(ConfigError) as ctx:
+            registry.load("~/__no_such_lode_registry_xyz__.toml")
+        self.assertNotIn("~", str(ctx.exception))     # message carries the expanded absolute path
+
     def test_invalid_toml_is_error(self):
         with self.assertRaises(ConfigError):
             registry.load(self._write("[[kb]]\nid = \n"))

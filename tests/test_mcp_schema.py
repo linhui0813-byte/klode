@@ -8,6 +8,7 @@ from pathlib import Path
 
 from lode.lib import mcp_server as mcp
 from lode.lib.config import Config, _SLUG_RE
+from lode.lib.pool import KBPool
 
 _EXPECTED_TOOLS = {
     "list_lenses", "diagnose", "consult_dimension", "consult_framework",
@@ -43,6 +44,34 @@ class McpSchema(unittest.TestCase):
             self.assertNotIn(dead, blob)
 
 
+class KbSelector(unittest.TestCase):
+    """WI-5 — the `kb` selector is on every KB-scoped tool (not list_kbs) and never in `required`."""
+
+    def _by_name(self):
+        return {t["name"]: t for t in mcp.TOOLS}
+
+    def test_kb_on_grounding_and_discovery_absent_on_list_kbs(self):
+        tools = self._by_name()
+        for name in ("consult_dimension", "consult_framework", "zoom_card", "verify_quote",
+                     "search_sources", "list_lenses", "diagnose"):
+            self.assertIn("kb", tools[name]["inputSchema"]["properties"], name)
+        self.assertNotIn("kb", tools["list_kbs"]["inputSchema"].get("properties", {}))
+
+    def test_kb_is_never_required(self):
+        for t in mcp.TOOLS:
+            self.assertNotIn("kb", t["inputSchema"].get("required", []))
+        self.assertEqual(set(self._by_name()["consult_dimension"]["inputSchema"]["required"]),
+                         {"dimension"})
+
+    def test_grounding_and_discovery_kb_descriptions_differ(self):
+        tools = self._by_name()
+        grounding = tools["verify_quote"]["inputSchema"]["properties"]["kb"]["description"].lower()
+        discovery = tools["search_sources"]["inputSchema"]["properties"]["kb"]["description"].lower()
+        self.assertIn("required when", grounding)
+        self.assertIn("fan out", discovery)
+        self.assertNotEqual(grounding, discovery)
+
+
 class ServerName(unittest.TestCase):
     """serverInfo.name is the single stable brand 'lode'. Clients namespace tools by the client-config
     KEY (e.g. `.mcp.json`), not by serverInfo.name, so this stays constant across KBs."""
@@ -57,7 +86,7 @@ class ServerName(unittest.TestCase):
     def test_initialize_reports_lode(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            mcp.handle(Config.load(self.FIX),
+            mcp.handle(KBPool.single(Config.load(self.FIX)),
                        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         reply = json.loads(buf.getvalue())
         self.assertEqual(reply["result"]["serverInfo"]["name"], "lode")

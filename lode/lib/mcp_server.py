@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import console, query
 from .config import Config, ConfigError
+from .pool import KBPool
 
 PROTOCOL_VERSION = "2025-06-18"
 # Self-reported MCP name (serverInfo.name): a single stable brand, "lode". It appears in `/mcp`
@@ -477,7 +478,77 @@ def _error(req_id, code: int, message: str) -> None:
     _send({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
 
 
-def handle(cfg: Config, msg: dict) -> None:
+# ---------------------------------------------------------------------------
+# multi-KB routing — the pool addresses many KBs. Grounding tools always name their KB;
+# discovery tools can fan out across all KBs. All multiplexing lives here in the router;
+# the underlying `_tool_x(cfg, args)` functions stay single-cfg and KB-agnostic.
+# ---------------------------------------------------------------------------
+_GROUNDING = ("consult_dimension", "consult_framework", "zoom_card", "verify_quote")
+_DISCOVERY = ("search_sources", "list_lenses", "diagnose")
+_FANOUT_CAP = 10       # max KBs a single fan-out renders; the rest are announced, not dumped
+
+# The `kb` selector, added to every KB-scoped tool (list_kbs is registry-scoped, so it is skipped).
+# `kb` is intentionally NOT placed in any tool's `required` array: grounding requires it only when
+# more than one KB is registered — the router enforces that at call time — which keeps single-KB
+# ergonomics and the existing `required` sets (e.g. consult_dimension → {"dimension"}) unchanged.
+_KB_GROUNDING = {"type": "string",
+                 "description": "The KB id to query (see list_kbs). Optional when only one KB is "
+                                "registered; required when several are."}
+_KB_DISCOVERY = {"type": "string",
+                 "description": "Optional KB id to scope to (see list_kbs). Omit or pass \"*\" to "
+                                "fan out across all registered KBs, tagged by id."}
+for _t in TOOLS:
+    if _t["name"] in _GROUNDING:
+        _t["inputSchema"].setdefault("properties", {})["kb"] = _KB_GROUNDING
+    elif _t["name"] in _DISCOVERY:
+        _t["inputSchema"].setdefault("properties", {})["kb"] = _KB_DISCOVERY
+
+
+def _route_grounding(pool: KBPool, fn, args: dict) -> tuple[str, bool]:
+    """A grounding tool addresses exactly one KB. `kb` defaults to the sole KB (single-KB pool)
+    and is required when more than one is registered. Output is ALWAYS prefixed with the resolved
+    `[kb-id]` provenance tag, so every grounded result names its KB. Returns (text, is_error)."""
+    kb = args.get("kb") or pool.default
+    if not kb:
+        return (f"No `kb` given and this server hosts multiple KBs. "
+                f"Pass `kb` (one of: {', '.join(pool.ids()) or '(none registered)'}).", True)
+    try:
+        cfg = pool.config(kb)
+    except ConfigError as e:                      # unknown id, or a registered-but-broken KB
+        return (str(e), True)
+    return (f"[{kb}]\n{fn(cfg, args)}", False)
+
+
+def _route_discovery(pool: KBPool, fn, args: dict) -> tuple[str, bool]:
+    """A discovery tool helps find where to look. An explicit `kb` scopes to it (tagged); omitting
+    `kb` (or `kb="*"`) fans out across all registered KBs, each block `[kb-id]`-tagged, in sorted-id
+    order, capped and error-isolated. A single-KB pool with no `kb` returns untagged output,
+    byte-identical to a direct call. Returns (text, is_error)."""
+    kb = args.get("kb")
+    if kb and kb != "*":
+        try:
+            cfg = pool.config(kb)
+        except ConfigError as e:
+            return (str(e), True)
+        return (f"[{kb}]\n{fn(cfg, args)}", False)
+    ids = pool.ids()
+    if not ids:
+        return ("No KBs are registered.", False)
+    if len(ids) == 1:
+        return (fn(pool.config(ids[0]), args), False)          # untagged — byte-identical to direct
+    blocks: list[str] = []
+    for kid in ids[:_FANOUT_CAP]:
+        try:
+            out = fn(pool.config(kid), args)
+        except ConfigError as e:                                # one broken KB never sinks the fan-out
+            out = f"(unavailable: {e})"
+        blocks.append(f"[{kid}]\n{out}")
+    if len(ids) > _FANOUT_CAP:
+        blocks.append(f"… {len(ids) - _FANOUT_CAP} more KB(s) not shown — name a `kb` to target one.")
+    return ("\n\n".join(blocks), False)
+
+
+def handle(pool: KBPool, msg: dict) -> None:
     """Handle one JSON-RPC message. Notifications (no `id`) get no response."""
     method = msg.get("method")
     req_id = msg.get("id")
@@ -517,8 +588,15 @@ def handle(cfg: Config, msg: dict) -> None:
             })
             return
         try:
-            text = fn(cfg, args)
-            _result(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
+            if name == "list_kbs":
+                text, is_error = fn(None, args), False    # registry-scoped; the cfg arg is ignored
+            elif name in _GROUNDING:
+                text, is_error = _route_grounding(pool, fn, args)
+            elif name in _DISCOVERY:
+                text, is_error = _route_discovery(pool, fn, args)
+            else:
+                text, is_error = f"Unknown tool: {name!r}", True
+            _result(req_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
         except Exception:
             # A tool failure is reported to the model, not raised — a crashed server
             # would take down every later call in the session.
@@ -539,16 +617,28 @@ def _load_config(explicit: str | None) -> Config:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="lode-mcp", description="MCP server for a lode library.")
-    p.add_argument("-c", "--config", help="path to library.toml (else $LODLIB_CONFIG, else nearest)")
+    p = argparse.ArgumentParser(prog="lode-mcp", description="MCP server for one or many lode KBs.")
+    p.add_argument("-c", "--config", help="serve ONE KB: path to its library.toml "
+                                          "(else $LODLIB_CONFIG, else nearest)")
+    p.add_argument("-r", "--registry", help="serve MANY KBs: path to a registry manifest "
+                                            "(mutually exclusive with --config)")
     args = p.parse_args(argv)
 
+    if args.config and args.registry:
+        print("lode-mcp: pass --config OR --registry, not both", file=sys.stderr)
+        return 2
     try:
-        cfg = _load_config(args.config)
+        if args.registry:
+            pool = KBPool.from_registry(args.registry)
+            summary = f"{len(pool.ids())} KB(s): {', '.join(pool.ids()) or '(none)'}"
+        else:
+            cfg = _load_config(args.config)
+            pool = KBPool.single(cfg)
+            summary = f"1 KB: {cfg.id} ({cfg.config_path})"
     except ConfigError as e:
         print(f"lode-mcp: config error: {e}", file=sys.stderr)
         return 2
-    print(f"lode-mcp: serving {cfg.config_path}", file=sys.stderr)
+    print(f"lode-mcp: serving {summary}", file=sys.stderr)
 
     for line in sys.stdin:
         line = line.strip()
@@ -563,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
             _error(None, INVALID_REQUEST, "Request must be a JSON object")
             continue
         try:
-            handle(cfg, msg)
+            handle(pool, msg)
         except Exception:
             print(traceback.format_exc(), file=sys.stderr)
             if "id" in msg:

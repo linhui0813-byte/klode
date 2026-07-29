@@ -1,0 +1,27 @@
+# library.toml — a SECOND tiny synthetic fixture KB, for multi-KB (multiplexer) tests.
+# Distinct from kb-fixture: its own id and its own dimension ("cadence") over its own invented
+# sources, so cross-KB routing and provenance tags are testable against genuinely different content.
+
+[library]
+id = "kb-fixture-2"
+name = "Fixture KB Two"
+description = "A second synthetic knowledge base for tests — the cadence dimension over two invented sources."
+tags = ["test", "cadence"]
+dir = "library"
+cards = "cards"
+shelves = ["books"]
+
+[bibliography]
+enabled = false
+
+[frameworks]
+enabled = true
+dir = "frameworks"
+syntheses = "_syntheses"
+
+[copyright]
+guard = false
+
+[normalize]
+backup_dir = ""
+backup_keep = 3

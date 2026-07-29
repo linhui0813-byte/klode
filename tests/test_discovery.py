@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO))
 
 from lode.lib import cli                            # noqa: E402
 from lode.lib import mcp_server as mcp              # noqa: E402
+from lode.lib.pool import KBPool                     # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 # words that would betray ranking/recommendation — a passive catalog must use none of them
@@ -123,7 +124,7 @@ class ListKbsMcp(unittest.TestCase):
         bad = self._manifest("[[kb]]\nid = \n")     # invalid TOML
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            mcp.handle(self.cfg, {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            mcp.handle(KBPool.single(self.cfg), {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
                                   "params": {"name": "list_kbs",
                                              "arguments": {"registry": str(bad)}}})
         reply = json.loads(buf.getvalue())          # single parseable line == stream intact

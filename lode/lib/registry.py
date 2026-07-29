@@ -61,7 +61,7 @@ def _manifest_path(explicit: str | Path | None, *,
                    start: str | Path | None, home: str | Path | None) -> Path | None:
     """Resolve the manifest to read by precedence, or None when no registry exists."""
     if explicit is not None:
-        p = Path(explicit)
+        p = Path(explicit).expanduser()      # accept `~/…` like the manifest's own entry paths
         if not p.is_file():
             raise RegistryError(f"registry manifest not found: {p}")
         return p
