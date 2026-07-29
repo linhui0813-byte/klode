@@ -34,7 +34,12 @@ def title(card_text: str) -> str:
 
 
 def card_path(cfg: Config, card_id: str) -> Path | None:
-    """Absolute path to a card, or None when no such card exists."""
+    """Absolute path to a card, or None when no such card exists. A card id is a bare filename
+    stem: reject any path separator (the same `_SAFE_STEM` rule `resolve`/`dimension` use) so a
+    tool-supplied id — `zoom_card`/`verify_quote` take untrusted ids over MCP — cannot traverse
+    out of the cards dir to read an arbitrary `.md`."""
+    if not _SAFE_STEM.fullmatch(card_id or ""):
+        return None
     p = cfg.cards / f"{card_id}.md"
     return p if p.exists() else None
 
