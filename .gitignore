@@ -4,3 +4,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# tdd-guardian generated artifacts
+.claude/tdd-guardian/state.json
+
+# coverage.py artifacts (dev-only; coverage is not a runtime dep)
+.coverage
+coverage.json

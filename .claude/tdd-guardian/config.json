@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "testCommand": "python3 -m unittest discover -s tests",
+  "coverageCommand": "python3 -m coverage run --branch -m unittest discover -s tests && python3 -m coverage json -o coverage.json",
+  "coverageSummaryPath": "coverage.json",
+  "coverageThresholds": {
+    "lines": 100,
+    "functions": 100,
+    "branches": 100,
+    "statements": 100
+  },
+  "coverageMode": "no-decrease",
+  "requireMutation": false,
+  "bypassEnv": "TDD_GUARDIAN_BYPASS",
+  "preflightCommand": "",
+  "gateFreshnessMinutes": 30,
+  "enforceOnTaskCompleted": false,
+  "blockCommitWithoutFreshGate": false
+}
