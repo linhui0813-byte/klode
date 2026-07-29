@@ -197,25 +197,16 @@ TOOLS = [
             "required": ["id", "phrase"],
         },
     },
-    # ---- the registry: which knowledge bases exist to consult ----
+    # ---- the registry: which knowledge bases this server serves ----
     {
         "name": "list_kbs",
         "description": (
-            "List the knowledge bases registered on this machine — each with its id and a "
-            "one-line description of what it covers. A passive catalog: it tells you which KBs "
-            "exist so you can choose one whose description fits your task. It does not choose for "
-            "you or order them by relevance. Optionally pass `registry` to read a specific manifest."
+            "List the knowledge bases THIS server serves — each with its id and a one-line "
+            "description of what it covers. A passive catalog: it tells you which KBs exist so "
+            "you can choose one whose description fits your task, and every id it lists is "
+            "addressable via `kb`. It does not choose for you or order them by importance."
         ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "registry": {
-                    "type": "string",
-                    "description": "Optional path to a registry manifest "
-                                   "(else ./.lode/registry.toml, then ~/.lode/registry.toml).",
-                },
-            },
-        },
+        "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -430,23 +421,6 @@ def _tool_verify(cfg: Config, args: dict) -> str:
     return f"VERIFIED — {phrase!r} occurs in {v.rel}:\n{body}"
 
 
-def _tool_list_kbs(cfg: Config, args: dict) -> str:
-    """The passive KB catalog — id + self-description for every registered KB. Lists and describes;
-    does not rank or recommend. Spans the whole registry, not just the currently-served KB."""
-    from . import registry                         # lazy: only the registry surface needs it
-    entries = registry.load(args.get("registry") or None)
-    if not entries:
-        return ("No KBs are registered. Add entries to a registry manifest "
-                "(./.lode/registry.toml or ~/.lode/registry.toml) to make more knowledge bases "
-                "discoverable here.")
-    lines = ["Registered knowledge bases — id and what each covers. "
-             "Each KB describes itself; choose the one whose description fits your task.", ""]
-    for i in registry.catalog(entries):
-        detail = (i.description or "(no description)") if i.ok else f"(unavailable: {i.error})"
-        lines.append(f"- {i.id} — {detail}")
-    return "\n".join(lines)
-
-
 DISPATCH = {
     # desk — distilled expertise, entered by craft problem
     "list_lenses": _tool_list_lenses,
@@ -457,9 +431,7 @@ DISPATCH = {
     "search_sources": _tool_search,
     "zoom_card": _tool_zoom,
     "verify_quote": _tool_verify,
-    # registry — which KBs exist to consult
-    "list_kbs": _tool_list_kbs,
-}
+}   # NB list_kbs is NOT here: it is registry/pool-scoped, not per-cfg, so the router handles it.
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +520,22 @@ def _route_discovery(pool: KBPool, fn, args: dict) -> tuple[str, bool]:
     return ("\n\n".join(blocks), False)
 
 
+def _route_list_kbs(pool: KBPool) -> str:
+    """The passive catalog of the KBs THIS server serves (id + self-description), sourced from the
+    pool — so every id it lists is addressable via `kb`, and it can never diverge from what the
+    server actually serves. Lists and describes; never ranks or recommends."""
+    infos = pool.catalog()
+    if not infos:
+        return ("No KBs are registered. Start the server with a registry manifest that lists at "
+                "least one [[kb]]:  lode-mcp --registry <path>.")
+    lines = ["Registered knowledge bases — id and what each covers. "
+             "Each KB describes itself; choose the one whose description fits your task.", ""]
+    for i in infos:
+        detail = (i.description or "(no description)") if i.ok else f"(unavailable: {i.error})"
+        lines.append(f"- {i.id} — {detail}")
+    return "\n".join(lines)
+
+
 def handle(pool: KBPool, msg: dict) -> None:
     """Handle one JSON-RPC message. Notifications (no `id`) get no response."""
     method = msg.get("method")
@@ -580,20 +568,13 @@ def handle(pool: KBPool, msg: dict) -> None:
         params = msg.get("params") or {}
         name = params.get("name")
         args = params.get("arguments") or {}
-        fn = DISPATCH.get(name)
-        if fn is None:
-            _result(req_id, {
-                "content": [{"type": "text", "text": f"Unknown tool: {name!r}"}],
-                "isError": True,
-            })
-            return
         try:
             if name == "list_kbs":
-                text, is_error = fn(None, args), False    # registry-scoped; the cfg arg is ignored
+                text, is_error = _route_list_kbs(pool), False       # pool-sourced catalog
             elif name in _GROUNDING:
-                text, is_error = _route_grounding(pool, fn, args)
+                text, is_error = _route_grounding(pool, DISPATCH[name], args)
             elif name in _DISCOVERY:
-                text, is_error = _route_discovery(pool, fn, args)
+                text, is_error = _route_discovery(pool, DISPATCH[name], args)
             else:
                 text, is_error = f"Unknown tool: {name!r}", True
             _result(req_id, {"content": [{"type": "text", "text": text}], "isError": is_error})

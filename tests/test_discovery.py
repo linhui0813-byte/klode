@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO))
 
 from lode.lib import cli                            # noqa: E402
 from lode.lib import mcp_server as mcp              # noqa: E402
+from lode.lib import registry                        # noqa: E402
 from lode.lib.pool import KBPool                     # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
@@ -78,58 +79,69 @@ class KbsCli(unittest.TestCase):
 
 
 class ListKbsMcp(unittest.TestCase):
+    """list_kbs reflects the POOL the server serves — every listed id is addressable via `kb`, so
+    it can never diverge from what is actually served. It is router-handled (not in DISPATCH), stays
+    passive, and isolates a broken KB. Driven through the real handle() path."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-disc-mcp-"))
-        self.cfg = mcp._load_config(str(FIX))          # the served KB; list_kbs spans the registry
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _manifest(self, body: str) -> Path:
-        p = self.tmp / "r.toml"
-        p.write_text(body, encoding="utf-8")
-        return p
+    def _pool(self, *pairs) -> KBPool:
+        body = "".join(f'[[kb]]\nid = "{i}"\npath = "{p}"\n' for i, p in pairs)
+        m = self.tmp / "r.toml"
+        m.write_text(body, encoding="utf-8")
+        return KBPool(registry.load(m))
 
-    def test_list_kbs_registered_in_tools_and_dispatch(self):
-        names = {t["name"] for t in mcp.TOOLS}
-        self.assertIn("list_kbs", names)
-        self.assertEqual(names, set(mcp.DISPATCH))
+    def _broken(self) -> Path:
+        d = self.tmp / "broke"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "library.toml").write_text('[library]\nid = "broke"\nshelves = []\n', encoding="utf-8")
+        return d / "library.toml"
 
-    def test_list_kbs_returns_catalog(self):
-        p = self._manifest(f'[[kb]]\nid = "fixture"\npath = "{FIX}"\n')
-        out = mcp._tool_list_kbs(self.cfg, {"registry": str(p)})
-        self.assertIn("fixture", out)
-        self.assertIn("synthetic", out.lower())
+    def _list_kbs(self, pool):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mcp.handle(pool, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                              "params": {"name": "list_kbs", "arguments": {}}})
+        r = json.loads(buf.getvalue())              # single parseable line == stream intact
+        return r["result"]["content"][0]["text"], r["result"]["isError"]
+
+    def test_list_kbs_in_tools_but_router_handled(self):
+        self.assertIn("list_kbs", {t["name"] for t in mcp.TOOLS})
+        self.assertNotIn("list_kbs", mcp.DISPATCH)             # pool-scoped: the router handles it
+
+    def test_list_kbs_reflects_the_served_pool(self):
+        text, err = self._list_kbs(self._pool(("fixture", FIX)))
+        self.assertFalse(err)
+        self.assertIn("fixture", text)                        # the registry/pool id
+        self.assertIn("synthetic", text.lower())              # the KB's own description
 
     def test_list_kbs_is_passive(self):
-        p = self._manifest(f'[[kb]]\nid = "fixture"\npath = "{FIX}"\n')
-        low = mcp._tool_list_kbs(self.cfg, {"registry": str(p)}).lower()
+        text, _ = self._list_kbs(self._pool(("fixture", FIX)))
+        low = text.lower()
         for w in _RANK_WORDS:
             self.assertNotIn(w, low)
 
-    def test_list_kbs_empty_registry_graceful(self):
-        p = self._manifest("# no entries\n")
-        out = mcp._tool_list_kbs(self.cfg, {"registry": str(p)})
-        self.assertIn("No KBs", out)
+    def test_list_kbs_empty_pool_graceful(self):
+        text, err = self._list_kbs(KBPool(()))
+        self.assertFalse(err)
+        self.assertIn("No KBs", text)
+
+    def test_list_kbs_broken_kb_shown_unavailable_not_crash(self):
+        text, err = self._list_kbs(self._pool(("fixture", FIX), ("broke", self._broken())))
+        self.assertFalse(err)                                 # one bad entry never blanks the catalog
+        self.assertIn("fixture", text)
+        self.assertIn("broke", text)
+        self.assertIn("unavailable", text.lower())
 
     def test_list_kbs_tool_description_is_passive(self):
         t = next(t for t in mcp.TOOLS if t["name"] == "list_kbs")
         low = t["description"].lower()
         for w in _RANK_WORDS:
             self.assertNotIn(w, low)
-
-    def test_malformed_registry_is_in_protocol_error_not_a_crash(self):
-        # a malformed explicit manifest: handle() must return an in-protocol isError result and
-        # keep stdout to a single well-formed JSON line — never raise and corrupt the stream.
-        bad = self._manifest("[[kb]]\nid = \n")     # invalid TOML
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            mcp.handle(KBPool.single(self.cfg), {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                                  "params": {"name": "list_kbs",
-                                             "arguments": {"registry": str(bad)}}})
-        reply = json.loads(buf.getvalue())          # single parseable line == stream intact
-        self.assertEqual(reply["id"], 7)
-        self.assertTrue(reply["result"]["isError"])
 
 
 if __name__ == "__main__":

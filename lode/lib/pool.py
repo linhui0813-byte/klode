@@ -42,6 +42,13 @@ class KBPool:
             self._cache[kb_id] = registry.resolve(self._entries[kb_id])   # broken KB -> RegistryError
         return self._cache[kb_id]
 
+    def catalog(self) -> list[registry.KBInfo]:
+        """Describe every KB THIS pool serves (id + self-description), in sorted-id order — the
+        passive catalog `list_kbs` renders. Lazy and error-isolated: a broken KB is reported
+        `ok=False`, never raised, so one bad entry never blanks the catalog. Because it is sourced
+        from the pool, every listed id is guaranteed addressable via `kb`."""
+        return [registry.describe(self._entries[kid]) for kid in self.ids()]
+
     @classmethod
     def from_registry(cls, explicit=None, *, start=None, home=None) -> "KBPool":
         """Build a pool over every KB in the resolved registry manifest."""

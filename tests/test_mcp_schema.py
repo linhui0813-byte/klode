@@ -21,8 +21,11 @@ class McpSchema(unittest.TestCase):
     def test_tool_names_stable(self):
         self.assertEqual({t["name"] for t in mcp.TOOLS}, _EXPECTED_TOOLS)
 
-    def test_dispatch_matches_tools(self):
-        self.assertEqual({t["name"] for t in mcp.TOOLS}, set(mcp.DISPATCH))
+    def test_dispatch_covers_tools_except_router_handled_list_kbs(self):
+        tool_names = {t["name"] for t in mcp.TOOLS}
+        self.assertEqual(tool_names, _EXPECTED_TOOLS)                        # 8 tools in the schema
+        # list_kbs is pool-scoped and handled by the router, so it is deliberately NOT in DISPATCH
+        self.assertEqual(set(mcp.DISPATCH), _EXPECTED_TOOLS - {"list_kbs"})
 
     def test_consult_dimension_contract(self):
         t = next(t for t in mcp.TOOLS if t["name"] == "consult_dimension")
