@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from dataclasses import fields, is_dataclass
+from enum import Enum
 from pathlib import Path
 
-from . import console, query
+from . import console, core, query, services
 from .config import Config, ConfigError
+from .pool import KBPool
 
 # ---------------------------------------------------------------------------
 # init — scaffold a fresh library
@@ -59,6 +63,11 @@ def cmd_init(args) -> int:
         print(f"refusing to overwrite existing {cfg_path} (use --force)", file=sys.stderr)
         return 1
     shelves = args.shelf or ["books", "papers"]
+    for s in shelves:                                    # each shelf is a dir name AND a TOML string:
+        if not s or s in (".", "..") or not all(c.isalnum() or c in "._-" for c in s):
+            print(f"invalid shelf name {s!r}: use letters/digits and ._- only (one path component)",
+                  file=sys.stderr)                        # reject `/`, `..`, quotes, newlines up front —
+            return 2                                       # no TOML injection, no writing outside the project
     root.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(
         _TOML_TEMPLATE.format(shelves=", ".join(f'"{s}"' for s in shelves)), encoding="utf-8")
@@ -170,6 +179,9 @@ def cmd_normalize(args) -> int:
 # search / zoom — the LOD retrieval surface
 # ---------------------------------------------------------------------------
 def cmd_search(args) -> int:
+    if args.json:
+        return _emit_json(_run(args, "search",
+                               {"terms": args.query, "full": args.full, "limit": args.limit}))
     cfg = _load(args)
     if not [t for t in args.query if t.strip()]:
         print("nothing to search for", file=sys.stderr)
@@ -189,6 +201,11 @@ def cmd_search(args) -> int:
 
 
 def cmd_zoom(args) -> int:
+    if args.json:
+        if args.level == "content" and getattr(args, "grep", None):   # legacy zoom-verify combo
+            return _emit_json(_run(args, "verify",
+                                   {"card": args.id, "phrase": args.grep, "max_lines": args.max}))
+        return _emit_json(_run(args, "zoom", {"id": args.id, "level": args.level}))
     cfg = _load(args)
     if not query.card_path(cfg, args.id):
         print(f"no card: {args.id} (try `lode search`)", file=sys.stderr)
@@ -323,6 +340,17 @@ def _render_source(cfg: Config, cid: str, full: bool) -> int:
 
 
 def cmd_consult(args) -> int:
+    if args.json:
+        name = (args.name or "").strip()
+        if not name:                                          # parity with prose: no name lists lenses
+            return _emit_json(_run(args, "lenses.list", {}))
+        if args.section and args.section.lower() != "all":
+            proj, secs = "sections", (args.section,)
+        elif args.full or (args.section and args.section.lower() == "all"):
+            proj, secs = "full", ()
+        else:
+            proj, secs = "writer", ()
+        return _emit_json(_run(args, "consult", {"name": name, "projection": proj, "sections": secs}))
     cfg = _load(args)
     raw = (args.name or "").strip()
     if not raw:
@@ -348,6 +376,8 @@ def cmd_consult(args) -> int:
 def cmd_kbs(args) -> int:
     """List the KBs registered in a manifest — a passive catalog (id + description). It lists and
     describes; it does not rank or recommend which KB to use. A broken entry is shown, not fatal."""
+    if args.json:
+        return _emit_json(services.execute(KBPool.from_registry(args.registry), "kbs.list", None, {}))
     from . import registry                        # lazy: registry is only needed for this subcommand
     entries = registry.load(args.registry)        # RegistryError (a ConfigError) → main() exit 2
     if not entries:
@@ -363,6 +393,8 @@ def cmd_kbs(args) -> int:
 
 
 def cmd_diagnose(args) -> int:
+    if args.json:
+        return _emit_json(_run(args, "diagnose", {"symptom": " ".join(args.symptom)}))
     cfg = _load(args)
     symptom = " ".join(args.symptom)
     result = query.diagnose(cfg, symptom)               # symptom -> [(dimension, core_question)]; logic in query
@@ -383,14 +415,120 @@ def cmd_diagnose(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# registry projection — consumption verbs route through services.execute (the shared core). --json
+# serializes the SAME structured OpResult the MCP renders as text; --kb addresses a registered KB.
+# ---------------------------------------------------------------------------
 def _load(args) -> Config:
+    """The single Config a prose command renders. `--kb ID` addresses a registered KB via the
+    registry so prose honours --kb exactly like --json/MCP do (no format-dependent KB); otherwise
+    fall back to --config. `--kb '*'` (fan-out) is rejected for prose upstream in main()."""
+    kb = getattr(args, "kb", None)
+    if kb:
+        return KBPool.from_registry(getattr(args, "registry", None)).config(kb)
     return Config.load(Path(args.config) if args.config else None)
+
+
+def _pool(args) -> KBPool:
+    if getattr(args, "kb", None):
+        return KBPool.from_registry(getattr(args, "registry", None))
+    return KBPool.single(_load(args))
+
+
+def _jsonable(o):
+    if isinstance(o, Enum):
+        return o.value
+    if is_dataclass(o):
+        return {f.name: _jsonable(getattr(o, f.name)) for f in fields(o)}
+    if isinstance(o, dict):
+        return {k: _jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_jsonable(x) for x in o]
+    if isinstance(o, Path):
+        return str(o)
+    return o
+
+
+def _json_exit(result) -> int:
+    """Preserve the prose commands' semantic exit codes under --json (a not-found/none is nonzero,
+    so an agent can branch on $?)."""
+    v = result.value
+    if isinstance(v, core.EvidenceHit):
+        return 0 if v.found else 1
+    if v is None or isinstance(v, core.Note):
+        return 1
+    if isinstance(v, list) and not v:
+        return 1
+    return 0
+
+
+def _emit_json(result) -> int:
+    print(json.dumps(_jsonable(result), ensure_ascii=False))
+    return _json_exit(result)
+
+
+def _run(args, op_id: str, params: dict):
+    """Execute an op and emit JSON (--json) — returns the OpResult so a caller can also render prose."""
+    return services.execute(_pool(args), op_id, getattr(args, "kb", None), params)
+
+
+# ---- new consumption verbs (routed through execute; prose + --json) ----
+def cmd_verify(args) -> int:
+    r = _run(args, "verify", {"card": args.card, "phrase": args.phrase})
+    if args.json:
+        return _emit_json(r)
+    e = r.value
+    kb = f"[{r.provenance.kb}] " if r.provenance.kb else ""
+    print(f"{kb}{e.resolution.value.upper()} — {args.phrase!r}"
+          + (f" in {e.rel}" if e.rel else ""))
+    for n, ln in e.lines:
+        print(f"  {n}: {ln}")
+    return 0 if e.found else 1
+
+
+def cmd_lenses(args) -> int:
+    r = _run(args, "lenses.list", {})
+    if args.json:
+        return _emit_json(r)
+    v = r.value
+    for d in v["dimensions"]:
+        print(f"dimension  {d.name}  [{d.status}]")
+    for f in v["frameworks"]:
+        print(f"framework  {f.name}  ({f.dimension})")
+    return 0
+
+
+def cmd_cards(args) -> int:
+    r = _run(args, "cards.list", {})
+    if args.json:
+        return _emit_json(r)
+    for c in r.value:
+        print(f"{c['id']}  — {c['title']}")
+    return 0
+
+
+def cmd_review(args) -> int:
+    draft = sys.stdin.read() if args.draft == "-" else args.draft
+    r = _run(args, "review", {"draft": draft, "dimension": args.dimension})
+    if args.json:
+        return _emit_json(r)
+    rv = r.value
+    print(f"[{rv.capability.value}] judge={rv.judge_identity} non_production={rv.non_production}")
+    if rv.decision:
+        print(f"VERDICT (NOT AUTHORITATIVE — stub judge): {rv.decision}  score {rv.score}/100")
+    else:
+        print("no verdict — capability unavailable")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="lode", description="lode — a grep-grounded, level-of-zoom "
                                                         "knowledge library with a citation-rot linter.")
-    p.add_argument("-c", "--config", help="path to library.toml (default: nearest in cwd/parents)")
+    src = p.add_mutually_exclusive_group()             # a KB comes from ONE place: a file or the registry
+    src.add_argument("-c", "--config", help="path to library.toml (default: nearest in cwd/parents)")
+    src.add_argument("--kb", help="address a registered KB by id (via the registry) instead of --config")
+    p.add_argument("--registry", help="registry manifest path (for --kb; else default precedence)")
+    p.add_argument("--json", action="store_true",
+                   help="emit machine-readable JSON instead of prose (for agentic consumption)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init", help="scaffold a new library")
@@ -461,15 +599,33 @@ def build_parser() -> argparse.ArgumentParser:
     pd.set_defaults(func=cmd_diagnose)
 
     pk = sub.add_parser("kbs", help="list the KBs registered in a manifest (id + description)")
-    pk.add_argument("--registry", help="path to a registry manifest "
-                                       "(else ./.lode/registry.toml, then ~/.lode/registry.toml)")
+    pk.add_argument("--registry", default=argparse.SUPPRESS,   # don't clobber the global --registry
+                    help="path to a registry manifest (else ./.lode/registry.toml, then ~/.lode/registry.toml)")
     pk.set_defaults(func=cmd_kbs)
+
+    pv = sub.add_parser("verify", help="check a phrase against a card's source (the grounding verb)")
+    pv.add_argument("card", help="card id")
+    pv.add_argument("phrase", help="the exact phrase to check")
+    pv.set_defaults(func=cmd_verify)
+
+    pl = sub.add_parser("lenses", help="list the craft dimensions and frameworks")
+    pl.set_defaults(func=cmd_lenses)
+
+    pcd = sub.add_parser("cards", help="list the source cards")
+    pcd.set_defaults(func=cmd_cards)
+
+    prv = sub.add_parser("review", help="[experimental] supervise a draft against a dimension (stub judge)")
+    prv.add_argument("draft", help="the draft text, or - to read stdin")
+    prv.add_argument("dimension", help="the craft dimension to review against")
+    prv.set_defaults(func=cmd_review)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if getattr(args, "kb", None) == "*" and not getattr(args, "json", False):
+            raise ConfigError("`--kb '*'` (fan out over all KBs) needs --json; prose renders one KB")
         return args.func(args)
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)

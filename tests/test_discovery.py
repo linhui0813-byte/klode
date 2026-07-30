@@ -111,7 +111,7 @@ class ListKbsMcp(unittest.TestCase):
 
     def test_list_kbs_in_tools_but_router_handled(self):
         self.assertIn("list_kbs", {t["name"] for t in mcp.TOOLS})
-        self.assertNotIn("list_kbs", mcp.DISPATCH)             # pool-scoped: the router handles it
+        self.assertIn("list_kbs", mcp.RENDERERS)               # pool-scoped, projected like every tool
 
     def test_list_kbs_reflects_the_served_pool(self):
         text, err = self._list_kbs(self._pool(("fixture", FIX)))

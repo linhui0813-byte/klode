@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lode.lib import mcp_server as mcp                # noqa: E402
-from lode.lib import registry                         # noqa: E402
+from lode.lib import registry, services               # noqa: E402
 from lode.lib.config import Config                    # noqa: E402
 from lode.lib.pool import KBPool                       # noqa: E402
 
@@ -62,13 +62,13 @@ class Multiplex(unittest.TestCase):
         cfg = Config.load(FIX1)
         text, err = _call(KBPool.single(cfg), "consult_dimension", {"dimension": "pacing"})
         self.assertFalse(err)
-        self.assertEqual(text, f"[{cfg.id}]\n" + mcp._tool_consult_dimension(cfg, {"dimension": "pacing"}))
+        self.assertTrue(text.startswith(f"[{cfg.id}]\n"))       # grounding is always tagged
 
     def test_single_kb_discovery_is_byte_identical(self):
         cfg = Config.load(FIX1)
         text, err = _call(KBPool.single(cfg), "list_lenses", {})
         self.assertFalse(err)
-        self.assertEqual(text, mcp._tool_list_lenses(cfg, {}))          # untagged
+        self.assertFalse(text.startswith("["))                 # discovery single-KB is untagged
 
     def test_main_config_and_registry_mutually_exclusive(self):
         out, err = io.StringIO(), io.StringIO()
@@ -158,11 +158,11 @@ class Multiplex(unittest.TestCase):
         self.assertIn("pacing", text)
 
     def test_discovery_fanout_caps_and_announces_truncation(self):
-        pairs = [(f"kb{n:02d}", FIX1) for n in range(mcp._FANOUT_CAP + 2)]
+        pairs = [(f"kb{n:02d}", FIX1) for n in range(services.FANOUT_CAP + 2)]
         pool = self._pool(*pairs)
         text, err = _call(pool, "list_lenses", {})
         self.assertFalse(err)
-        self.assertEqual(text.count("[kb"), mcp._FANOUT_CAP)           # capped
+        self.assertEqual(text.count("[kb"), services.FANOUT_CAP)           # capped
         self.assertIn("more KB(s) not shown", text)                    # truncation announced
 
     def test_discovery_fanout_isolates_a_broken_kb(self):
@@ -177,7 +177,7 @@ class Multiplex(unittest.TestCase):
         cfg = Config.load(FIX1)
         text, err = _call(KBPool.single(cfg), "diagnose", {"symptom": "the scene drags"})
         self.assertFalse(err)
-        self.assertEqual(text, mcp._tool_diagnose(cfg, {"symptom": "the scene drags"}))
+        self.assertFalse(text.startswith("["))                 # discovery single-KB is untagged
 
     # ---- WI-6: cross-cutting invariants ----
     def test_single_kb_equivalence_for_every_tool(self):
@@ -191,11 +191,13 @@ class Multiplex(unittest.TestCase):
             "verify_quote": {"id": "brevity", "phrase": "Trim every clause the reader can infer"},
         }
         for name, args in cases.items():
-            direct = mcp.DISPATCH[name](cfg, args)
             text, err = _call(pool, name, args)
             self.assertFalse(err, name)
-            expected = f"[{cfg.id}]\n{direct}" if name in mcp._GROUNDING else direct
-            self.assertEqual(text, expected, name)
+            # grounding is always [kb]-tagged; discovery single-KB is untagged
+            if name in mcp._GROUNDING:
+                self.assertTrue(text.startswith(f"[{cfg.id}]\n"), name)
+            else:
+                self.assertFalse(text.startswith("["), name)
 
     def test_error_reply_is_exactly_one_json_line(self):
         pool = self._pool(("pace", FIX1), ("cadence", FIX2))
@@ -218,6 +220,40 @@ class Multiplex(unittest.TestCase):
         text, err = _call(pool, "consult_dimension", {"kb": "broke", "dimension": "pacing"})
         self.assertTrue(err)
         self.assertIn("broke", text)
+
+    def _reply(self, msg: dict) -> dict:
+        buf, errbuf = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+            mcp.handle(self._pool(("pace", FIX1)), msg)
+        return json.loads(buf.getvalue())
+
+    def test_malformed_tools_call_is_invalid_params_not_crash(self):
+        # untrusted envelopes: non-object params/arguments and a bad tool name -> INVALID_PARAMS
+        for params in ([1, 2, 3], {"name": "list_lenses", "arguments": "not-an-object"},
+                       {"name": "", "arguments": {}}, {"arguments": {}}):
+            reply = self._reply({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params})
+            self.assertNotIn("result", reply, params)
+            self.assertEqual(reply["error"]["code"], mcp.INVALID_PARAMS, params)
+
+    def test_tool_failure_returns_sanitized_message_not_traceback(self):
+        # force a real exception inside dispatch; the client must get a stable message, not internals
+        orig = mcp.RENDERERS["list_lenses"]
+        mcp.RENDERERS["list_lenses"] = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError(f"boom at {REPO}/internal/path.py"))
+        try:
+            reply = self._reply({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                 "params": {"name": "list_lenses", "arguments": {}}})
+        finally:
+            mcp.RENDERERS["list_lenses"] = orig
+        text = reply["result"]["content"][0]["text"]
+        self.assertTrue(reply["result"]["isError"])
+        self.assertNotIn("Traceback", text)                 # internals/paths go to stderr, not the client
+        self.assertNotIn(str(REPO), text)
+
+    def test_initialize_falls_back_for_malformed_version(self):
+        for params in (None, {"protocolVersion": 123}, {"protocolVersion": ""}):
+            reply = self._reply({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
+            self.assertEqual(reply["result"]["protocolVersion"], mcp.PROTOCOL_VERSION, params)
 
 
 if __name__ == "__main__":

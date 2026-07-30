@@ -7,6 +7,9 @@ Assertions are behavioral (exit code + the distinguishing projected content), no
 — strong enough to catch a dropped projection, a flipped exit code, or a changed redirect, without
 being brittle to incidental wording.
 """
+import contextlib
+import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -19,6 +22,7 @@ sys.path.insert(0, str(REPO))
 
 from lode.lib.config import Config
 from lode.lib import mcp_server as mcp
+from lode.lib.pool import KBPool
 
 
 def _write_fixture(root: Path) -> Path:
@@ -139,36 +143,45 @@ class McpCharacterization(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _mcp(self, tool, args):
+        """Drive the real handle() path (single-KB pool) — the projection now flows through
+        services.execute + the registry renderers, not a direct _tool_ call."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mcp.handle(KBPool.single(self.cfg), {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                                 "params": {"name": tool, "arguments": args}})
+        return json.loads(buf.getvalue())["result"]["content"][0]["text"]
+
     def test_dim_writer_is_craft_only(self):
-        out = mcp._tool_consult_dimension(self.cfg, {"dimension": "dim1"})
+        out = self._mcp("consult_dimension",{"dimension": "dim1"})
         self.assertIn("## Craft", out)
         self.assertIn("the writer move", out)
         self.assertNotIn("scorer knob", out)
 
     def test_dim_engine_adds_scorer(self):
-        out = mcp._tool_consult_dimension(self.cfg, {"dimension": "dim1", "audience": "engine"})
+        out = self._mcp("consult_dimension",{"dimension": "dim1", "audience": "engine"})
         self.assertIn("scorer knob X = 1", out)
 
     def test_dim_full_adds_adjudicates(self):
-        out = mcp._tool_consult_dimension(self.cfg, {"dimension": "dim1", "audience": "full"})
+        out = self._mcp("consult_dimension",{"dimension": "dim1", "audience": "full"})
         self.assertIn("scorer knob X = 1", out)
         self.assertIn("Adjudicates across", out)
 
     def test_dim_section_override(self):
-        out = mcp._tool_consult_dimension(self.cfg, {"dimension": "dim1", "section": "spec"})
+        out = self._mcp("consult_dimension",{"dimension": "dim1", "section": "spec"})
         self.assertIn("scorer knob X = 1", out)
         self.assertNotIn("the writer move", out)
 
     def test_dim_redirects_a_framework(self):
-        out = mcp._tool_consult_dimension(self.cfg, {"dimension": "a thinker"})
+        out = self._mcp("consult_dimension",{"dimension": "a thinker"})
         self.assertIn("consult_framework", out)
 
     def test_framework_handler(self):
-        out = mcp._tool_consult_framework(self.cfg, {"name": "a thinker"})
+        out = self._mcp("consult_framework",{"name": "a thinker"})
         self.assertIn("the core drive", out)
 
     def test_diagnose_handler(self):
-        out = mcp._tool_diagnose(self.cfg, {"symptom": "the scene drags"})
+        out = self._mcp("diagnose",{"symptom": "the scene drags"})
         self.assertIn("dim1", out)
         self.assertIn("consult_dimension", out)
 

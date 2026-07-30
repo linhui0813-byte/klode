@@ -153,7 +153,15 @@ def source_of(cfg: Config, card_id: str) -> Source | None:
     rel = fm_get(front_matter(read(p)), "file")
     if not rel:
         return Source(rel=None, path=None, size=None)
-    abspath = cfg.root / rel
+    # `file:` is card-authored: an absolute or `../` value would resolve outside the library tree,
+    # and verify_quote/zoom-content read this path. Require containment within cfg.root — an
+    # out-of-tree source is treated as 'not installed' (path=None), not read.
+    try:
+        abspath = (cfg.root / rel).resolve()
+        if not abspath.is_relative_to(cfg.root.resolve()):
+            return Source(rel=rel, path=None, size=None)
+    except (OSError, ValueError):
+        return Source(rel=rel, path=None, size=None)
     if not abspath.exists():
         return Source(rel=rel, path=None, size=None)
     return Source(rel=rel, path=abspath, size=abspath.stat().st_size)

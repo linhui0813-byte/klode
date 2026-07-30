@@ -22,6 +22,20 @@ from lode.lib.common import (Marker, body_after_marker, front_matter, grep_marke
                            haystacks, occurs, parse_markers, resolve)
 from lode.lib.config import Config, ConfigError
 
+
+def _mcp_text(cfg, tool, args):
+    """Drive the real MCP handle() (single-KB pool) and return the rendered body with the single-KB
+    `[kb]` provenance tag stripped — so these pre-tag characterization helpers compare content."""
+    import json as _json
+    import re as _re
+    from lode.lib.pool import KBPool
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        mcp_server.handle(KBPool.single(cfg), {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                               "params": {"name": tool, "arguments": args}})
+    text = _json.loads(buf.getvalue())["result"]["content"][0]["text"]
+    return _re.sub(r"^\[[a-z0-9-]+\]\n", "", text)
+
 # Note the deliberate space-wrap: "accepted by\ndefault" spans a hard line break, the exact
 # pdftotext failure the citation-rot matcher folds away.
 SOURCE = ("The quick brown fox jumps over the lazy dog.\n"
@@ -933,7 +947,7 @@ class McpAudienceTests(unittest.TestCase):
 
     def _dim(self, **args):
         from lode.lib import mcp_server
-        return mcp_server._tool_consult_dimension(Config.load(self.tmp / "library.toml"),
+        return _mcp_text(Config.load(self.tmp / "library.toml"), "consult_dimension",
                                                   {"dimension": "testcraft", **args})
 
     def test_writer_default_is_craft_only(self):
@@ -1003,11 +1017,11 @@ class McpResolveTests(unittest.TestCase):
 
     def _fw(self, name):
         from lode.lib import mcp_server
-        return mcp_server._tool_consult_framework(self.cfg, {"name": name})
+        return _mcp_text(self.cfg, "consult_framework", {"name": name})
 
     def _dim(self, name):
         from lode.lib import mcp_server
-        return mcp_server._tool_consult_dimension(self.cfg, {"dimension": name})
+        return _mcp_text(self.cfg, "consult_dimension", {"dimension": name})
 
     def test_framework_by_author_name(self):
         self.assertIn("core idea", self._fw("jane author"))
@@ -1114,8 +1128,8 @@ class ResolutionParityTests(unittest.TestCase):
 
     # §3 — MCP can now route a symptom via the shared logic
     def test_mcp_diagnose_tool_routes_symptom(self):
-        self.assertIn("diagnose", mcp_server.DISPATCH)
-        out = mcp_server._tool_diagnose(self.cfg, {"symptom": "this really drags"})
+        self.assertIn("diagnose", mcp_server.RENDERERS)
+        out = _mcp_text(self.cfg, "diagnose", {"symptom": "this really drags"})
         self.assertIn("view-who", out)
 
 

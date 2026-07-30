@@ -47,6 +47,13 @@ class Layering(unittest.TestCase):
     def test_console_does_not_import_adapters(self):
         self.assertFalse(_sibling_imports(PKG / "console.py") & ADAPTERS)
 
+    def test_new_core_layer_is_low_level(self):
+        # the canonical core sits BELOW the adapters: core is a stdlib-only leaf, the registry
+        # depends only on core, and the services import no adapter.
+        self.assertEqual(_sibling_imports(PKG / "core.py"), set())          # true leaf
+        self.assertLessEqual(_sibling_imports(PKG / "opspec.py"), {"core"})
+        self.assertFalse(_sibling_imports(PKG / "services.py") & ADAPTERS)
+
 
 if __name__ == "__main__":
     unittest.main()
