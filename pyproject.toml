@@ -8,6 +8,7 @@ version = { attr = "lode.lib.__version__" }   # single source: lode/lib/__init__
 [project]
 name = "lode"
 dynamic = ["version"]
+authors = [{ name = "Xiaolai Li" }]
 description = "A grounded knowledge system: an engine (lode.lib) and a supervising agent (lode.gate) over a corpus of knowledge bases."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +24,11 @@ classifiers = [
     "Topic :: Software Development :: Documentation",
 ]
 
+[project.urls]
+Homepage = "https://github.com/xiaolai/lode"
+Repository = "https://github.com/xiaolai/lode"
+Issues = "https://github.com/xiaolai/lode/issues"
+
 [project.optional-dependencies]
 # `lode check --entail` only — the default path stays zero-dependency. Pulls a small NLI/fact-check
 # model (MiniCheck-Flan-T5-Large, 770M) behind transformers+torch. Advisory, warn-only.
@@ -32,5 +38,5 @@ entail = ["minicheck>=1.1"]
 lode = "lode.lib.cli:main"
 lode-mcp = "lode.lib.mcp_server:main"
 
-[tool.setuptools]
-packages = ["lode", "lode.lib", "lode.gate"]
+[tool.setuptools.packages.find]
+include = ["lode*"]      # auto-discover: a new subpackage (e.g. lode.lib.formats) is never dropped
