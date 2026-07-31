@@ -27,7 +27,7 @@ from .query import (
     verify,            # check a quote against its source — the un-fakeable-citation primitive
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
     "Config", "ConfigError",

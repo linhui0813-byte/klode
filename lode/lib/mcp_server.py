@@ -21,7 +21,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import console, core, opspec, query, services
+from . import __version__, console, core, opspec, query, services
 from .config import Config, ConfigError
 from .pool import KBPool
 
@@ -32,7 +32,7 @@ PROTOCOL_VERSION = "2025-06-18"
 # so distinct tool namespaces come from registering each server under a distinct client key; this
 # name stays "lode" regardless of which KB the process serves.
 SERVER_NAME = "lode"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = __version__     # derived from the package's single source (lode/lib/__init__.py)
 
 # JSON-RPC error codes we actually use
 PARSE_ERROR = -32700

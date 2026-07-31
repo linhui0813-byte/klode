@@ -2,9 +2,12 @@
 requires = ["setuptools>=77"]        # >=77 for PEP 639 SPDX license metadata
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.dynamic]
+version = { attr = "lode.lib.__version__" }   # single source: lode/lib/__init__.py
+
 [project]
 name = "lode"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A grounded knowledge system: an engine (lode.lib) and a supervising agent (lode.gate) over a corpus of knowledge bases."
 readme = "README.md"
 requires-python = ">=3.11"
