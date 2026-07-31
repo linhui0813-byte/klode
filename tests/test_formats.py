@@ -98,11 +98,11 @@ def _fake_run(stdout="", returncode=0, stderr=""):
 
 
 class _FakeResp:                                            # a urlopen() context-manager stand-in
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode()
+    def __init__(self, payload=None, raw=None):
+        self._b = raw if raw is not None else json.dumps(payload).encode()
 
-    def read(self):
-        return self._b
+    def read(self, n=-1):                                   # mimic a bounded read(n)
+        return self._b[:n] if (n is not None and n >= 0) else self._b
 
     def __enter__(self):
         return self
@@ -451,6 +451,31 @@ class Pdf(FormatsTest):
         with mock.patch.dict(os.environ, env, clear=True):
             with self.assertRaises(ImportError):
                 pdf._docling(self._pdf())
+
+    def test_docling_remote_malformed_response_raises_runtimeerror(self):  # audit r1: degradable
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001"}), \
+             mock.patch.object(pdf.urllib.request, "urlopen",
+                               return_value=_FakeResp(raw=b"<html>500 oops</html>")):
+            with self.assertRaises(RuntimeError):               # not an uncaught JSONDecodeError
+                pdf._docling(self._pdf())
+
+    def test_docling_remote_oversized_response_refused(self):  # audit r1: OOM guard
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001"}), \
+             mock.patch.object(pdf, "MAX_DOCLING_RESPONSE", 16), \
+             mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(raw=b"x" * 64)):
+            with self.assertRaises(RuntimeError):
+                pdf._docling(self._pdf())
+
+    def test_docling_endpoint_scheme_validated(self):          # audit r1: no file:// etc.
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "file:///etc/passwd"}):
+            with self.assertRaises(RuntimeError):
+                pdf._docling(self._pdf())
+
+    def test_multipart_filename_cannot_inject_headers(self):   # audit r1: header injection
+        body = pdf._multipart({"to_formats": "md"}, "files", 'x".pdf\r\nEvil: 1', b"PDFDATA", "BND")
+        header = body.split(b"PDFDATA")[0]
+        self.assertNotIn(b"\r\nEvil: 1", header)               # CRLF-injected header gone
+        self.assertIn(b'filename="x.pdfEvil: 1"', body)        # quotes + CR/LF stripped from the name
 
     @unittest.skipUnless(shutil.which("pdftotext"), "poppler not installed")
     def test_real_pdftotext_integration(self):

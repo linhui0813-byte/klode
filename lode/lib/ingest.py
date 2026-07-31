@@ -128,8 +128,12 @@ def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
     src_sha = sha256(source)       # hash the ORIGINAL bytes BEFORE any write (a forced re-ingest onto
     dest.parent.mkdir(parents=True, exist_ok=True)       # the source itself must record the source hash)
     tmp = dest.with_name(dest.name + ".tmp")             # atomic write: never leave a truncated .txt
-    tmp.write_text(cleaned, encoding="utf-8")
-    os.replace(tmp, dest)
+    try:
+        tmp.write_text(cleaned, encoding="utf-8")
+        os.replace(tmp, dest)
+    except OSError:
+        tmp.unlink(missing_ok=True)                      # don't orphan a partial .tmp on write failure
+        raise
 
     prov = {
         "id": cid, "shelf": shelf,

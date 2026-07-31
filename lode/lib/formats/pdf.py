@@ -26,6 +26,7 @@ CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is tr
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
 DOCLING_ENV = "LODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
 DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
+MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
 
@@ -65,13 +66,15 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
 
 def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
                boundary: str) -> bytes:
-    """Build a multipart/form-data body with stdlib only (no `requests` dependency)."""
+    """Build a multipart/form-data body with stdlib only (no `requests` dependency). The filename
+    is stripped of quotes/CR/LF so it cannot inject extra multipart headers."""
+    safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
     parts: list[bytes] = []
     for k, v in fields.items():
         parts += [f"--{boundary}".encode(),
                   f'Content-Disposition: form-data; name="{k}"'.encode(), b"", str(v).encode()]
     parts += [f"--{boundary}".encode(),
-              f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'.encode(),
+              f'Content-Disposition: form-data; name="{file_field}"; filename="{safe_name}"'.encode(),
               b"Content-Type: application/pdf", b"", file_bytes,
               f"--{boundary}--".encode(), b""]
     return b"\r\n".join(parts)
@@ -79,8 +82,9 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
 
 def _docling_remote(pdf: Path, endpoint: str) -> str:
     """Convert via a docling-serve endpoint (the GPU lives on the server; lode stays zero-dep).
-    Returns the document's markdown. Network/HTTP failure raises OSError, so the escalation loop
-    degrades to the best local tier instead of crashing."""
+    Returns the document's markdown. Network/HTTP failure raises OSError and a malformed/oversized
+    response raises RuntimeError, so the escalation loop degrades to the best local tier instead of
+    crashing."""
     boundary = uuid.uuid4().hex
     body = _multipart({"to_formats": "md", "do_table_structure": "true"},
                       "files", pdf.name, pdf.read_bytes(), boundary)
@@ -88,7 +92,13 @@ def _docling_remote(pdf: Path, endpoint: str) -> str:
         f"{endpoint}/v1/convert/file", data=body, method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     with urllib.request.urlopen(req, timeout=DOCLING_HTTP_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read(MAX_DOCLING_RESPONSE + 1)         # bounded read: never OOM on a huge response
+    if len(raw) > MAX_DOCLING_RESPONSE:
+        raise RuntimeError("docling-serve response exceeds the size cap")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:         # JSONDecodeError is a ValueError
+        raise RuntimeError(f"docling-serve returned an unparseable response ({e})") from e
     md = (data.get("document") or {}).get("md_content") or ""
     if not md.strip():
         raise RuntimeError("docling-serve returned no markdown")
@@ -98,7 +108,10 @@ def _docling_remote(pdf: Path, endpoint: str) -> str:
 def _docling(pdf: Path, lang: str = "eng") -> str:
     endpoint = os.environ.get(DOCLING_ENV)
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
-        return _docling_remote(pdf, endpoint.rstrip("/"))
+        endpoint = endpoint.rstrip("/")
+        if not endpoint.startswith(("http://", "https://")):
+            raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
+        return _docling_remote(pdf, endpoint)
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
