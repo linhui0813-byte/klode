@@ -38,6 +38,13 @@ CTRL = set(range(0x00, 0x09)) | {0x0b, 0x0c} | set(range(0x0e, 0x20))  # excl. \
 LIG_CANDS = ["ffi", "ffl", "fi", "fl", "ff", "ft", "st"]
 
 
+def is_table_line(line: str) -> bool:
+    """A GFM markdown table row (`| a | b |` or the `|---|---|` separator). docling emits tables
+    this way; de-wrap and furniture-strip must leave them verbatim or the table is destroyed."""
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and s.count("|") >= 2
+
+
 def load_dict(path: str) -> set[str]:
     d: set[str] = set()
     if os.path.exists(path):
@@ -144,7 +151,10 @@ def dewrap(text: str, dic: set[str]) -> str:
         para.clear()
 
     for ln in lines:
-        if ln.strip() == "":
+        if is_table_line(ln):              # a markdown table row: flush prose, emit the row verbatim
+            flush()
+            out.append(ln)
+        elif ln.strip() == "":
             flush()
             out.append("")
         else:
@@ -252,6 +262,9 @@ def strip_page_furniture(text: str):
 
     out, removed, examples = [], 0, []
     for l in lines:
+        if is_table_line(l):               # protect markdown table rows (incl. the |---| separator)
+            out.append(l)
+            continue
         s = l.strip()
         junk = bool(s) and (
             _is_page_number(s)

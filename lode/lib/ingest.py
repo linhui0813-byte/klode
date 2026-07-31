@@ -1,47 +1,32 @@
-"""Tiered PDF → clean-source ingestion — the cheapest tool that reaches quality.
+"""Ingest a source of any supported format into a clean, grep-ready `.txt` on a shelf.
 
-Escalate only when the cheap path fails, and decide by *measured* corruption of the
-extraction, never by guesswork:
-
-    Tier 1  pdftotext -layout   (poppler · free)        — PDFs with a usable text layer
-    Tier 2  kreuzberg / xberg   (Rust + tesseract OCR)  — scanned prose, bad/no text layer
-    Tier 3  docling             (layout models)         — complex multi-column/table docs
-
-`auto` extracts with pdftotext, scores it, and only re-OCRs when the score says the text
-layer is garbage — the exact genette (free) vs gerrig (needs OCR) split this pipeline was
-built from. Every ingest records provenance (source sha256 + tier + tool version + score)
-to `<lib>/PROVENANCE.jsonl`, so an ingested source is reproducible and its origin auditable.
-
-lode core stays dependency-free: poppler is a system binary called over subprocess, and
-the OCR tiers are lazy-imported — absent until `pipx inject lode kreuzberg` (or docling).
-"""
+The orchestrator: route the file to a format handler (PDF/EPUB/DOCX/HTML/TXT), extract raw
+text, guard against an empty/garbage extraction, run the FULL normalize pipeline (ligatures,
+control-byte repair, page-furniture, de-wrap, ascii-ligatures), write the source, and record
+provenance. Extraction itself lives in `lode.lib.formats`; this module owns the pipeline around
+it. Corruption scoring stays importable here for backward compatibility."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import formats
 from .config import Config
-from .normalize import strip_page_furniture
+from .formats._base import ExtractionError
+from .formats.pdf import CLEAN_THRESHOLD, MIN_WORDS, corruption_score  # re-export: back-compat
+from .normalize import CTRL, load_dict, process
 
-CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
-MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
-_TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
-_MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
+__all__ = ["ingest", "run", "quality_signal", "corruption_score",
+           "CLEAN_THRESHOLD", "MIN_WORDS", "sha256", "IngestResult"]
 
-
-def corruption_score(text: str) -> float:
-    """OCR-corruption markers per 10k words — tilde-in-word (`t~e`) + mid-word caps
-    (`mfonnafion`/`regulatIOn`). The signal that split clean sources from garbled ones."""
-    w = len(text.split()) or 1
-    return (len(_TILDE.findall(text)) + len(_MISCAP.findall(text))) / w * 10000
+GARBAGE_CTRL_RATIO = 0.10      # >10% control chars => binary decoded as text; refuse before writing
 
 
 def sha256(path: Path) -> str:
@@ -52,85 +37,44 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-# ---- the three extractors -------------------------------------------------
-def _pdftotext(pdf: Path, lang: str = "eng") -> str:
-    if not shutil.which("pdftotext"):
-        raise RuntimeError("pdftotext not found — install poppler (brew install poppler)")
-    out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
-                         capture_output=True, text=True)
-    if out.returncode != 0:
-        raise RuntimeError(f"pdftotext failed: {out.stderr.strip()[:200]}")
-    return out.stdout
+def quality_signal(text: str) -> dict:
+    """Format-agnostic quality of an extraction. `corruption` is the OCR metric (PDF escalation
+    still uses it); `words` and `control_char_ratio` drive the empty/garbage guard for every
+    format. Pure and backend-free."""
+    ctrl = sum(1 for ch in text if ord(ch) in CTRL)
+    return {"words": len(text.split()),
+            "corruption": corruption_score(text),
+            "control_char_ratio": (ctrl / len(text)) if text else 0.0}
 
 
-def _xberg(pdf: Path, lang: str = "eng") -> str:
+def _tool_version(handler: str) -> str:
     try:
-        from kreuzberg import extract_file_sync, ExtractionConfig
-    except ImportError as e:
-        raise ImportError("xberg/kreuzberg not installed — `pipx inject lode kreuzberg` "
-                          "(needs the tesseract binary too)") from e
-    r = extract_file_sync(str(pdf), config=ExtractionConfig(force_ocr=True))
-    return r.content or ""
-
-
-def _docling(pdf: Path, lang: str = "eng") -> str:
-    try:
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-        from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
-        from docling.datamodel.base_models import InputFormat
-    except ImportError as e:
-        raise ImportError("docling not installed — `pipx inject lode docling` "
-                          "(heavy: torch + models). Reserve for complex-layout docs.") from e
-    opts = PdfPipelineOptions()
-    opts.do_ocr = True
-    try:
-        opts.force_full_page_ocr = True
-        opts.ocr_options = TesseractCliOcrOptions()      # match xberg's engine; skip the Chinese default
+        if handler == "pdftotext":
+            v = subprocess.run(["pdftotext", "-v"], capture_output=True, text=True)
+            return (v.stderr or v.stdout).splitlines()[0].strip()
+        if handler == "xberg":
+            import kreuzberg
+            return f"kreuzberg {getattr(kreuzberg, '__version__', '?')}"
+        if handler == "docling":
+            import docling
+            return f"docling {getattr(docling, '__version__', '?')}"
     except Exception:
         pass
-    conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
-    return conv.convert(str(pdf)).document.export_to_markdown()
+    return f"stdlib:{handler}" if handler in ("txt", "html", "epub", "docx") else handler
 
 
-_EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling}
+def _slug(name: str) -> str:
+    stem = Path(name).stem.lower()
+    stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+    return stem or "source"
 
 
-@dataclass
-class Choice:
-    tier: str
-    text: str
-    score: float
-    note: str = ""
-
-
-def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
-    """Pick a tier. Forced tiers run as asked; `auto` uses the cheap path unless its
-    measured corruption says otherwise, then takes the better of pdftotext / OCR."""
-    if tier != "auto":
-        text = _EXTRACTORS[tier](pdf, lang)
-        return Choice(tier, text, corruption_score(text))
-
-    t1 = _pdftotext(pdf, lang)
-    s1 = corruption_score(t1)
-    if s1 < CLEAN_THRESHOLD and len(t1.split()) >= MIN_WORDS:
-        return Choice("pdftotext", t1, s1, "text layer clean")
-    # the cheap layer is garbage (or empty) — re-OCR
-    try:
-        t2 = _xberg(pdf, lang)
-        s2 = corruption_score(t2)
-        if s2 <= s1:
-            return Choice("xberg", t2, s2, f"escalated: pdftotext scored {s1:.1f}")
-        return Choice("pdftotext", t1, s1, f"xberg ({s2:.1f}) no better than pdftotext")
-    except ImportError as e:
-        return Choice("pdftotext", t1, s1, f"WANTED OCR but {e}")
-
-
-# ---- the ingest flow ------------------------------------------------------
 @dataclass
 class IngestResult:
     id: str
     shelf: str
-    tier: str
+    format: str
+    handler: str
     score_before: float
     score_after: float
     words: int
@@ -140,34 +84,14 @@ class IngestResult:
     note: str
 
 
-def _tool_version(tier: str) -> str:
-    try:
-        if tier == "pdftotext":
-            v = subprocess.run(["pdftotext", "-v"], capture_output=True, text=True)
-            return (v.stderr or v.stdout).splitlines()[0].strip()
-        if tier == "xberg":
-            import kreuzberg
-            return f"kreuzberg {getattr(kreuzberg, '__version__', '?')}"
-        if tier == "docling":
-            import docling
-            return f"docling {getattr(docling, '__version__', '?')}"
-    except Exception:
-        pass
-    return tier
-
-
-def _slug(name: str) -> str:
-    stem = Path(name).stem.lower()
-    stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
-    return stem or "source"
-
-
-def ingest(cfg: Config, pdf: Path, shelf: str, *, card_id: str | None = None,
-           tier: str = "auto", lang: str = "eng", force: bool = False) -> IngestResult:
+def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
+           tier: str = "auto", lang: str = "eng", force: bool = False,
+           fmt: str | None = None) -> IngestResult:
     if shelf not in cfg.shelves:
         raise ValueError(f"unknown shelf {shelf!r}; configured: {', '.join(cfg.shelves)}")
-    if not pdf.is_file():
-        raise FileNotFoundError(pdf)
+    source = Path(source)
+    if not source.is_file():
+        raise FileNotFoundError(source)
     if card_id is not None:
         # a user-supplied --id must be a bare filename stem; a `/`/`..` id would escape the shelf
         if not re.fullmatch(r"[A-Za-z0-9._-]+", card_id) or card_id in (".", ".."):
@@ -175,28 +99,47 @@ def ingest(cfg: Config, pdf: Path, shelf: str, *, card_id: str | None = None,
                              "(no path separators)")
         cid = card_id
     else:
-        cid = _slug(pdf.name)
+        cid = _slug(source.name)
     dest = cfg.lib / shelf / f"{cid}.txt"
     if not str(dest.resolve()).startswith(str(cfg.lib.resolve()) + os.sep):
         raise ValueError(f"refusing to write outside the library tree: {dest}")
     if dest.exists() and not force:
         raise FileExistsError(f"{dest} exists (use force to overwrite)")
 
-    choice = choose_and_extract(pdf, tier, lang)
-    cleaned, stripped, _ex = strip_page_furniture(choice.text)
-    score_after = corruption_score(cleaned)
+    handler = formats.route(source, fmt=fmt)              # UnsupportedFormat if nothing matches
+    ext = handler.extract(source, lang=lang, tier=tier)
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(cleaned, encoding="utf-8")
+    # Guard BEFORE any write: never persist a garbage source (or a provenance row for it).
+    q_before = quality_signal(ext.text)
+    if q_before["words"] == 0:
+        raise ExtractionError(f"{source.name}: extraction produced no text (nothing to ingest)")
+    if q_before["control_char_ratio"] > GARBAGE_CTRL_RATIO:
+        raise ExtractionError(
+            f"{source.name}: extraction looks like binary garbage "
+            f"(control-char ratio {q_before['control_char_ratio']:.0%}) — wrong format?")
+
+    dic = load_dict(cfg.dict_path)                        # degrades (not crashes) when absent
+    cleaned, stats = process(ext.text, dic)              # FULL normalize, not furniture-only
+    q_after = quality_signal(cleaned)
+    if q_after["words"] == 0:      # normalize can strip a source to nothing (e.g. all page furniture)
+        raise ExtractionError(f"{source.name}: nothing left after normalization "
+                              "(source was all furniture/whitespace) — not written")
+
+    src_sha = sha256(source)       # hash the ORIGINAL bytes BEFORE any write (a forced re-ingest onto
+    dest.parent.mkdir(parents=True, exist_ok=True)       # the source itself must record the source hash)
+    tmp = dest.with_name(dest.name + ".tmp")             # atomic write: never leave a truncated .txt
+    tmp.write_text(cleaned, encoding="utf-8")
+    os.replace(tmp, dest)
 
     prov = {
         "id": cid, "shelf": shelf,
-        "source_pdf": pdf.name, "source_sha256": sha256(pdf),
-        "tier": choice.tier, "tool": _tool_version(choice.tier),
+        "format": ext.format, "handler": ext.handler,
+        "source": source.name, "source_sha256": src_sha,
+        "tool": _tool_version(ext.handler),
         "words": len(cleaned.split()),
-        "corruption_before": round(choice.score, 2),
-        "corruption_after": round(score_after, 2),
-        "furniture_stripped": stripped,
+        "corruption_before": round(q_before["corruption"], 2),
+        "corruption_after": round(q_after["corruption"], 2),
+        "furniture_stripped": stats.get("furniture", 0),
         "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     prov_path = cfg.lib / "PROVENANCE.jsonl"
@@ -204,26 +147,30 @@ def ingest(cfg: Config, pdf: Path, shelf: str, *, card_id: str | None = None,
         f.write(json.dumps(prov, ensure_ascii=False) + "\n")
 
     return IngestResult(
-        id=cid, shelf=shelf, tier=choice.tier,
-        score_before=round(choice.score, 2), score_after=round(score_after, 2),
-        words=len(cleaned.split()), furniture_stripped=stripped,
+        id=cid, shelf=shelf, format=ext.format, handler=ext.handler,
+        score_before=round(q_before["corruption"], 2), score_after=round(q_after["corruption"], 2),
+        words=len(cleaned.split()), furniture_stripped=stats.get("furniture", 0),
         dest=os.path.relpath(dest, cfg.root),
-        provenance=os.path.relpath(prov_path, cfg.root), note=choice.note)
+        provenance=os.path.relpath(prov_path, cfg.root), note=ext.note)
 
 
 def run(cfg: Config, args) -> int:
-    pdf = Path(args.pdf).expanduser()
+    source = Path(args.source).expanduser()
+    fmt = getattr(args, "format", None)
+    if fmt == "auto":
+        fmt = None
     try:
-        r = ingest(cfg, pdf, args.shelf, card_id=args.id, tier=args.tier,
-                   lang=args.lang, force=args.force)
-    except Exception as e:      # incl. an installed-but-failing OCR backend — report, never crash
+        r = ingest(cfg, source, args.shelf, card_id=args.id, tier=args.tier,
+                   lang=args.lang, force=args.force, fmt=fmt)
+    except Exception as e:      # incl. an unsupported format or a failing OCR backend — report, never crash
         print(f"ingest error: {e}", file=sys.stderr)
         return 1
-    print(f"ingested {pdf.name}")
-    print(f"  tier    : {r.tier}  ({r.note})")
+    print(f"ingested {source.name}")
+    print(f"  format  : {r.format}  (handler {r.handler}{'; ' + r.note if r.note else ''})")
     print(f"  corruption: {r.score_before} -> {r.score_after} /10k  ({r.words} words)")
     print(f"  furniture : {r.furniture_stripped} lines stripped")
     print(f"  source  : {r.dest}")
     print(f"  provenance: {r.provenance}")
-    print(f"\nnext: add a BIBLIOGRAPHY row, `lode build`, write the grep-anchored Thin/Full, `lode check`")
+    print("\nnext: add a BIBLIOGRAPHY row, `lode normalize`, `lode build`, "
+          "write the grep-anchored Thin/Full, then `lode check`")
     return 0

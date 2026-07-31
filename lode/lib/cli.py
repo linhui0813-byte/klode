@@ -557,12 +557,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="WARN when model support for a claim falls below this (default 0.5)")
     pc.set_defaults(func=cmd_check)
 
-    pg = sub.add_parser("ingest", help="tiered PDF -> clean source (pdftotext/xberg/docling, auto-select)")
-    pg.add_argument("pdf", help="path to the source PDF")
+    pg = sub.add_parser("ingest", help="any source (PDF/EPUB/DOCX/HTML/TXT) -> clean, grep-ready shelf source")
+    pg.add_argument("source", help="path to the source file (format detected by content, not extension)")
     pg.add_argument("--shelf", required=True, help="target shelf (must be a configured shelf)")
     pg.add_argument("--id", help="card/source id (default: slug of the filename)")
+    pg.add_argument("--format", choices=["auto", "pdf", "epub", "docx", "html", "txt"], default="auto",
+                    help="force a format handler; auto (default) detects by content signature")
     pg.add_argument("--tier", choices=["auto", "pdftotext", "xberg", "docling"], default="auto",
-                    help="auto picks by measured corruption; force a tier to override")
+                    help="PDF only: auto picks by measured corruption; force a tier to override")
     pg.add_argument("--lang", default="eng", help="OCR language (default eng)")
     pg.add_argument("--force", action="store_true", help="overwrite an existing shelf source")
     pg.set_defaults(func=cmd_ingest)
