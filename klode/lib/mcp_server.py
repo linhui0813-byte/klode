@@ -1,6 +1,6 @@
 """A dependency-free MCP server exposing one library to an agent.
 
-Why stdlib instead of the MCP SDK: lode's whole promise is stdlib-only and zero
+Why stdlib instead of the MCP SDK: klode's whole promise is stdlib-only and zero
 dependency, and MCP's stdio transport is just newline-delimited JSON-RPC 2.0. Taking
 the SDK would add a pinned dependency and a version treadmill to a tool whose selling
 point is that it has neither. The protocol subset below (initialize / tools/list /
@@ -9,8 +9,8 @@ tools/call) is all a tool server needs.
 Transport contract: **stdout carries protocol JSON and nothing else.** Every
 diagnostic goes to stderr, or it corrupts the stream.
 
-Run:  lode-mcp --config /path/to/library.toml
-      (falls back to $LODLIB_CONFIG, then the nearest library.toml above cwd)
+Run:  klode-mcp --config /path/to/library.toml
+      (falls back to $KLODE_CONFIG, then the nearest library.toml above cwd)
 """
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ from .config import Config, ConfigError
 from .pool import KBPool
 
 PROTOCOL_VERSION = "2025-06-18"
-# Self-reported MCP name (serverInfo.name): a single stable brand, "lode". It appears in `/mcp`
+# Self-reported MCP name (serverInfo.name): a single stable brand, "klode". It appears in `/mcp`
 # listings and logs. It is deliberately NOT per-KB — clients derive the `mcp__<server>__*` tool
 # prefix from the server KEY in their own MCP config (e.g. `.mcp.json`), not from serverInfo.name,
 # so distinct tool namespaces come from registering each server under a distinct client key; this
-# name stays "lode" regardless of which KB the process serves.
-SERVER_NAME = "lode"
-SERVER_VERSION = __version__     # derived from the package's single source (lode/lib/__init__.py)
+# name stays "klode" regardless of which KB the process serves.
+SERVER_NAME = "klode"
+SERVER_VERSION = __version__     # derived from the package's single source (klode/lib/__init__.py)
 
 # JSON-RPC error codes we actually use
 PARSE_ERROR = -32700
@@ -248,7 +248,7 @@ def _r_list_kbs(result, args):
     infos = result.value
     if not infos:
         return ("No KBs are registered. Start the server with a registry manifest that lists at "
-                "least one [[kb]]:  lode-mcp --registry <path>.")
+                "least one [[kb]]:  klode-mcp --registry <path>.")
     lines = ["Registered knowledge bases — id and what each covers. "
              "Each KB describes itself; choose the one whose description fits your task.", ""]
     for i in infos:
@@ -579,21 +579,21 @@ def handle(pool: KBPool, msg: dict) -> None:
 
 
 def _load_config(explicit: str | None) -> Config:
-    """--config, else $LODLIB_CONFIG, else the nearest library.toml above cwd."""
-    path = explicit or os.environ.get("LODLIB_CONFIG")
+    """--config, else $KLODE_CONFIG, else the nearest library.toml above cwd."""
+    path = explicit or os.environ.get("KLODE_CONFIG")
     return Config.load(Path(path) if path else None)
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="lode-mcp", description="MCP server for one or many lode KBs.")
+    p = argparse.ArgumentParser(prog="klode-mcp", description="MCP server for one or many klode KBs.")
     p.add_argument("-c", "--config", help="serve ONE KB: path to its library.toml "
-                                          "(else $LODLIB_CONFIG, else nearest)")
+                                          "(else $KLODE_CONFIG, else nearest)")
     p.add_argument("-r", "--registry", help="serve MANY KBs: path to a registry manifest "
                                             "(mutually exclusive with --config)")
     args = p.parse_args(argv)
 
     if args.config and args.registry:
-        print("lode-mcp: pass --config OR --registry, not both", file=sys.stderr)
+        print("klode-mcp: pass --config OR --registry, not both", file=sys.stderr)
         return 2
     try:
         if args.registry:
@@ -604,9 +604,9 @@ def main(argv: list[str] | None = None) -> int:
             pool = KBPool.single(cfg)
             summary = f"1 KB: {cfg.id} ({cfg.config_path})"
     except ConfigError as e:
-        print(f"lode-mcp: config error: {e}", file=sys.stderr)
+        print(f"klode-mcp: config error: {e}", file=sys.stderr)
         return 2
-    print(f"lode-mcp: serving {summary}", file=sys.stderr)
+    print(f"klode-mcp: serving {summary}", file=sys.stderr)
 
     for line in sys.stdin:
         line = line.strip()

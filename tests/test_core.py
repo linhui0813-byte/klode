@@ -7,7 +7,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import core                       # noqa: E402
+from klode.lib import core                       # noqa: E402
 
 
 class CoreTypes(unittest.TestCase):

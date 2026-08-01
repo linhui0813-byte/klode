@@ -1,6 +1,6 @@
 """Load and resolve a `library.toml` into a validated `Config`.
 
-lode is a port of a knowledge-library design that lived inside one project as three
+klode is a port of a knowledge-library design that lived inside one project as three
 scripts with hard-coded module constants (`ROOT`, `LIB`, `CARDS`, `SHELVES`, `BIB`).
 Everything project-specific now comes from ONE hand-edited TOML file that sits at the
 root of a library. This module finds it, reads it (stdlib `tomllib`, Python 3.11+, zero
@@ -91,7 +91,7 @@ class Config:
             if cand.is_file():
                 return cand
         raise ConfigError(
-            f"no {CONFIG_NAME} found in {here} or any parent — run `lode init` to scaffold one"
+            f"no {CONFIG_NAME} found in {here} or any parent — run `klode init` to scaffold one"
         )
 
     @classmethod

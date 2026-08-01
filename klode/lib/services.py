@@ -1,4 +1,4 @@
-"""lode/lib/services.py — the domain services + the shared executor.
+"""klode/lib/services.py — the domain services + the shared executor.
 
 Every verb's logic lives here ONCE, wrapping the KB-agnostic engine (`query`/`console`/`pool`) and
 returning a core `OpResult` with structured provenance. `execute()` is the single entry point both
@@ -169,7 +169,7 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
 # self-label (never an authoritative Go/Recycle from a fake judge).
 # ---------------------------------------------------------------------------
 def _svc_review(cfg, params: dict) -> core.ReviewResult:
-    from lode import gate                                      # lazy: only review needs the gate
+    from klode import gate                                      # lazy: only review needs the gate
     judge = params.get("judge") or gate.FixtureJudge({}, default=(7, "acceptable"))
     identity = type(judge).__name__
     if params.get("refuse_non_production"):                    # a caller may refuse non-production output

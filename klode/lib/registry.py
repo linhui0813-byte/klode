@@ -1,9 +1,9 @@
 """The KB registry — a manifest that maps a KB `id` to its `library.toml`, so a discovery
-surface (the `lode kbs` CLI, the `list_kbs` MCP tool) can enumerate the knowledge bases a user
+surface (the `klode kbs` CLI, the `list_kbs` MCP tool) can enumerate the knowledge bases a user
 has installed WITHOUT the KBs living inside this engine repo.
 
 Zero dependencies (stdlib `tomllib`/`pathlib`), and internal by design: this module is consumed
-by the adapters, never re-exported on the `lode.lib` facade. It never imports an adapter, so the
+by the adapters, never re-exported on the `klode.lib` facade. It never imports an adapter, so the
 layering guard holds.
 
 Manifest format — an array of tables, one per KB:
@@ -14,8 +14,8 @@ Manifest format — an array of tables, one per KB:
 
 Lookup precedence (first that exists wins):
     1. an explicit path (e.g. the CLI `--registry` flag)
-    2. a project-level manifest at `<cwd>/.lode/registry.toml`
-    3. a user-level manifest at `~/.lode/registry.toml`
+    2. a project-level manifest at `<cwd>/.klode/registry.toml`
+    3. a user-level manifest at `~/.klode/registry.toml`
 When none exists, the registry is simply empty — that is not an error.
 
 Reconciliation rule (recorded): the manifest `id` is authoritative as the registry address. A
@@ -67,7 +67,7 @@ def _manifest_path(explicit: str | Path | None, *,
         return p
     base = Path(start) if start is not None else Path.cwd()
     hb = Path(home) if home is not None else Path.home()
-    for cand in (base / ".lode" / "registry.toml", hb / ".lode" / "registry.toml"):
+    for cand in (base / ".klode" / "registry.toml", hb / ".klode" / "registry.toml"):
         if cand.is_file():
             return cand
     return None

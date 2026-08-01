@@ -9,9 +9,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import core, registry, services         # noqa: E402
-from lode.lib.config import Config, ConfigError        # noqa: E402
-from lode.lib.pool import KBPool                        # noqa: E402
+from klode.lib import core, registry, services         # noqa: E402
+from klode.lib.config import Config, ConfigError        # noqa: E402
+from klode.lib.pool import KBPool                        # noqa: E402
 
 FIX1 = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"    # id kb-fixture, dim pacing
 FIX2 = REPO / "tests" / "fixtures" / "kb-fixture-2" / "library.toml"  # id kb-fixture-2, dim cadence
@@ -19,7 +19,7 @@ FIX2 = REPO / "tests" / "fixtures" / "kb-fixture-2" / "library.toml"  # id kb-fi
 
 class Services(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-svc-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-svc-"))
         self.single = KBPool.single(Config.load(FIX1))
 
     def tearDown(self):

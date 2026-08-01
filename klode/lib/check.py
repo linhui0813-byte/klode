@@ -93,7 +93,7 @@ def _check_freshness(cfg: Config, r: Report, today: date) -> None:
             with open(src, "rb") as f:
                 if hashlib.sha256(f.read()).hexdigest() != stored.strip():
                     r.warns.append(f"[H source-changed] {cid}: source changed since it was stamped "
-                                   f"(claims may need re-verifying) — re-check, then `lode build --stamp`")
+                                   f"(claims may need re-verifying) — re-check, then `klode build --stamp`")
 
 
 def _check_entailment(cfg: Config, r: Report, backend, threshold: float) -> None:
@@ -141,7 +141,7 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
         stem = os.path.splitext(os.path.basename(t))[0]
         if stem not in card_stems:
             r.errors.append(f"[B orphan] shelf source has no card: {os.path.relpath(t, cfg.root)} "
-                            f"-> run `lode build`")
+                            f"-> run `klode build`")
 
     # A. card -> source  (+ cache haystacks for F)
     hay_cache: dict[str, tuple[str, str]] = {}
@@ -291,13 +291,13 @@ def _check_bibliography_mirror(cfg: Config, r: Report) -> None:
         if live is None:
             continue                                  # missing coverage is check C's job
         if m.group(1).strip() != live.strip():
-            r.warns.append(f"[G] card '{stem}' Bibliography line is stale vs the catalog -> run `lode build`")
+            r.warns.append(f"[G] card '{stem}' Bibliography line is stale vs the catalog -> run `klode build`")
 
 
 def _check_index_fresh(cfg: Config, r: Report) -> None:
     index = os.path.join(cfg.cards, "INDEX.md")
     if not os.path.exists(index):
-        r.errors.append("[D] cards/INDEX.md missing -> run `lode build`")
+        r.errors.append("[D] cards/INDEX.md missing -> run `klode build`")
         return
     idx = read(index)
     listed = set(re.findall(r"\[([^\]]+)\]\((?:\1)\.md\)", idx))
@@ -306,10 +306,10 @@ def _check_index_fresh(cfg: Config, r: Report) -> None:
     extra = listed - on_disk
     if missing:
         r.errors.append(f"[D] INDEX.md is stale — {len(missing)} card(s) on disk not listed "
-                        f"({', '.join(sorted(missing)[:5])}{'…' if len(missing) > 5 else ''}) -> run `lode build`")
+                        f"({', '.join(sorted(missing)[:5])}{'…' if len(missing) > 5 else ''}) -> run `klode build`")
     if extra:
         r.errors.append(f"[D] INDEX.md lists {len(extra)} card(s) that no longer exist "
-                        f"({', '.join(sorted(extra)[:5])}) -> run `lode build`")
+                        f"({', '.join(sorted(extra)[:5])}) -> run `klode build`")
 
 
 def _check_copyright_leak(cfg: Config, r: Report) -> None:

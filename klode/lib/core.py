@@ -1,6 +1,6 @@
-"""lode/lib/core.py — the canonical value types the operations model rests on.
+"""klode/lib/core.py — the canonical value types the operations model rests on.
 
-A stdlib-only LEAF: it imports no other `lode` module, no domain service, and no adapter
+A stdlib-only LEAF: it imports no other `klode` module, no domain service, and no adapter
 (`cli`/`mcp_server`), so it sits at the very bottom of the layering. Services build these from the
 engine's own values (e.g. a `SourceInfo` is assembled from `query.Source`); the core never reaches up.
 

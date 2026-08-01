@@ -6,9 +6,9 @@ import json
 import unittest
 from pathlib import Path
 
-from lode.lib import mcp_server as mcp
-from lode.lib.config import Config, _SLUG_RE
-from lode.lib.pool import KBPool
+from klode.lib import mcp_server as mcp
+from klode.lib.config import Config, _SLUG_RE
+from klode.lib.pool import KBPool
 
 _EXPECTED_TOOLS = {
     "list_lenses", "diagnose", "consult_dimension", "consult_framework",
@@ -76,12 +76,12 @@ class KbSelector(unittest.TestCase):
 
 
 class ServerName(unittest.TestCase):
-    """serverInfo.name is the single stable brand 'lode'. Clients namespace tools by the client-config
+    """serverInfo.name is the single stable brand 'klode'. Clients namespace tools by the client-config
     KEY (e.g. `.mcp.json`), not by serverInfo.name, so this stays constant across KBs."""
     FIX = Path(__file__).resolve().parent / "fixtures" / "kb-fixture" / "library.toml"
 
     def test_server_name_is_lode(self):
-        self.assertEqual(mcp.SERVER_NAME, "lode")
+        self.assertEqual(mcp.SERVER_NAME, "klode")
 
     def test_server_name_is_prefix_safe_slug(self):
         self.assertTrue(_SLUG_RE.fullmatch(mcp.SERVER_NAME))
@@ -92,7 +92,7 @@ class ServerName(unittest.TestCase):
             mcp.handle(KBPool.single(Config.load(self.FIX)),
                        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         reply = json.loads(buf.getvalue())
-        self.assertEqual(reply["result"]["serverInfo"]["name"], "lode")
+        self.assertEqual(reply["result"]["serverInfo"]["name"], "klode")
 
 
 if __name__ == "__main__":

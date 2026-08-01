@@ -24,7 +24,7 @@ from ._base import Extraction
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
-DOCLING_ENV = "LODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
+DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
 DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
@@ -58,7 +58,7 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     try:
         from kreuzberg import extract_file_sync, ExtractionConfig
     except ImportError as e:
-        raise ImportError("xberg/kreuzberg not installed — `pipx inject lode kreuzberg` "
+        raise ImportError("xberg/kreuzberg not installed — `pipx inject klode kreuzberg` "
                           "(needs the tesseract binary too)") from e
     r = extract_file_sync(str(pdf), config=ExtractionConfig(force_ocr=True))
     return r.content or ""
@@ -81,7 +81,7 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
 
 
 def _docling_remote(pdf: Path, endpoint: str) -> str:
-    """Convert via a docling-serve endpoint (the GPU lives on the server; lode stays zero-dep).
+    """Convert via a docling-serve endpoint (the GPU lives on the server; klode stays zero-dep).
     Returns the document's markdown. Network/HTTP failure raises OSError and a malformed/oversized
     response raises RuntimeError, so the escalation loop degrades to the best local tier instead of
     crashing."""
@@ -117,8 +117,8 @@ def _docling(pdf: Path, lang: str = "eng") -> str:
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
         from docling.datamodel.base_models import InputFormat
     except ImportError as e:
-        raise ImportError("docling not installed — set $LODE_DOCLING_URL to a docling-serve "
-                          "endpoint, or `pipx inject lode docling` (heavy: torch + models).") from e
+        raise ImportError("docling not installed — set $KLODE_DOCLING_URL to a docling-serve "
+                          "endpoint, or `pipx inject klode docling` (heavy: torch + models).") from e
     opts = PdfPipelineOptions()
     opts.do_ocr = True
     try:

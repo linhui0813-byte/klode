@@ -15,7 +15,7 @@ from .config import Config
 # The scaffold marker: everything ABOVE it is machine-managed front-matter + pointers;
 # everything BELOW is the hand-written Thin (L1) / Full (L2) body the generator must
 # never overwrite. Verbatim from the original design — the anti-drift contract.
-MARK = "<!-- scaffold: managed by lode — edit Thin/Full below the marker by hand -->"
+MARK = "<!-- scaffold: managed by klode — edit Thin/Full below the marker by hand -->"
 
 # A locating anchor is the SAME thing written several ways, under two key names:
 #   (grep: `phrase`)     — key + backtick phrase       — source cards + syntheses
@@ -82,7 +82,7 @@ def fm_get(fm: str, key: str) -> str | None:
 
 # Recognize the marker written by ANY generation of the generator, not just our own literal.
 # The original doxai scripts wrote "managed by build_library_cards.py"; matching only the exact
-# lode string made `body_after_marker` miss a real hand-written body, and build then overwrote
+# klode string made `body_after_marker` miss a real hand-written body, and build then overwrote
 # 128 grounded cards with stubs. Match the stable frame; any tool name may sit between.
 MARK_RE = re.compile(r"<!-- scaffold: managed by .+? — edit Thin/Full below the marker by hand -->")
 
@@ -139,7 +139,7 @@ CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 def _norm(s: str) -> str:
     """Collapse whitespace + control bytes to single spaces; fold smart quotes/dashes. The final
     collapse is `" ".join(split())`, measured ~2x faster than an `\\s+` regex sub over a whole
-    source — this is the `lode check` hotspot, run over every source (tens of MB) on every run.
+    source — this is the `klode check` hotspot, run over every source (tens of MB) on every run.
     (`.replace` for the rare smart-quote chars beats `str.translate`, which pays a per-char lookup.)"""
     s = CTRL_RE.sub(" ", s)
     for k, v in _TYPO.items():
@@ -207,7 +207,7 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
     flat, nohy = hays
     if m.regex:
         # A `grep-re:` pattern is the author's OWN, run against their own source — a catastrophic-
-        # backtracking pattern can only hang the author's own `lode check`, never a third party.
+        # backtracking pattern can only hang the author's own `klode check`, never a third party.
         # stdlib `re` has no timeout, and a per-anchor thread/subprocess guard would be a heavy price
         # against the zero-dependency ethos for a self-inflicted risk; left as a documented limitation.
         try:

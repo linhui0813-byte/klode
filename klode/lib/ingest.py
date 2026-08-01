@@ -3,7 +3,7 @@
 The orchestrator: route the file to a format handler (PDF/EPUB/DOCX/HTML/TXT), extract raw
 text, guard against an empty/garbage extraction, run the FULL normalize pipeline (ligatures,
 control-byte repair, page-furniture, de-wrap, ascii-ligatures), write the source, and record
-provenance. Extraction itself lives in `lode.lib.formats`; this module owns the pipeline around
+provenance. Extraction itself lives in `klode.lib.formats`; this module owns the pipeline around
 it. Corruption scoring stays importable here for backward compatibility."""
 from __future__ import annotations
 
@@ -175,6 +175,6 @@ def run(cfg: Config, args) -> int:
     print(f"  furniture : {r.furniture_stripped} lines stripped")
     print(f"  source  : {r.dest}")
     print(f"  provenance: {r.provenance}")
-    print("\nnext: add a BIBLIOGRAPHY row, `lode normalize`, `lode build`, "
-          "write the grep-anchored Thin/Full, then `lode check`")
+    print("\nnext: add a BIBLIOGRAPHY row, `klode normalize`, `klode build`, "
+          "write the grep-anchored Thin/Full, then `klode check`")
     return 0

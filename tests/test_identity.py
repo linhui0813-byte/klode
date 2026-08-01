@@ -9,7 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib.config import Config, ConfigError, slugify   # noqa: E402
+from klode.lib.config import Config, ConfigError, slugify   # noqa: E402
 
 _BASE = 'dir = "library"\ncards = "cards"\nshelves = ["books"]\n'
 _TAIL = "[bibliography]\nenabled = false\n"
@@ -24,7 +24,7 @@ def _write(root: Path, library_extra: str = "") -> Path:
 
 class Identity(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-id-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-id-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

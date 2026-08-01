@@ -16,9 +16,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lode.lib.config import Config
-from lode.lib import query as Q
-from lode.lib.common import card_files, fm_get, front_matter, read
+from klode.lib.config import Config
+from klode.lib import query as Q
+from klode.lib.common import card_files, fm_get, front_matter, read
 
 
 def est_tokens(s: str) -> int:

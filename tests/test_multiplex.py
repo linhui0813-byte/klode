@@ -13,10 +13,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import mcp_server as mcp                # noqa: E402
-from lode.lib import registry, services               # noqa: E402
-from lode.lib.config import Config                    # noqa: E402
-from lode.lib.pool import KBPool                       # noqa: E402
+from klode.lib import mcp_server as mcp                # noqa: E402
+from klode.lib import registry, services               # noqa: E402
+from klode.lib.config import Config                    # noqa: E402
+from klode.lib.pool import KBPool                       # noqa: E402
 
 FIX1 = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"    # id kb-fixture, dim "pacing"
 FIX2 = REPO / "tests" / "fixtures" / "kb-fixture-2" / "library.toml"  # id kb-fixture-2, dim "cadence"
@@ -33,7 +33,7 @@ def _call(pool, name, arguments, mid=1):
 
 class Multiplex(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-mux-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-mux-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

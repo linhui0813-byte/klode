@@ -8,9 +8,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import cli, opspec                   # noqa: E402
-from lode.lib import mcp_server as mcp            # noqa: E402
-from lode.lib.core import CapabilityStatus         # noqa: E402
+from klode.lib import cli, opspec                   # noqa: E402
+from klode.lib import mcp_server as mcp            # noqa: E402
+from klode.lib.core import CapabilityStatus         # noqa: E402
 
 
 def _cli_subcommands() -> set[str]:

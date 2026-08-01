@@ -1,4 +1,4 @@
-"""Proof suite for lodlib. Stdlib unittest, zero dependencies.
+"""Proof suite for klode. Stdlib unittest, zero dependencies.
 
 Run:  python3 -m unittest discover -s tests   (from the repo root)
 """
@@ -15,12 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lode.lib import cli, entail, mcp_server, query
-from lode.lib.build import build
-from lode.lib.check import check
-from lode.lib.common import (Marker, body_after_marker, front_matter, grep_markers,
+from klode.lib import cli, entail, mcp_server, query
+from klode.lib.build import build
+from klode.lib.check import check
+from klode.lib.common import (Marker, body_after_marker, front_matter, grep_markers,
                            haystacks, occurs, parse_markers, resolve)
-from lode.lib.config import Config, ConfigError
+from klode.lib.config import Config, ConfigError
 
 
 def _mcp_text(cfg, tool, args):
@@ -28,7 +28,7 @@ def _mcp_text(cfg, tool, args):
     `[kb]` provenance tag stripped — so these pre-tag characterization helpers compare content."""
     import json as _json
     import re as _re
-    from lode.lib.pool import KBPool
+    from klode.lib.pool import KBPool
     buf = io.StringIO()
     with redirect_stdout(buf):
         mcp_server.handle(KBPool.single(cfg), {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -75,7 +75,7 @@ def set_thin(cfg: Config, sid: str, thin_body: str) -> None:
 
 class TempLibTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-test-"))
         self.cfg_path = make_library(self.tmp)
         self.cfg = Config.load(self.cfg_path)
 
@@ -182,7 +182,7 @@ class SynthesisFCheckTests(unittest.TestCase):
     goes unchecked and a fabricated quote slips through as green."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-fw-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-fw-test-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n"
@@ -228,7 +228,7 @@ class SynthesisFCheckTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class CopyrightGuardTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-git-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-git-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -264,14 +264,14 @@ class CommonTests(unittest.TestCase):
     def test_ingest_tier_selection(self):
         # auto trusts a clean text layer and never needs the OCR deps; a corrupted one
         # would escalate. Score the two extremes and check the decision boundary.
-        from lode.lib.ingest import corruption_score, CLEAN_THRESHOLD
+        from klode.lib.ingest import corruption_score, CLEAN_THRESHOLD
         clean = "the regulation of narrative information is what mood aims at " * 40
         garbled = "the~ regulatIOn of narrative mfonnafion t~e Dist~nce de~ignated " * 40
         self.assertLess(corruption_score(clean), CLEAN_THRESHOLD)
         self.assertGreater(corruption_score(garbled), CLEAN_THRESHOLD)
 
     def test_strip_page_furniture(self):
-        from lode.lib.normalize import strip_page_furniture
+        from klode.lib.normalize import strip_page_furniture
         text = ("The narrative can also choose\n"
                 "13\n"
                 "to regulate the information.\n"
@@ -594,7 +594,7 @@ class RankingTests(unittest.TestCase):
     merely repeats the term (which the old raw `sum(count)` ranked backwards)."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-rank-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-rank-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[bibliography]\nenabled = false\n[copyright]\nguard = false\n", encoding="utf-8")
@@ -611,7 +611,7 @@ class RankingTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_short_on_point_card_outranks_long_diluted_one(self):
-        from lode.lib.query import search
+        from klode.lib.query import search
         hits, _ = search(self.cfg, ["mimesis"])
         self.assertEqual([h.id for h in hits][0], "short", msg=[(h.id, round(h.score, 3)) for h in hits])
 
@@ -637,7 +637,7 @@ class Round2MatcherTests(unittest.TestCase):
 
 class Round2ConfigTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-cfg2-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-cfg2-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -663,7 +663,7 @@ class Round2ConfigTests(unittest.TestCase):
 
 class Round2BuildTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-b2-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-b2-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             '[bibliography]\nenabled = true\npath = "BIBLIOGRAPHY.md"\n[copyright]\nguard = false\n',
@@ -714,7 +714,7 @@ class Round2BodyTests(TempLibTest):
 
 class Round2IngestTests(TempLibTest):
     def test_ingest_rejects_traversing_id(self):
-        from lode.lib.ingest import ingest
+        from klode.lib.ingest import ingest
         (self.tmp / "d.pdf").write_bytes(b"%PDF-1.4 dummy")
         with self.assertRaises(ValueError):              # was written outside the library tree
             ingest(self.cfg, self.tmp / "d.pdf", "books", card_id="../../../tmp/escape")
@@ -724,7 +724,7 @@ class ConsoleTests(unittest.TestCase):
     """`lib consult` / `lib diagnose` — the writer's craft console over the frameworks layer."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-console-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-console-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n[bibliography]\nenabled = false\n[copyright]\nguard = false\n",
@@ -851,7 +851,7 @@ class ConsultByNameTests(unittest.TestCase):
     """`lib consult` resolves an author name or a book title, not just a stem."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-byname-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-byname-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n[bibliography]\nenabled = false\n[copyright]\nguard = false\n",
@@ -924,7 +924,7 @@ class McpAudienceTests(unittest.TestCase):
     """MCP `consult_dimension` audience projection: writer / engine / full + section override."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-mcpaud-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-mcpaud-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n[bibliography]\nenabled = false\n[copyright]\nguard = false\n",
@@ -946,7 +946,7 @@ class McpAudienceTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _dim(self, **args):
-        from lode.lib import mcp_server
+        from klode.lib import mcp_server
         return _mcp_text(Config.load(self.tmp / "library.toml"), "consult_dimension",
                                                   {"dimension": "testcraft", **args})
 
@@ -982,7 +982,7 @@ class McpResolveTests(unittest.TestCase):
     """MCP parity: consult_framework/consult_dimension resolve an author name or book title."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-mcpres-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-mcpres-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n[bibliography]\nenabled = false\n[copyright]\nguard = false\n",
@@ -1016,11 +1016,11 @@ class McpResolveTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _fw(self, name):
-        from lode.lib import mcp_server
+        from klode.lib import mcp_server
         return _mcp_text(self.cfg, "consult_framework", {"name": name})
 
     def _dim(self, name):
-        from lode.lib import mcp_server
+        from klode.lib import mcp_server
         return _mcp_text(self.cfg, "consult_dimension", {"dimension": name})
 
     def test_framework_by_author_name(self):
@@ -1062,7 +1062,7 @@ class ResolutionParityTests(unittest.TestCase):
     """consult resolution + CLI/MCP parity fixes — query.resolve / query.diagnose."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-parity-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-parity-"))
         (self.tmp / "library.toml").write_text(
             '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
             "[frameworks]\nenabled = true\n[bibliography]\nenabled = false\n[copyright]\nguard = false\n",

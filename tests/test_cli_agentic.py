@@ -13,9 +13,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import cli, registry                # noqa: E402
-from lode.lib import mcp_server as mcp            # noqa: E402
-from lode.lib.pool import KBPool                   # noqa: E402
+from klode.lib import cli, registry                # noqa: E402
+from klode.lib import mcp_server as mcp            # noqa: E402
+from klode.lib.pool import KBPool                   # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 REAL = "Trim every clause the reader can infer"    # occurs in the fixture's brevity source
@@ -30,7 +30,7 @@ def _run(argv):
 
 class CliAgentic(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-cli-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-cli-"))
         self.reg = self.tmp / "reg.toml"
         self.reg.write_text(f'[[kb]]\nid = "fixture"\npath = "{FIX}"\n', encoding="utf-8")
 
@@ -90,7 +90,7 @@ class CliAgentic(unittest.TestCase):
         self.assertEqual(json.loads(out)["value"]["resolution"], "not-found")
 
     def test_global_registry_before_subcommand_is_not_clobbered(self):
-        # `lode --registry X kbs` must use X, not the subparser default
+        # `klode --registry X kbs` must use X, not the subparser default
         code, out, _ = _run(["--registry", str(self.reg), "--json", "kbs"])
         self.assertEqual(code, 0)
         self.assertIn("fixture", out)

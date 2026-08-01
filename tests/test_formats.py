@@ -1,4 +1,4 @@
-"""Multi-format ingestion — the `lode.lib.formats` package: the model + registry, each stdlib
+"""Multi-format ingestion — the `klode.lib.formats` package: the model + registry, each stdlib
 handler (txt/html/epub/docx), the PDF handler wrapping the tiered logic, the content-sniffing
 router, and the optional-tier escalation. All fixtures are real in-memory zip/html — the only
 mocks are the pdftotext subprocess and the lazy-import OCR seam (each paired with a skip-guarded
@@ -19,9 +19,9 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import formats                                    # noqa: E402
-from lode.lib.formats import _base, docx, epub, html, pdf, txt  # noqa: E402
-from lode.lib.formats._base import (Extraction, ExtractionError, UnsupportedFormat,  # noqa: E402
+from klode.lib import formats                                    # noqa: E402
+from klode.lib.formats import _base, docx, epub, html, pdf, txt  # noqa: E402
+from klode.lib.formats._base import (Extraction, ExtractionError, UnsupportedFormat,  # noqa: E402
                                     ZipBombError, ZipTraversalError)
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -113,7 +113,7 @@ class _FakeResp:                                            # a urlopen() contex
 
 class FormatsTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-fmt-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-fmt-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -149,7 +149,7 @@ class ModelRegistry(FormatsTest):
             self.assertIsInstance(h.priority, int)
 
     def test_import_pulls_in_no_backend(self):
-        code = "import lode.lib.formats, sys; print([m for m in " \
+        code = "import klode.lib.formats, sys; print([m for m in " \
                "('kreuzberg','docling','trafilatura','docx') if m in sys.modules])"
         out = __import__("subprocess").run([sys.executable, "-c", code], cwd=REPO,
                                            capture_output=True, text=True)

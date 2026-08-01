@@ -16,10 +16,10 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import cli, ingest                              # noqa: E402
-from lode.lib.config import Config                            # noqa: E402
-from lode.lib.formats import pdf                              # noqa: E402
-from lode.lib.formats._base import ExtractionError           # noqa: E402
+from klode.lib import cli, ingest                              # noqa: E402
+from klode.lib.config import Config                            # noqa: E402
+from klode.lib.formats import pdf                              # noqa: E402
+from klode.lib.formats._base import ExtractionError           # noqa: E402
 from tests.test_formats import make_docx, make_epub, _fake_run   # noqa: E402
 
 
@@ -43,7 +43,7 @@ def _prov_lines(cfg: Config):
 
 class PipelineTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-ing-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-ing-"))
         self.root = _make_lib(self.tmp)
         self.cfg = Config.load(self.root / "library.toml")
 
@@ -219,7 +219,7 @@ class CliRewiring(PipelineTest):
         src = self._src("n.txt", b"the narrative regulates information here today")
         code, out, err = _run(self._cfg_arg() + ["ingest", str(src), "--shelf", "books"])
         self.assertEqual(code, 0, err)
-        self.assertIn("lode normalize", out)
+        self.assertIn("klode normalize", out)
 
     def test_unknown_shelf_and_missing_file_error(self):
         src = self._src("a.txt", b"hello there text here")
@@ -231,7 +231,7 @@ class CliRewiring(PipelineTest):
 
 class NormalizeTables(unittest.TestCase):
     def test_process_preserves_markdown_tables(self):
-        from lode.lib import normalize
+        from klode.lib import normalize
         text = ("Here is a short intro line that\nwould normally reflow together.\n\n"
                 "| Quarter | Revenue |\n|---------|---------|\n| Q1 | 1200 |\n| Q2 | 1500 |\n\n"
                 "Closing prose here for the reader.\n")

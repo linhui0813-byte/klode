@@ -1,6 +1,6 @@
 """Shared types + safe-zip primitives for the format handlers.
 
-Imports ONLY stdlib and no OCR/parse backend at module load, so `import lode.lib.formats`
+Imports ONLY stdlib and no OCR/parse backend at module load, so `import klode.lib.formats`
 stays backend-free — the default test suite runs with zero optional packages installed.
 """
 from __future__ import annotations

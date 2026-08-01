@@ -2,14 +2,14 @@
 `lib.verify` — the un-fakeable-citation step that a plain-RAG reviewer cannot do.
 
 A criterion is trustworthy only if its cited source phrase actually resolves in a panel source. That
-check is lode's, not ours: we call the same literal-grep verifier the citation-rot linter uses.
+check is klode's, not ours: we call the same literal-grep verifier the citation-rot linter uses.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
-from lode import lib   # the public facade — this package never reaches into lode internals
+from klode import lib   # the public facade — this package never reaches into klode internals
 
 
 @dataclass(frozen=True)

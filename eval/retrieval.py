@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Retrieval efficacy harness — does `lib search` surface the RIGHT sources?
 
-This is the one lodlib "efficiency" the runtime numbers can't answer: a search that returns in
+This is the one klode "efficiency" the runtime numbers can't answer: a search that returns in
 19 ms but ranks the wrong card is useless. It scores the shipped BM25 ranker against a gold set
 of real questions (`eval/retrieval.jsonl`: each `q` + the hand-labelled `relevant` card ids) and
 A/Bs it against the pre-BM25 raw term-count ranking and the `--full` (L2-included) variant, on the
@@ -23,9 +23,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lode.lib.config import Config
-from lode.lib import query as Q
-from lode.lib.common import card_files, fm_get, front_matter, read
+from klode.lib.config import Config
+from klode.lib import query as Q
+from klode.lib.common import card_files, fm_get, front_matter, read
 
 _STOP = {"the", "and", "for", "are", "was", "with", "that", "this", "from", "into", "versus",
          "vs", "when", "does", "how", "what", "why", "who", "some", "more", "than", "its"}

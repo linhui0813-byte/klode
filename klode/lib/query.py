@@ -403,7 +403,7 @@ def resolve(cfg: Config, text: str) -> Resolution:
                             for m in matches))
         return Resolution("ambiguous", None, tuple(matches), note)
     hint = (f" Did you mean: {', '.join(m.name for m in matches)}?" if matches
-            else f"  ·  browse: `lode consult`   ·   search: `lode search {q}`")
+            else f"  ·  browse: `klode consult`   ·   search: `klode search {q}`")
     return Resolution("none", None, tuple(matches), f"no lens for {q!r}.{hint}")
 
 
@@ -491,7 +491,7 @@ class Verification:
 
 
 def verify(cfg: Config, card_id: str, phrase: str, *, max_lines: int = 10) -> Verification | None:
-    """Check a phrase against the card's source — the same matcher `lode check` uses.
+    """Check a phrase against the card's source — the same matcher `klode check` uses.
 
     `folded_only` means the phrase resolves across line/hyphenation folding but does
     not appear on any single raw line, so there is nothing literal to quote back.

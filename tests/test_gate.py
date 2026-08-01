@@ -11,8 +11,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-from lode import lib                                                    # noqa: E402
-from lode.gate import Criterion, FixtureJudge, ground, load_criteria, review_draft   # noqa: E402
+from klode import lib                                                    # noqa: E402
+from klode.gate import Criterion, FixtureJudge, ground, load_criteria, review_draft   # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "kb-fixture" / "library.toml"
 DIM = "pacing"

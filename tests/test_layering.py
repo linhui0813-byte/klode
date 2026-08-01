@@ -9,12 +9,12 @@ import ast
 import unittest
 from pathlib import Path
 
-PKG = Path(__file__).resolve().parent.parent / "lode" / "lib"
+PKG = Path(__file__).resolve().parent.parent / "klode" / "lib"
 ADAPTERS = {"cli", "mcp_server"}
 
 
 def _sibling_imports(path: Path) -> set[str]:
-    """Sibling `lodlib` modules this module imports — top-level AND inside functions (lazy)."""
+    """Sibling `klode` modules this module imports — top-level AND inside functions (lazy)."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     mods: set[str] = set()
     for node in ast.walk(tree):
@@ -24,7 +24,7 @@ def _sibling_imports(path: Path) -> set[str]:
             else:
                 mods.update(a.name for a in node.names)
         elif isinstance(node, ast.Import):
-            mods.update(a.name.split(".")[1] for a in node.names if a.name.startswith("lodlib."))
+            mods.update(a.name.split(".")[1] for a in node.names if a.name.startswith("klode."))
     return mods
 
 

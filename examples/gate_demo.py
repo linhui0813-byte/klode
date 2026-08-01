@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))   # a real deploy would `pip install lode`
+sys.path.insert(0, str(HERE.parent))   # a real deploy would `pip install klode`
 
-from lode import lib                                        # noqa: E402
-from lode.gate import FixtureJudge, review_draft         # noqa: E402
+from klode import lib                                        # noqa: E402
+from klode.gate import FixtureJudge, review_draft         # noqa: E402
 
 KB = HERE.parent / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 

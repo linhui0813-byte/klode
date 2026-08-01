@@ -1,8 +1,8 @@
 """Optional entailment check — the semantic second opinion the grep guard cannot give.
 
-`lode check` proves an anchor RESOLVES; it cannot prove the quoted span ENTAILS the card's
+`klode check` proves an anchor RESOLVES; it cannot prove the quoted span ENTAILS the card's
 claim, that qualifications were preserved, or that the source is credible. This module adds
-that missing check as an **opt-in, warn-only** layer (`lode check --entail`).
+that missing check as an **opt-in, warn-only** layer (`klode check --entail`).
 
 Two disciplines, both load-bearing, both drawn from the 2026 attribution literature:
 
@@ -16,8 +16,8 @@ Two disciplines, both load-bearing, both drawn from the 2026 attribution literat
 
 The engine is a small, pinned, greedy-decoded NLI/fact-check model (MiniCheck-Flan-T5-Large,
 770M, GPT-4-level fact-check at ~400x lower cost — or AlignScore). It ships behind the optional
-`[entail]` extra; the DEFAULT lode path stays zero-dependency. When the extra is absent,
-`lode check --entail` degrades to a clear NOTE and changes nothing — grep still gated the build.
+`[entail]` extra; the DEFAULT klode path stays zero-dependency. When the extra is absent,
+`klode check --entail` degrades to a clear NOTE and changes nothing — grep still gated the build.
 
 This module is import-safe with zero dependencies: the heavy model import happens lazily inside
 `load_backend`, never at module load. Everything above the backend (windowing, claim extraction,
@@ -120,7 +120,7 @@ def load_backend(model: str = DEFAULT_MODEL) -> EntailBackend:
     except ImportError as e:
         raise EntailUnavailable(
             "entailment checking needs the optional extra — the default path stays zero-dep:\n"
-            "    pip install 'lode[entail]'\n"
+            "    pip install 'klode[entail]'\n"
             f"(missing: {getattr(e, 'name', e)})") from e
 
     short = model.rsplit("/", 1)[-1]

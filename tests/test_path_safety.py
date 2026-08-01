@@ -11,8 +11,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import query                       # noqa: E402
-from lode.lib.config import Config               # noqa: E402
+from klode.lib import query                       # noqa: E402
+from klode.lib.config import Config               # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 
@@ -20,7 +20,7 @@ FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 class CardPathGuard(unittest.TestCase):
     def setUp(self):
         self.cfg = Config.load(FIX)
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-sec-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-sec-"))
         (self.tmp / "secret.md").write_text("# outside the KB\n", encoding="utf-8")  # exists via traversal only
 
     def tearDown(self):

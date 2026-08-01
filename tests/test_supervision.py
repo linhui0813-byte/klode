@@ -7,10 +7,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode import gate                                  # noqa: E402
-from lode.lib import check as check_mod, core, opspec, services   # noqa: E402
-from lode.lib.config import Config                     # noqa: E402
-from lode.lib.pool import KBPool                        # noqa: E402
+from klode import gate                                  # noqa: E402
+from klode.lib import check as check_mod, core, opspec, services   # noqa: E402
+from klode.lib.config import Config                     # noqa: E402
+from klode.lib.pool import KBPool                        # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"    # dim "pacing"
 

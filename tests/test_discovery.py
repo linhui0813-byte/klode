@@ -1,6 +1,6 @@
 """WI-4 / WI-5 — KB discovery is a passive catalog (list + describe), never a recommender.
 
-WI-4 covers the `lode kbs` CLI; WI-5 covers the `list_kbs` MCP tool. Both render the same registry
+WI-4 covers the `klode kbs` CLI; WI-5 covers the `list_kbs` MCP tool. Both render the same registry
 catalog (id + description) and must contain no ranking/recommendation language."""
 import contextlib
 import io
@@ -14,10 +14,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import cli                            # noqa: E402
-from lode.lib import mcp_server as mcp              # noqa: E402
-from lode.lib import registry                        # noqa: E402
-from lode.lib.pool import KBPool                     # noqa: E402
+from klode.lib import cli                            # noqa: E402
+from klode.lib import mcp_server as mcp              # noqa: E402
+from klode.lib import registry                        # noqa: E402
+from klode.lib.pool import KBPool                     # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 # words that would betray ranking/recommendation — a passive catalog must use none of them
@@ -33,7 +33,7 @@ def _run_cli(argv):
 
 class KbsCli(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-disc-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-disc-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -84,7 +84,7 @@ class ListKbsMcp(unittest.TestCase):
     passive, and isolates a broken KB. Driven through the real handle() path."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-disc-mcp-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-disc-mcp-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

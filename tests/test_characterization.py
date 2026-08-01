@@ -1,6 +1,6 @@
 """Characterization suite — pins consult/diagnose behavior at the CLI (subprocess) and MCP (handler)
 boundary BEFORE the console refactor, so the refactor is provably behavior-preserving. Subprocess for
-the CLI exercises the real `python -m lodlib` entry point (catches import/packaging regressions);
+the CLI exercises the real `python -m klode` entry point (catches import/packaging regressions);
 handler-level for MCP pins the audience/section projection the shared console must reproduce.
 
 Assertions are behavioral (exit code + the distinguishing projected content), not full byte snapshots
@@ -20,9 +20,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib.config import Config
-from lode.lib import mcp_server as mcp
-from lode.lib.pool import KBPool
+from klode.lib.config import Config
+from klode.lib import mcp_server as mcp
+from klode.lib.pool import KBPool
 
 
 def _write_fixture(root: Path) -> Path:
@@ -59,13 +59,13 @@ def _write_fixture(root: Path) -> Path:
 
 
 class CliCharacterization(unittest.TestCase):
-    """`python -m lodlib` at the process boundary — the real entry point."""
+    """`python -m klode` at the process boundary — the real entry point."""
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp(prefix="lodlib-char-cli-"))
+        cls.tmp = Path(tempfile.mkdtemp(prefix="klode-char-cli-"))
         cls.cfg = _write_fixture(cls.tmp)
-        subprocess.run([sys.executable, "-m", "lode.lib", "-c", str(cls.cfg), "build"],
+        subprocess.run([sys.executable, "-m", "klode.lib", "-c", str(cls.cfg), "build"],
                        cwd=REPO, capture_output=True)
 
     @classmethod
@@ -73,7 +73,7 @@ class CliCharacterization(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def run_cli(self, *args):
-        p = subprocess.run([sys.executable, "-m", "lode.lib", "-c", str(self.cfg), *args],
+        p = subprocess.run([sys.executable, "-m", "klode.lib", "-c", str(self.cfg), *args],
                            cwd=REPO, capture_output=True, text=True)
         return p.returncode, p.stdout, p.stderr
 
@@ -137,7 +137,7 @@ class McpCharacterization(unittest.TestCase):
     """MCP tool handlers — the audience/section projection the shared console must reproduce."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-char-mcp-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-char-mcp-"))
         self.cfg = Config.load(_write_fixture(self.tmp))
 
     def tearDown(self):

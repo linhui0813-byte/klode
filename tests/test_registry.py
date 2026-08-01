@@ -9,15 +9,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import registry                       # noqa: E402
-from lode.lib.config import ConfigError             # noqa: E402
+from klode.lib import registry                       # noqa: E402
+from klode.lib.config import ConfigError             # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 
 
 class RegistryLoad(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-reg-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-reg-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -29,7 +29,7 @@ class RegistryLoad(unittest.TestCase):
         return p
 
     def _dot_lode(self, where: Path, body: str) -> Path:
-        d = where / ".lode"
+        d = where / ".klode"
         d.mkdir(parents=True, exist_ok=True)
         (d / "registry.toml").write_text(body, encoding="utf-8")
         return d / "registry.toml"
@@ -104,7 +104,7 @@ class RegistryLoad(unittest.TestCase):
 
 class RegistryDescribe(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lodlib-reg2-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-reg2-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

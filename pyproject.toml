@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]        # >=77 for PEP 639 SPDX license metadata
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
-version = { attr = "lode.lib.__version__" }   # single source: lode/lib/__init__.py
+version = { attr = "klode.lib.__version__" }   # single source: klode/lib/__init__.py
 
 [project]
-name = "lode"
+name = "klode"
 dynamic = ["version"]
 authors = [{ name = "Xiaolai Li" }]
-description = "A grounded knowledge system: an engine (lode.lib) and a supervising agent (lode.gate) over a corpus of knowledge bases."
+description = "A grounded knowledge system: an engine (klode.lib) and a supervising agent (klode.gate) over a corpus of knowledge bases."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []          # zero runtime dependencies — stdlib only
@@ -30,13 +30,13 @@ Repository = "https://github.com/xiaolai/lode"
 Issues = "https://github.com/xiaolai/lode/issues"
 
 [project.optional-dependencies]
-# `lode check --entail` only — the default path stays zero-dependency. Pulls a small NLI/fact-check
+# `klode check --entail` only — the default path stays zero-dependency. Pulls a small NLI/fact-check
 # model (MiniCheck-Flan-T5-Large, 770M) behind transformers+torch. Advisory, warn-only.
 entail = ["minicheck>=1.1"]
 
 [project.scripts]
-lode = "lode.lib.cli:main"
-lode-mcp = "lode.lib.mcp_server:main"
+klode = "klode.lib.cli:main"
+klode-mcp = "klode.lib.mcp_server:main"
 
 [tool.setuptools.packages.find]
-include = ["lode*"]      # auto-discover: a new subpackage (e.g. lode.lib.formats) is never dropped
+include = ["klode*"]      # auto-discover: a new subpackage (e.g. klode.lib.formats) is never dropped

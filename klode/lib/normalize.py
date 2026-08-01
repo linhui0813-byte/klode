@@ -343,7 +343,7 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
             res.skipped.append(f"outside library or not a .txt: {p}")
 
     backup_root = str(cfg.backup_dir) if cfg.backup_dir else os.path.join(
-        tempfile.gettempdir(), "lode-normalize-backups")
+        tempfile.gettempdir(), "klode-normalize-backups")
     # Each run gets its OWN dir, so a later run never overwrites an earlier run's pristine backup
     # and `prune_backups` (keep-newest-N) has distinct runs to prune. Was a constant `run` — a
     # second apply clobbered the original backup, making the change irreversible.

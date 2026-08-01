@@ -9,16 +9,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import registry                          # noqa: E402
-from lode.lib.config import Config, ConfigError        # noqa: E402
-from lode.lib.pool import KBPool                        # noqa: E402
+from klode.lib import registry                          # noqa: E402
+from klode.lib.config import Config, ConfigError        # noqa: E402
+from klode.lib.pool import KBPool                        # noqa: E402
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
 
 
 class Pool(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-pool-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-pool-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

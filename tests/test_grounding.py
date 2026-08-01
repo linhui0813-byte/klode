@@ -12,14 +12,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import core, services                   # noqa: E402
-from lode.lib.config import Config                     # noqa: E402
-from lode.lib.pool import KBPool                        # noqa: E402
+from klode.lib import core, services                   # noqa: E402
+from klode.lib.config import Config                     # noqa: E402
+from klode.lib.pool import KBPool                        # noqa: E402
 
 
 class Grounding(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="lode-grnd-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-grnd-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -90,13 +90,13 @@ class Grounding(unittest.TestCase):
         probe = (
             "import sys\n"
             "from pathlib import Path\n"
-            "from lode.lib.config import Config\n"
-            "from lode.lib import services\n"
-            "from lode.lib.pool import KBPool\n"
+            "from klode.lib.config import Config\n"
+            "from klode.lib import services\n"
+            "from klode.lib.pool import KBPool\n"
             "cfg = Config.load(Path('tests/fixtures/kb-fixture/library.toml'))\n"
             "services.execute(KBPool.single(cfg), 'verify',"
             " params={'card':'brevity','phrase':'Trim every clause the reader can infer'})\n"
-            "print('LEAK' if 'lode.lib.entail' in sys.modules else 'CLEAN')\n"
+            "print('LEAK' if 'klode.lib.entail' in sys.modules else 'CLEAN')\n"
         )
         p = subprocess.run([sys.executable, "-c", probe], cwd=REPO, capture_output=True, text=True)
         self.assertIn("CLEAN", p.stdout, p.stdout + p.stderr)

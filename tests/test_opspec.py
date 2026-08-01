@@ -1,4 +1,4 @@
-"""WI-3 — the operation registry (lode/lib/opspec.py) is the executable form of the spec. It must
+"""WI-3 — the operation registry (klode/lib/opspec.py) is the executable form of the spec. It must
 agree with dev-docs/SPEC-operations.md op-for-op, resolve every legacy MCP/CLI name, carry the right
 capability flags, and reject a malformed table."""
 import sys
@@ -8,8 +8,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from lode.lib import opspec                                    # noqa: E402
-from lode.lib.core import CapabilityStatus                     # noqa: E402
+from klode.lib import opspec                                    # noqa: E402
+from klode.lib.core import CapabilityStatus                     # noqa: E402
 from tests.test_spec_operations import SPEC, parse_ops, parse_aliases   # noqa: E402
 
 

@@ -2,7 +2,7 @@
 
 Maps a registry KB `id` to its lazily-loaded, cached `Config`. Built from `registry.load(...)`
 for multi-KB serving, or wrapped around a single already-loaded `Config` for legacy `--config`
-single-KB mode. Zero dependencies beyond stdlib + `lode.lib` internals; it imports no adapter
+single-KB mode. Zero dependencies beyond stdlib + `klode.lib` internals; it imports no adapter
 (`cli`/`mcp_server`), so the layering guard holds.
 
 A single-entry pool exposes its sole id as `default`; a multi-entry pool has no default (the

@@ -22,9 +22,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lode.lib.config import Config
-from lode.lib import check as C, query as Q, build as B
-from lode.lib.common import card_files, parse_markers, read, shelf_txts
+from klode.lib.config import Config
+from klode.lib import check as C, query as Q, build as B
+from klode.lib.common import card_files, parse_markers, read, shelf_txts
 
 
 def _median_ms(fn, n=7):
@@ -79,7 +79,7 @@ def real_corpus(cfg: Config) -> None:
     s = io.StringIO()
     pstats.Stats(pr, stream=s).sort_stats("cumulative").print_stats(8)
     for line in s.getvalue().splitlines():
-        if "lodlib" in line or "{method" in line or "function calls" in line:
+        if "klode" in line or "{method" in line or "function calls" in line:
             print("   " + line.strip())
 
 
@@ -88,7 +88,7 @@ def scaling() -> None:
     print(f"  {'cards':>6} {'check ms':>10} {'ms/card':>9} {'search ms':>10}")
     print("  " + "-" * 39)
     for n in (100, 500, 2000, 5000):
-        tmp = Path(tempfile.mkdtemp(prefix=f"lodlib-scale-{n}-"))
+        tmp = Path(tempfile.mkdtemp(prefix=f"klode-scale-{n}-"))
         try:
             cfg = Config.load(_synth_library(tmp, n))
             cm, *_ = _median_ms(lambda: C.check(cfg), n=3)
@@ -99,7 +99,7 @@ def scaling() -> None:
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="lodlib speed + scaling benchmark")
+    ap = argparse.ArgumentParser(description="klode speed + scaling benchmark")
     ap.add_argument("-c", "--config", help="library.toml (default: nearest)")
     ap.add_argument("--no-scaling", action="store_true", help="skip the synthetic sweep")
     args = ap.parse_args(argv)

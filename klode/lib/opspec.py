@@ -1,4 +1,4 @@
-"""lode/lib/opspec.py — the operation registry: the executable form of dev-docs/SPEC-operations.md.
+"""klode/lib/opspec.py — the operation registry: the executable form of dev-docs/SPEC-operations.md.
 
 One declarative `OpSpec` per canonical operation: its scope, capability, and its CLI + MCP
 projections (public names / compatibility aliases). This is the structural anti-drift spine — both
