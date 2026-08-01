@@ -1,51 +1,77 @@
 # klode
 
-A **klode** — a rich vein — of grounded, verifiable knowledge, and the machinery to encode it and to
-*supervise work* against it. Everything a claim asserts is anchored to a verbatim source, checked by a
-fail-closed linter, so the system can't quietly drift or hallucinate: **cite, don't recall.**
+A **klode** — a rich vein — of grounded, verifiable knowledge, with the machinery to encode it and to
+*supervise work* against it. Every claim is anchored to a verbatim source and checked by a fail-closed
+linter, so the system can't quietly drift or hallucinate: **cite, don't recall.**
 
-Three components, one repo:
-
-```
-klode/
-  klode/
-    lib/       # the ENGINE (Loop A) — a grep-grounded, level-of-zoom knowledge library
-               #   + a citation-rot linter. Zero runtime deps. Import: `klode.lib`; CLI: `klode`.
-    gate/      # the SUPERVISOR (Loop B) — review_draft: score a draft against grounded criteria
-               #   and issue a Cooper Go/Recycle verdict whose every cited defect is verified
-               #   through klode.lib.verify (a plain-RAG judge cannot do that). Import: `klode.gate`.
-  corpus/
-    kb-01-storycraft/   # the first knowledge base (narratology / craft / worldbuilding)
-    kb-02-…/            # more KBs — the engine runs per-KB via `-c <kb>/library.toml`
-  eval/        # retrieval / token / benchmark harnesses for the engine
-  examples/    # examples/gate_demo.py — the supervisor over kb-01
-  dev-docs/    # the design record: the two-loop architecture, plans, reviews, SPEC.md
-```
+Zero runtime dependencies — Python 3.11+, standard library only.
 
 ## The two loops
 
 - **Loop A — encode expertise** (`klode.lib`): turn sources into cited, retrievable knowledge. Every
   card claim carries a verbatim `(grep: …)` anchor; `klode check` fails if any citation stops resolving.
 - **Loop B — supervise work** (`klode.gate`): submit a draft, score it against criteria loaded from a
-  KB's craft layer, and return **Go / Recycle** — each cited defect grounded through `klode.lib.verify`,
-  so the judge's citations are un-fakeable.
+  knowledge base's craft layer, and return **Go / Recycle** — each cited defect grounded through
+  `klode.lib.verify`, so the judge's citations are un-fakeable. The boundary is enforced: `klode.gate`
+  consumes only the `klode.lib` public API, never its internals.
 
-The boundary is enforced: `klode.gate` consumes only the `klode.lib` public API (facade), never its
-internals (`tests/test_layering.py` guards it).
-
-## Quickstart
+## Install
 
 ```bash
-klode -c corpus/kb-01-storycraft/library.toml check          # validate a KB (citation-rot linter)
-klode -c corpus/kb-01-storycraft/library.toml consult worldbuilding   # read a craft lens
-python examples/gate_demo.py                                # supervise a draft against kb-01
-python -m unittest discover -s tests                        # the full suite (153 tests)
+pip install klode              # once published
+# or from a source checkout:
+pipx install -e .              # provides the `klode` and `klode-mcp` commands
 ```
+
+## Three surfaces over one engine
+
+A knowledge base is a `library.toml` plus a corpus of cited cards. Point klode at one with `-c`, or
+register several in a manifest and address them by id (`--kb <id>` / `--registry`).
+
+**CLI** — `klode`:
+
+```bash
+klode -c path/to/library.toml check                 # citation-rot linter (exit 1 on any broken citation)
+klode -c path/to/library.toml search pacing         # retrieval over the cards
+klode -c path/to/library.toml consult brevity       # read a craft lens
+klode -c path/to/library.toml verify brevity "the exact quote"   # prove a quote against its source
+klode ingest paper.pdf --shelf papers               # ingest a source -> clean, grep-ready text
+klode kbs                                            # list the KBs in a registry
+```
+
+Add `--json` to any read verb for machine-readable output (the same structured result the MCP renders).
+
+**MCP server** — `klode-mcp` (stdio): exposes the read/verify surface to an agent — `list_kbs`,
+`search_sources`, `consult_dimension`, `consult_framework`, `zoom_card`, `verify_quote`, `diagnose`,
+`list_lenses`. Serves one KB (`-c`) or many (`--registry`), and every grounded result names its KB.
+
+**Library** — `import klode.lib`: the stable public-API facade — `verify`, `search`, `consult`,
+`resolve`, `diagnose`, `Config`. Cheap to import; pulls in no frontends or optional backends.
+
+## Ingestion — any format to grep-ready text
+
+`klode ingest` detects the format by content signature (not the extension) and converges every source
+on one clean-text pipeline: **PDF, EPUB, DOCX, HTML/XHTML, TXT**. EPUB/DOCX/HTML/TXT are pure stdlib;
+only PDF's OCR tiers are optional. For table-heavy or scanned PDFs, point `$KLODE_DOCLING_URL` at a
+[docling-serve](https://github.com/docling-project/docling-serve) endpoint (the GPU runs server-side —
+klode stays dependency-free) and pass `--tier docling`.
+
+## Architecture
+
+One operations registry projects a single core to both surfaces (CLI + MCP), so they can differ in
+formatting but never in behaviour. Every grounded result carries structured provenance (which KB,
+which source, which policy). See `dev-docs/` for the design record and `SPEC-operations.md` for the
+machine-readable operation table.
 
 ## Status
 
-- `klode.lib` — solid: 145 tests, a stable public-API facade, an AST layering guard, clean-venv wheel smoke.
-- `klode.gate` — a **walking skeleton** (8 tests): the chain and the un-fakeable-citation mechanism are
-  proven; the rubric **judge is a stub** (`FixtureJudge`) — the real LLM judge (G-Eval two-step,
-  debiased, calibrated against a human gold set) plugs into the `Judge` protocol. Calibration is the
-  next real build. See `dev-docs/`.
+`0.2.0` — beta. The engine (`klode.lib`) is solid: **397 tests**, a stable public-API facade, an AST
+layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
+dependencies. `klode.gate` (Loop B) is a walking skeleton — the un-fakeable-citation mechanism is
+proven, but the rubric **judge is a stub** (`FixtureJudge`); a real LLM judge plugs into the `Judge`
+protocol. The optional entailment check (`klode check --entail`) pulls a small NLI model behind
+`klode[entail]` and is advisory, warn-only.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
