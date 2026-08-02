@@ -20,13 +20,20 @@ class CapabilityStatus(str, Enum):
 
 
 class Resolution(str, Enum):
-    """A grounding result records textual OCCURRENCE, never claim truth/entailment."""
+    """A grounding result records textual OCCURRENCE, never claim truth/entailment.
+
+    The freshness/review states (SOURCE_STALE, SOURCE_UNSTAMPED, REVIEW_EXPIRED, REVIEW_DATE_INVALID)
+    are produced only by the structured `verify_evidence` grounding path — the occurrence-only
+    `verify` op never emits them, so its adapters (CLI/MCP) see the original six."""
     FOUND = "found"
     AMBIGUOUS = "ambiguous"
     FOLDED_ONLY = "folded-only"
     SOURCE_STALE = "source-stale"
     SOURCE_NOT_INSTALLED = "source-not-installed"
     NOT_FOUND = "not-found"
+    SOURCE_UNSTAMPED = "source-unstamped"          # freshness required but no source_sha256 stored
+    REVIEW_EXPIRED = "review-expired"              # review_by date has passed
+    REVIEW_DATE_INVALID = "review-date-invalid"    # review_by is not an ISO date
 
 
 @dataclass(frozen=True)

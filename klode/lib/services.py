@@ -164,6 +164,38 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
                             lines=(tuple(v.lines) if v else ()), source_sha=cur_sha)
 
 
+def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
+                    today=None) -> core.EvidenceHit:
+    """The structured, freshness- AND review-aware grounding verifier — stricter than the
+    occurrence-only `verify` op, and the one a supervising gate must use so a stale, unstamped, or
+    review-expired source cannot ground a criterion.
+
+    Layered on `_svc_verify` (which already yields SOURCE_NOT_INSTALLED / SOURCE_STALE / NOT_FOUND /
+    AMBIGUOUS / FOLDED_ONLY / FOUND). Only when the phrase actually resolves does the extra policy
+    apply, in order: review_by validity → review_by expiry → (optional) source-stamp presence. The
+    review-date rule matches `check.py` freshness exactly (`date.fromisoformat(rb) < today`)."""
+    from datetime import date
+    hit = _svc_verify(cfg, {"card": card, "phrase": phrase})
+    if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY):
+        return hit                                            # already a non-grounding outcome
+    p = query.card_path(cfg, card)
+    fm = common.front_matter(common.read(p)) if p else {}
+    rb = common.fm_get(fm, "review_by")
+    if rb and rb.strip():
+        try:
+            expires = date.fromisoformat(rb.strip())
+        except ValueError:
+            return core.EvidenceHit(core.Resolution.REVIEW_DATE_INVALID, phrase, card=card,
+                                    rel=hit.rel, source_sha=hit.source_sha)
+        if expires < (today or date.today()):
+            return core.EvidenceHit(core.Resolution.REVIEW_EXPIRED, phrase, card=card,
+                                    rel=hit.rel, source_sha=hit.source_sha)
+    if require_stamp and not _stored_sha(cfg, card):
+        return core.EvidenceHit(core.Resolution.SOURCE_UNSTAMPED, phrase, card=card,
+                                rel=hit.rel, source_sha=hit.source_sha)
+    return hit
+
+
 # ---------------------------------------------------------------------------
 # supervision service — review a draft. EXPERIMENTAL: the judge is a stub, so the result MUST
 # self-label (never an authoritative Go/Recycle from a fake judge).

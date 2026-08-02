@@ -16,6 +16,8 @@ re-exported here (the name would shadow the `klode.lib.check` module).
 """
 from .config import Config, ConfigError
 from .console import ConsultRequest, ConsultResult, consult
+from .core import EvidenceHit
+from .core import Resolution as EvidenceResolution   # the grounding-outcome enum (distinct from query.Resolution)
 from .query import (
     Resolution,        # a resolved lookup (outcome + candidates + canonical message)
     Verification,      # verify()'s result
@@ -24,8 +26,19 @@ from .query import (
     framework,         # load one thinker's framework
     resolve,           # free-text name -> a lens
     search,            # BM25 retrieval over cards
-    verify,            # check a quote against its source — the un-fakeable-citation primitive
+    verify,            # check a quote against its source — the occurrence-only citation primitive
 )
+
+
+def verify_evidence(cfg, card, phrase, *, require_stamp=False, today=None):
+    """Structured, freshness- and review-aware grounding — the verifier a supervising gate must use.
+
+    Unlike `verify` (occurrence only), a SOURCE_STALE / SOURCE_UNSTAMPED / REVIEW_EXPIRED /
+    REVIEW_DATE_INVALID source does NOT resolve to FOUND, so it cannot ground a criterion. Returns an
+    `EvidenceHit` whose `.resolution` is an `EvidenceResolution`. `services` is imported lazily so
+    plain `import klode.lib` stays cheap."""
+    from . import services
+    return services.verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
 
 __version__ = "0.2.0"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
@@ -34,6 +47,7 @@ __all__ = [
     "consult", "ConsultRequest", "ConsultResult",
     "resolve", "Resolution",
     "verify", "Verification",
+    "verify_evidence", "EvidenceHit", "EvidenceResolution",
     "dimension", "framework", "diagnose", "search",
     "__version__",
 ]
