@@ -58,8 +58,11 @@ def _make_kb(root: Path, *, moves, source_text, stamp=False, review_by=None,
         f"`library/books/{cid}.txt` — grep it to verify.\n", encoding="utf-8")
     (lib_dir / "cards" / "INDEX.md").write_text(f"# Card Index\n\n- [{cid}]({cid}.md)\n", encoding="utf-8")
 
-    bullets = "\n".join(
-        f"- **{name}.** " + " ".join(f"(grep: `{p}`)" for p in phrases) for name, phrases in moves)
+    def _bullet(m):
+        name, phrases = m[0], m[1]
+        prose = (m[2] + " ") if len(m) > 2 else ""       # optional guidance prose (3-tuple)
+        return f"- **{name}.** {prose}" + " ".join(f"(grep: `{p}`)" for p in phrases)
+    bullets = "\n".join(_bullet(m) for m in moves)
     (lib_dir / "frameworks" / "_syntheses" / f"{dim}.md").write_text(
         f"---\ntitle: Synthesis — {dim}\nstatus: canonical\ndimension: {dim}\ncards: [{cid}]\n---\n\n"
         f"# Synthesis — {dim}\n\n**Core question:** test?\n\n## Craft\n\nintro.\n\n{bullets}\n",
@@ -161,6 +164,36 @@ class GateHardening(unittest.TestCase):
         self.assertEqual(go.decision, "Go")
         rec = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(2, "weak")))
         self.assertEqual(rec.decision, "Recycle")
+
+
+class EnrichedCriteria(unittest.TestCase):
+    """The criterion carries the move's prose (guidance) and its criticality — no longer just the
+    bold label + anchors. Closing the 'discarded prose' defect: a judge needs to know what a move
+    MEANS, not only its headline."""
+    FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
+
+    def test_guidance_is_captured_from_the_real_fixture(self):
+        cfg = lib.Config.load(self.FIX)
+        crit, _ = load_criteria(cfg, "pacing")
+        self.assertEqual(len(crit), 3)                              # backward-compatible criterion count
+        self.assertTrue(all(c.criticality == "required" for c in crit))
+        cut = next(c for c in crit if c.statement.startswith("Cut what the reader"))
+        self.assertIn("context", cut.guidance.lower())             # the explanation is retained
+        self.assertNotIn("grep", cut.guidance)                     # anchor markers stripped from guidance
+        self.assertNotIn("Trim every clause", cut.guidance)        # the anchor phrase itself is not prose
+
+    def test_criticality_defaults_required_and_reads_advisory_tag(self):
+        tmp = Path(tempfile.mkdtemp(prefix="klode-crit-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        cfg = lib.Config.load(_make_kb(
+            tmp, source_text="alpha here and beta here",
+            moves=[("Required move", ["alpha here"], "core rule"),
+                   ("Advisory move", ["beta here"], "nice to have [advisory]")]))
+        crit, _ = load_criteria(cfg, "craft")
+        by = {c.statement: c for c in crit}
+        self.assertEqual(by["Required move"].criticality, "required")
+        self.assertEqual(by["Advisory move"].criticality, "advisory")
+        self.assertEqual(by["Required move"].guidance, "core rule")
 
 
 if __name__ == "__main__":

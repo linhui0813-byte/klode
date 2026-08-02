@@ -1,8 +1,11 @@
 """Load a craft dimension's Craft-layer moves as gate criteria, and GROUND each one through
-`lib.verify` — the un-fakeable-citation step that a plain-RAG reviewer cannot do.
+`lib.verify_evidence` — the un-fakeable-citation step that a plain-RAG reviewer cannot do.
 
-A criterion is trustworthy only if its cited source phrase actually resolves in a panel source. That
-check is klode's, not ours: we call the same literal-grep verifier the citation-rot linter uses.
+A criterion is trustworthy only if its cited source phrase resolves — freshly and unambiguously — in
+a panel source. That check is klode's, not ours: the structured, freshness-aware grounding verifier.
+
+Each move carries more than a label: the bold head is the imperative `statement`, and the prose that
+follows it is the `guidance` a judge needs to score the move — it is captured, not discarded.
 """
 from __future__ import annotations
 
@@ -15,8 +18,10 @@ from klode import lib   # the public facade — this package never reaches into 
 @dataclass(frozen=True)
 class Criterion:
     id: str
-    statement: str                 # the move / what a draft should do
+    statement: str                 # the bold move — the imperative summary of what a draft should do
     phrases: tuple[str, ...]       # verbatim source phrases backing it (the anchors)
+    guidance: str = ""             # the move's prose — what it means / how to judge it (a judge needs this)
+    criticality: str = "required"  # "required" (gates the verdict) | "advisory" (feedback-only, future)
 
 
 @dataclass(frozen=True)
@@ -30,9 +35,17 @@ class Grounding:
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
 _GREP_RE = re.compile(r"grep:\s*`([^`]+)`")
+_GREP_MARKER = re.compile(r"\(\s*grep:.*?\)", re.S)     # a whole (grep: …) marker, to strip from guidance
+_ADVISORY = re.compile(r"\[advisory\]", re.I)          # an optional criticality tag on a move
 _PANEL_RE = re.compile(r"[\[\]]")
 _ANNOT_RE = re.compile(r"\s*\([^)]*\)")                 # a card annotation, e.g. `sternberg (cross-ref)`
 _BULLET_SPLIT = re.compile(r"\n(?=- \*\*)")            # split the Craft moves into whole bullets
+
+
+def _guidance(bullet_after_head: str) -> str:
+    """The move's human explanation: the bullet prose minus the anchor markers and the advisory tag."""
+    txt = _ADVISORY.sub("", _GREP_MARKER.sub("", bullet_after_head))
+    return " ".join(txt.split()).strip(" .—-")
 
 
 def _panel(cards: str) -> list[str]:
@@ -54,12 +67,16 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
     panel = _panel(res.view.cards)                      # from the consult view — no second load, no reparse
     crit: list[Criterion] = []
     for block in _BULLET_SPLIT.split(craft):            # a whole bullet, incl. wrapped continuation lines
-        head = _MOVE_HEAD.match(block.lstrip("\n"))
+        b = block.lstrip("\n")
+        head = _MOVE_HEAD.match(b)
         if not head:
             continue
-        phrases = tuple(_GREP_RE.findall(block))
+        phrases = tuple(_GREP_RE.findall(b))
         if phrases:                                     # a move with no anchor is not a gate criterion
-            crit.append(Criterion(f"C{len(crit) + 1}", head.group(1).strip().rstrip("."), phrases))
+            crit.append(Criterion(
+                f"C{len(crit) + 1}", head.group(1).strip().rstrip("."), phrases,
+                guidance=_guidance(b[head.end():]),
+                criticality="advisory" if _ADVISORY.search(b) else "required"))
     if not crit:
         raise ValueError(f"{dimension!r} Craft layer has no anchored moves — the gate cannot operate")
     return crit, panel
