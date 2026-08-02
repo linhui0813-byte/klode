@@ -196,5 +196,57 @@ class EnrichedCriteria(unittest.TestCase):
         self.assertEqual(by["Required move"].guidance, "core rule")
 
 
+class EvidenceContextOp(unittest.TestCase):
+    """verify_context returns the bounded surrounding source text a judge reads — not just the match
+    line — and is `usable=False` for any non-grounding outcome. Closes the 'verify returns no span'
+    gap, and is the automated version of validating that an anchor resolves to a real passage."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-ctx-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _cfg(self, **kw):
+        return lib.Config.load(_make_kb(self.tmp, **kw))
+
+    def test_context_window_includes_surrounding_lines(self):
+        src = "line one\nline two\nTHE ANCHOR PHRASE here\nline four\nline five"
+        cfg = self._cfg(moves=[("M", ["THE ANCHOR PHRASE"])], source_text=src)
+        ctx = lib.verify_context(cfg, "src1", "THE ANCHOR PHRASE", context_lines=1)
+        self.assertTrue(ctx.usable)
+        self.assertEqual(ctx.match_lines, (3,))
+        self.assertEqual((ctx.line_start, ctx.line_end), (2, 4))     # +/- 1 line around line 3
+        self.assertIn("line two", ctx.text)
+        self.assertIn("line four", ctx.text)
+        self.assertNotIn("line one", ctx.text)                       # bounded — not the whole source
+
+    def test_window_is_bounded(self):
+        src = "\n".join(["filler"] * 200 + ["needle here"] + ["filler"] * 200)
+        cfg = self._cfg(moves=[("M", ["needle here"])], source_text=src)
+        ctx = lib.verify_context(cfg, "src1", "needle here", context_lines=500, max_window=10)
+        self.assertLessEqual(ctx.line_end - ctx.line_start + 1, 10)  # capped regardless of context_lines
+
+    def test_folded_match_is_located(self):
+        # "hello world" split across a line break resolves folded-only (no match line); still windowed
+        cfg = self._cfg(moves=[("M", ["hello world"])], source_text="pre\nthe hello\nworld ok\npost")
+        ctx = lib.verify_context(cfg, "src1", "hello world")
+        self.assertEqual(ctx.resolution, R.FOLDED_ONLY)
+        self.assertTrue(ctx.usable)
+        self.assertIn("hello", ctx.text)
+        self.assertIn("world", ctx.text)
+
+    def test_failure_is_not_usable(self):
+        cfg = self._cfg(moves=[("M", ["present"])], source_text="present here")
+        ctx = lib.verify_context(cfg, "src1", "totally absent phrase")
+        self.assertEqual(ctx.resolution, R.NOT_FOUND)
+        self.assertFalse(ctx.usable)
+        self.assertEqual(ctx.text, "")
+
+    def test_stale_source_yields_no_span(self):
+        cfg = self._cfg(moves=[("M", ["anchor here"])], source_text="anchor here", stamp=True)
+        (self.tmp / "library" / "books" / "src1.txt").write_text("drifted", encoding="utf-8")
+        ctx = lib.verify_context(cfg, "src1", "anchor here")
+        self.assertEqual(ctx.resolution, R.SOURCE_STALE)
+        self.assertFalse(ctx.usable)
+
+
 if __name__ == "__main__":
     unittest.main()

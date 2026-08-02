@@ -148,6 +148,23 @@ class EvidenceHit:
         return self.resolution in (Resolution.FOUND, Resolution.FOLDED_ONLY)
 
 
+# --- EvidenceContext: a bounded source window around a grounded anchor (what a judge reads) ---
+@dataclass(frozen=True)
+class EvidenceContext:
+    """The occurrence-only guarantee, plus the surrounding source text a reviewer needs to judge a
+    claim against the book's actual words. `usable` is True only when the anchor resolves
+    (FOUND/FOLDED_ONLY); the window is bounded so it can never dump the whole (copyrighted) source."""
+    resolution: Resolution
+    card: str | None = None
+    rel: str | None = None
+    source_sha: str | None = None
+    usable: bool = False                     # resolution in (FOUND, FOLDED_ONLY) AND a span was located
+    line_start: int | None = None            # 1-indexed window bounds (None when no span located)
+    line_end: int | None = None
+    match_lines: tuple[int, ...] = ()        # the matched line numbers inside the window
+    text: str = ""                           # the bounded surrounding source text
+
+
 # --- ReviewResult: capability-gated supervision (never an authoritative stub verdict) ---
 @dataclass(frozen=True)
 class ReviewResult:

@@ -196,6 +196,48 @@ def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
     return hit
 
 
+def _locate_folded(text: str, phrase: str) -> tuple[int, int] | None:
+    """Best-effort 1-indexed (start,end) line span for a phrase that resolved only across line/space
+    folding, so it has no single matched line. Matches the phrase's words separated by any run of
+    whitespace (covers the common line-break fold); returns None if it cannot be placed."""
+    import re
+    words = [re.escape(w) for w in phrase.split() if w]
+    if not words:
+        return None
+    m = re.search(r"\s+".join(words), text, re.IGNORECASE)
+    if not m:
+        return None
+    return text.count("\n", 0, m.start()) + 1, text.count("\n", 0, m.end()) + 1
+
+
+def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_window: int = 40,
+                   require_stamp: bool = False, today=None) -> core.EvidenceContext:
+    """The evidence-context op: a grounding result PLUS the bounded surrounding source text a judge
+    reads to score a claim against the book's own words. Built on `verify_evidence`, so a stale,
+    unstamped, or review-expired source is `usable=False`. The window is centered on the matched
+    lines (or a best-effort locate for a folded match) and capped at `max_window` lines."""
+    hit = verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
+    base = dict(resolution=hit.resolution, card=card, rel=hit.rel, source_sha=hit.source_sha)
+    if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY):
+        return core.EvidenceContext(**base)                          # not usable: no span
+    src = query.source_of(cfg, card)
+    if src is None or not src.installed:
+        return core.EvidenceContext(**base)
+    lines = src.path.read_text(encoding="utf-8", errors="replace").splitlines()
+    match_nums = tuple(n for n, _ in hit.lines)
+    if not match_nums:                                               # folded match: locate the span
+        span = _locate_folded("\n".join(lines), phrase)
+        if span is None:
+            return core.EvidenceContext(usable=True, **base)         # resolves, but window not locatable
+        match_nums = tuple(range(span[0], span[1] + 1))
+    lo = max(1, min(match_nums) - context_lines)
+    hi = min(len(lines), max(match_nums) + context_lines)
+    if hi - lo + 1 > max_window:                                    # bound the window (copyright + tokens)
+        hi = lo + max_window - 1
+    return core.EvidenceContext(usable=True, line_start=lo, line_end=hi, match_lines=match_nums,
+                                text="\n".join(lines[lo - 1:hi]), **base)
+
+
 # ---------------------------------------------------------------------------
 # supervision service — review a draft. EXPERIMENTAL: the judge is a stub, so the result MUST
 # self-label (never an authoritative Go/Recycle from a fake judge).
