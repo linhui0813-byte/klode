@@ -165,10 +165,12 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
 
 
 def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
-                    today=None) -> core.EvidenceHit:
+                    today: "date | None" = None) -> core.EvidenceHit:
     """The structured, freshness- AND review-aware grounding verifier — stricter than the
-    occurrence-only `verify` op, and the one a supervising gate must use so a stale, unstamped, or
-    review-expired source cannot ground a criterion.
+    occurrence-only `verify` op. A source that is stale (stamped hash drifted) or past its
+    `review_by` date does NOT ground; an UNSTAMPED source grounds unless `require_stamp=True` (a
+    supervising gate should set that). `superseded_by` is NOT enforced here — it is an advisory
+    re-point signal (check H WARN), not a grounding gate.
 
     Layered on `_svc_verify` (which already yields SOURCE_NOT_INSTALLED / SOURCE_STALE / NOT_FOUND /
     AMBIGUOUS / FOLDED_ONLY / FOUND). Only when the phrase actually resolves does the extra policy
@@ -187,7 +189,7 @@ def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
         except ValueError:
             return core.EvidenceHit(core.Resolution.REVIEW_DATE_INVALID, phrase, card=card,
                                     rel=hit.rel, source_sha=hit.source_sha)
-        if expires < (today or date.today()):
+        if expires < (date.today() if today is None else today):
             return core.EvidenceHit(core.Resolution.REVIEW_EXPIRED, phrase, card=card,
                                     rel=hit.rel, source_sha=hit.source_sha)
     if require_stamp and not _stored_sha(cfg, card):
@@ -199,23 +201,30 @@ def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
 def _locate_folded(text: str, phrase: str) -> tuple[int, int] | None:
     """Best-effort 1-indexed (start,end) line span for a phrase that resolved only across line/space
     folding, so it has no single matched line. Matches the phrase's words separated by any run of
-    whitespace (covers the common line-break fold); returns None if it cannot be placed."""
+    whitespace (the common line-break fold) — case-SENSITIVELY, to match the literal resolver rather
+    than locate a different-case occurrence. Returns None if it cannot be placed (hyphenation and
+    smart-quote folds are not reconstructed here; the caller treats an unlocatable span as unusable)."""
     import re
-    words = [re.escape(w) for w in phrase.split() if w]
+    words = [re.escape(w) for w in phrase.split()]           # str.split() never yields empty tokens
     if not words:
         return None
-    m = re.search(r"\s+".join(words), text, re.IGNORECASE)
+    m = re.search(r"\s+".join(words), text)                  # case-sensitive, like the literal matcher
     if not m:
         return None
     return text.count("\n", 0, m.start()) + 1, text.count("\n", 0, m.end()) + 1
 
 
 def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_window: int = 40,
-                   require_stamp: bool = False, today=None) -> core.EvidenceContext:
+                   require_stamp: bool = False, today: "date | None" = None) -> core.EvidenceContext:
     """The evidence-context op: a grounding result PLUS the bounded surrounding source text a judge
     reads to score a claim against the book's own words. Built on `verify_evidence`, so a stale,
-    unstamped, or review-expired source is `usable=False`. The window is centered on the matched
-    lines (or a best-effort locate for a folded match) and capped at `max_window` lines."""
+    unstamped (when required), or review-expired source is `usable=False`. The window is at most
+    `max_window` lines and is ALWAYS positioned to contain the match; it is not a whole-source dump
+    for large sources, but for a source shorter than the window the whole (small) source is returned."""
+    if not isinstance(context_lines, int) or isinstance(context_lines, bool) or context_lines < 0:
+        raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
+    if not isinstance(max_window, int) or isinstance(max_window, bool) or max_window < 1:
+        raise ValueError(f"max_window must be a positive int, got {max_window!r}")
     hit = verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
     base = dict(resolution=hit.resolution, card=card, rel=hit.rel, source_sha=hit.source_sha)
     if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY):
@@ -228,12 +237,15 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
     if not match_nums:                                               # folded match: locate the span
         span = _locate_folded("\n".join(lines), phrase)
         if span is None:
-            return core.EvidenceContext(usable=True, **base)         # resolves, but window not locatable
-        match_nums = tuple(range(span[0], span[1] + 1))
-    lo = max(1, min(match_nums) - context_lines)
-    hi = min(len(lines), max(match_nums) + context_lines)
-    if hi - lo + 1 > max_window:                                    # bound the window (copyright + tokens)
-        hi = lo + max_window - 1
+            return core.EvidenceContext(**base)                      # resolves but not locatable -> unusable
+        match_nums = span                                            # (start, end) — not a materialized range
+    m_lo, m_hi = min(match_nums), max(match_nums)
+    lo = max(1, m_lo - context_lines)
+    hi = min(len(lines), m_hi + context_lines)
+    if hi - lo + 1 > max_window:                                    # cap, but keep the match line inside
+        lead = min(context_lines, max_window - 1)                   # bounded before-context
+        lo = max(1, m_lo - lead)
+        hi = min(len(lines), lo + max_window - 1)
     return core.EvidenceContext(usable=True, line_start=lo, line_end=hi, match_lines=match_nums,
                                 text="\n".join(lines[lo - 1:hi]), **base)
 

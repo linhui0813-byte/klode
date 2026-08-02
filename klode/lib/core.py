@@ -22,9 +22,9 @@ class CapabilityStatus(str, Enum):
 class Resolution(str, Enum):
     """A grounding result records textual OCCURRENCE, never claim truth/entailment.
 
-    The freshness/review states (SOURCE_STALE, SOURCE_UNSTAMPED, REVIEW_EXPIRED, REVIEW_DATE_INVALID)
-    are produced only by the structured `verify_evidence` grounding path — the occurrence-only
-    `verify` op never emits them, so its adapters (CLI/MCP) see the original six."""
+    The review/stamp states (SOURCE_UNSTAMPED, REVIEW_EXPIRED, REVIEW_DATE_INVALID) are produced only
+    by the structured `verify_evidence` grounding path. The other six — including SOURCE_STALE and
+    SOURCE_NOT_INSTALLED — are emitted by the occurrence/freshness `verify` op (`_svc_verify`) too."""
     FOUND = "found"
     AMBIGUOUS = "ambiguous"
     FOLDED_ONLY = "folded-only"
@@ -153,7 +153,8 @@ class EvidenceHit:
 class EvidenceContext:
     """The occurrence-only guarantee, plus the surrounding source text a reviewer needs to judge a
     claim against the book's actual words. `usable` is True only when the anchor resolves
-    (FOUND/FOLDED_ONLY); the window is bounded so it can never dump the whole (copyrighted) source."""
+    (FOUND/FOLDED_ONLY) AND a span was located. The window is at most `max_window` lines and always
+    contains the match — bounded, though a source shorter than the window is returned in full."""
     resolution: Resolution
     card: str | None = None
     rel: str | None = None

@@ -21,7 +21,8 @@ class Criterion:
     statement: str                 # the bold move — the imperative summary of what a draft should do
     phrases: tuple[str, ...]       # verbatim source phrases backing it (the anchors)
     guidance: str = ""             # the move's prose — what it means / how to judge it (a judge needs this)
-    criticality: str = "required"  # "required" (gates the verdict) | "advisory" (feedback-only, future)
+    criticality: str = "required"  # parsed from an optional [advisory] tag; NOT yet enforced — every
+    #                                criterion currently gates the verdict (an advisory path is future work)
 
 
 @dataclass(frozen=True)
@@ -35,21 +36,29 @@ class Grounding:
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
 _GREP_RE = re.compile(r"grep:\s*`([^`]+)`")
-_GREP_MARKER = re.compile(r"\(\s*grep:.*?\)", re.S)     # a whole (grep: …) marker, to strip from guidance
+# a whole (grep: …) marker — backtick-aware, so a `)` INSIDE the quoted phrase does not close it early
+_GREP_MARKER = re.compile(r"\(\s*grep:(?:[^`)]|`[^`]*`)*\)", re.S)
 _ADVISORY = re.compile(r"\[advisory\]", re.I)          # an optional criticality tag on a move
 _PANEL_RE = re.compile(r"[\[\]]")
 _ANNOT_RE = re.compile(r"\s*\([^)]*\)")                 # a card annotation, e.g. `sternberg (cross-ref)`
 _BULLET_SPLIT = re.compile(r"\n(?=- \*\*)")            # split the Craft moves into whole bullets
 
-
-def _guidance(bullet_after_head: str) -> str:
-    """The move's human explanation: the bullet prose minus the anchor markers and the advisory tag."""
-    txt = _ADVISORY.sub("", _GREP_MARKER.sub("", bullet_after_head))
-    return " ".join(txt.split()).strip(" .—-")
+# When a phrase grounds in NO panel card, report the most diagnostic reason — a freshness/review
+# failure (the source is there but untrustworthy) outranks a plain not-found/ambiguous, so a stale
+# source is never hidden behind a later card's not-found.
+_REASON_RANK = {
+    lib.EvidenceResolution.SOURCE_STALE.value: 5,
+    lib.EvidenceResolution.REVIEW_EXPIRED.value: 5,
+    lib.EvidenceResolution.REVIEW_DATE_INVALID.value: 5,
+    lib.EvidenceResolution.SOURCE_UNSTAMPED.value: 4,
+    lib.EvidenceResolution.AMBIGUOUS.value: 3,
+    lib.EvidenceResolution.SOURCE_NOT_INSTALLED.value: 2,
+    lib.EvidenceResolution.NOT_FOUND.value: 1,
+}
 
 
 def _panel(cards: str) -> list[str]:
-    """The dimension's source-card stems, with any `(annotation)` stripped so verify() gets real ids."""
+    """The dimension's source-card stems, with any `(annotation)` stripped so verify_evidence gets real ids."""
     out: list[str] = []
     for part in _PANEL_RE.sub("", cards).split(","):
         stem = _ANNOT_RE.sub("", part).strip()
@@ -70,13 +79,19 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
         b = block.lstrip("\n")
         head = _MOVE_HEAD.match(b)
         if not head:
-            continue
+            continue                                    # not a bold-headed move bullet — ignore
         phrases = tuple(_GREP_RE.findall(b))
-        if phrases:                                     # a move with no anchor is not a gate criterion
-            crit.append(Criterion(
-                f"C{len(crit) + 1}", head.group(1).strip().rstrip("."), phrases,
-                guidance=_guidance(b[head.end():]),
-                criticality="advisory" if _ADVISORY.search(b) else "required"))
+        if not phrases:
+            # FAIL-CLOSED at the parser boundary: a stated move with no resolvable anchor must not be
+            # silently dropped — that would let the gate score a reduced rubric and return Go.
+            raise ValueError(f"{dimension!r} Craft move {head.group(1).strip()!r} has no (grep: `…`) "
+                             "anchor — an unanchored move cannot become a gate criterion")
+        after = b[head.end():]
+        demarked = _GREP_MARKER.sub("", after)          # anchor markers removed (so [advisory]/prose below
+        criticality = "advisory" if _ADVISORY.search(demarked) else "required"   # can't false-match inside one)
+        guidance = " ".join(_ADVISORY.sub("", demarked).split()).strip(" .—-")
+        crit.append(Criterion(f"C{len(crit) + 1}", head.group(1).strip().rstrip("."), phrases,
+                              guidance=guidance, criticality=criticality))
     if not crit:
         raise ValueError(f"{dimension!r} Craft layer has no anchored moves — the gate cannot operate")
     return crit, panel
@@ -98,7 +113,9 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
             if ev.resolution in ok:
                 hit = (phrase, card, ev.lines[0][0] if ev.lines else None)
                 break
-            reason = ev.resolution.value                          # remember why this card did not ground it
+            cand = ev.resolution.value                            # keep the most diagnostic failure reason
+            if _REASON_RANK.get(cand, 0) >= _REASON_RANK.get(reason, 0):
+                reason = cand
         if hit is None:
             return Grounding(False, phrase=phrase, resolution=reason)   # resolves in no panel source
         if first is None:

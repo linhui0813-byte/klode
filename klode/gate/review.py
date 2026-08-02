@@ -2,9 +2,10 @@
 submit a draft, score it against grounded criteria, and return a Cooper-style verdict whose every
 cited defect is verifiable against the source.
 
-Verdict logic (Cooper's should-meet scorecard): score each grounded criterion 0-10; a criterion whose
-citation cannot be verified is dropped and flagged (an ungrounded criterion is not trustworthy);
-percentage >= hurdle -> Go, else Recycle ("send back with these specific, grounded defects").
+Verdict logic (fail-CLOSED): the rubric only scores when EVERY criterion grounds. If any criterion
+lacks current, unambiguous evidence, the verdict is "Unavailable" (no score) — a criterion is never
+dropped-and-renormalized, since that could turn a Recycle into a Go. When all ground, score each
+0-10: percentage >= hurdle -> Go, else Recycle ("send back with these specific, grounded defects").
 """
 from __future__ import annotations
 
@@ -34,6 +35,12 @@ class Verdict:
         """The Recycle reasons: criteria scoring below the bar (`score*10 < hurdle`), each with a
         grounded, un-fakeable citation. The threshold tracks the verdict policy, not a magic 6."""
         return tuple(sorted((l for l in self.lines if l.score * 10 < self.hurdle), key=lambda l: l.score))
+
+    @property
+    def ungrounded(self) -> tuple[str, ...]:
+        """Deprecated compat shim for the pre-fail-closed field: the ids that blocked the verdict.
+        Prefer `unavailable`, which also carries each id's reason."""
+        return tuple(cid for cid, _ in self.unavailable)
 
 
 def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,

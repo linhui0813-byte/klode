@@ -33,8 +33,9 @@ from .query import (
 def verify_evidence(cfg, card, phrase, *, require_stamp=False, today=None):
     """Structured, freshness- and review-aware grounding — the verifier a supervising gate must use.
 
-    Unlike `verify` (occurrence only), a SOURCE_STALE / SOURCE_UNSTAMPED / REVIEW_EXPIRED /
-    REVIEW_DATE_INVALID source does NOT resolve to FOUND, so it cannot ground a criterion. Returns an
+    Unlike `verify` (occurrence only), a stale (SOURCE_STALE) or review-expired (REVIEW_EXPIRED /
+    REVIEW_DATE_INVALID) source does NOT resolve to FOUND, so it cannot ground a criterion; an
+    unstamped source is rejected (SOURCE_UNSTAMPED) only when `require_stamp=True`. Returns an
     `EvidenceHit` whose `.resolution` is an `EvidenceResolution`. `services` is imported lazily so
     plain `import klode.lib` stays cheap."""
     from . import services
@@ -43,8 +44,9 @@ def verify_evidence(cfg, card, phrase, *, require_stamp=False, today=None):
 
 def verify_context(cfg, card, phrase, *, context_lines=3, max_window=40, require_stamp=False, today=None):
     """The evidence-context op — `verify_evidence` PLUS the bounded surrounding source text a judge
-    reads to score a claim. Returns an `EvidenceContext`; `usable` is True only for a resolved,
-    fresh anchor with a locatable span. The window is capped so it never dumps the whole source."""
+    reads to score a claim. Returns an `EvidenceContext`; `usable` is True only for a resolved, fresh
+    anchor with a locatable span. The window is at most `max_window` lines and always contains the
+    match (a source shorter than the window is returned in full). Raises ValueError on bad bounds."""
     from . import services
     return services.verify_context(cfg, card, phrase, context_lines=context_lines,
                                    max_window=max_window, require_stamp=require_stamp, today=today)
