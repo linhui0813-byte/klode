@@ -22,9 +22,10 @@ class Criterion:
 @dataclass(frozen=True)
 class Grounding:
     grounded: bool
-    phrase: str | None = None      # the phrase that resolved
+    phrase: str | None = None      # the phrase that resolved (grounded) or failed (ungrounded)
     card: str | None = None        # the source card it resolved in
     line: int | None = None        # 1-indexed line
+    resolution: str | None = None  # when NOT grounded: the EvidenceResolution value (the reason why)
 
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
@@ -64,19 +65,25 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
     return crit, panel
 
 
-def ground(cfg, criterion: Criterion, panel: list[str]) -> Grounding:
-    """Grounded only if EVERY cited phrase resolves in a panel source (lib.verify decides). A
-    criterion mixing one real and three fabricated citations is NOT grounded — that is the point."""
+def ground(cfg, criterion: Criterion, panel: list[str], *,
+           require_stamp: bool = False, today=None) -> Grounding:
+    """Grounded only if EVERY cited phrase resolves — freshly and unambiguously — in a panel source,
+    as decided by `lib.verify_evidence` (NOT the occurrence-only `verify`). A criterion mixing one
+    real and three fabricated citations is NOT grounded; nor is one whose source is stale, unstamped
+    (when required), or past its review date. The failure reason is recorded for the verdict."""
+    ok = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
     first: tuple | None = None
     for phrase in criterion.phrases:
         hit = None
+        reason = lib.EvidenceResolution.NOT_FOUND.value           # if the panel is empty, it is not found
         for card in panel:
-            v = lib.verify(cfg, card, phrase)
-            if v and v.found:
-                hit = (phrase, card, v.lines[0][0] if v.lines else None)
+            ev = lib.verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
+            if ev.resolution in ok:
+                hit = (phrase, card, ev.lines[0][0] if ev.lines else None)
                 break
+            reason = ev.resolution.value                          # remember why this card did not ground it
         if hit is None:
-            return Grounding(False, phrase=phrase)      # this cited phrase resolves in no panel source
+            return Grounding(False, phrase=phrase, resolution=reason)   # resolves in no panel source
         if first is None:
             first = hit
     return Grounding(True, *first) if first else Grounding(False)

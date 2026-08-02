@@ -33,7 +33,7 @@ def main() -> None:
     })
     v = review_draft(cfg, DRAFT, "pacing", judge)
     print(f"VERDICT: {v.decision}   score {v.score}/100 (hurdle {v.hurdle})")
-    print(f"grounded criteria: {len(v.lines)}   ungrounded (dropped, flagged): {len(v.ungrounded)}\n")
+    print(f"grounded criteria: {len(v.lines)}   unavailable (blocked the verdict): {len(v.unavailable)}\n")
     print("Defects sent back with Recycle — each citation grounded in a real source by lib.verify:")
     for l in v.defects:
         g = l.grounding
