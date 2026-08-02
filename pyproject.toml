@@ -25,9 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xiaolai/lode"
-Repository = "https://github.com/xiaolai/lode"
-Issues = "https://github.com/xiaolai/lode/issues"
+Homepage = "https://github.com/xiaolai/klode"
+Repository = "https://github.com/xiaolai/klode"
+Issues = "https://github.com/xiaolai/klode/issues"
 
 [project.optional-dependencies]
 # `klode check --entail` only — the default path stays zero-dependency. Pulls a small NLI/fact-check
