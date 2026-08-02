@@ -219,8 +219,9 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
     """The evidence-context op: a grounding result PLUS the bounded surrounding source text a judge
     reads to score a claim against the book's own words. Built on `verify_evidence`, so a stale,
     unstamped (when required), or review-expired source is `usable=False`. The window is at most
-    `max_window` lines and is ALWAYS positioned to contain the match; it is not a whole-source dump
-    for large sources, but for a source shorter than the window the whole (small) source is returned."""
+    `max_window` lines and always contains the match — its whole span when that fits, otherwise the
+    match start (an over-long match is truncated at the tail). A source shorter than the window is
+    returned in full; for large sources it is never a whole-source dump."""
     if not isinstance(context_lines, int) or isinstance(context_lines, bool) or context_lines < 0:
         raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
     if not isinstance(max_window, int) or isinstance(max_window, bool) or max_window < 1:
@@ -242,10 +243,14 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
     m_lo, m_hi = min(match_nums), max(match_nums)
     lo = max(1, m_lo - context_lines)
     hi = min(len(lines), m_hi + context_lines)
-    if hi - lo + 1 > max_window:                                    # cap, but keep the match line inside
-        lead = min(context_lines, max_window - 1)                   # bounded before-context
-        lo = max(1, m_lo - lead)
-        hi = min(len(lines), lo + max_window - 1)
+    if hi - lo + 1 > max_window:                                    # cap the window
+        span = m_hi - m_lo + 1
+        if span >= max_window:                                      # the match itself fills/exceeds it —
+            lo, hi = m_lo, min(len(lines), m_lo + max_window - 1)   #   anchor at the match start (tail cut)
+        else:                                                       # else keep the WHOLE match + any lead
+            lead = min(context_lines, max_window - span)
+            lo = max(1, m_lo - lead)
+            hi = min(len(lines), lo + max_window - 1)
     return core.EvidenceContext(usable=True, line_start=lo, line_end=hi, match_lines=match_nums,
                                 text="\n".join(lines[lo - 1:hi]), **base)
 

@@ -154,7 +154,8 @@ class EvidenceContext:
     """The occurrence-only guarantee, plus the surrounding source text a reviewer needs to judge a
     claim against the book's actual words. `usable` is True only when the anchor resolves
     (FOUND/FOLDED_ONLY) AND a span was located. The window is at most `max_window` lines and always
-    contains the match — bounded, though a source shorter than the window is returned in full."""
+    contains the match (its whole span when that fits, else the match start); a source shorter than
+    the window is returned in full."""
     resolution: Resolution
     card: str | None = None
     rel: str | None = None

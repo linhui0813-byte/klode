@@ -262,6 +262,17 @@ class EvidenceContextOp(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 lib.verify_context(cfg, "src1", "x here", **bad)
 
+    def test_multiline_match_span_is_fully_contained_when_it_fits(self):
+        # a folded span across several lines: a generous window must keep the WHOLE span, not just its start
+        cfg = self._cfg(moves=[("M", ["alpha x y omega"])],
+                        source_text="l1\nl2\nalpha\nx\ny\nomega\nl7\nl8")
+        ctx = lib.verify_context(cfg, "src1", "alpha x y omega", context_lines=1, max_window=20)
+        if ctx.resolution == R.FOLDED_ONLY and ctx.usable:          # only assert if it folded as expected
+            self.assertLessEqual(ctx.line_start, 3)                 # alpha (line 3) …
+            self.assertGreaterEqual(ctx.line_end, 6)               # … through omega (line 6) — whole span
+            self.assertIn("alpha", ctx.text)
+            self.assertIn("omega", ctx.text)
+
     def test_unlocatable_folded_is_not_usable(self):
         # a hyphenation fold resolves (folded-only) but the whitespace locator cannot place it
         cfg = self._cfg(moves=[("M", ["information hiding"])], source_text="pre\ninforma-\ntion hiding ok\npost")

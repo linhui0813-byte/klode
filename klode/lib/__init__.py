@@ -46,7 +46,7 @@ def verify_context(cfg, card, phrase, *, context_lines=3, max_window=40, require
     """The evidence-context op — `verify_evidence` PLUS the bounded surrounding source text a judge
     reads to score a claim. Returns an `EvidenceContext`; `usable` is True only for a resolved, fresh
     anchor with a locatable span. The window is at most `max_window` lines and always contains the
-    match (a source shorter than the window is returned in full). Raises ValueError on bad bounds."""
+    match (its whole span when that fits, else the match start). Raises ValueError on bad bounds."""
     from . import services
     return services.verify_context(cfg, card, phrase, context_lines=context_lines,
                                    max_window=max_window, require_stamp=require_stamp, today=today)
