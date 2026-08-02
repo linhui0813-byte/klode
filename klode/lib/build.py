@@ -22,7 +22,7 @@ import os
 import re
 
 from .common import MARK, body_after_marker, fm_get, front_matter, read
-from .config import Config
+from .config import Config, ConfigError
 
 
 def source_sha256(path: str) -> str:
@@ -98,6 +98,11 @@ def _enumerate_sources(cfg: Config) -> list[dict]:
             bib = bib_line_for(cfg, stem)
             sources.append(dict(id=stem, shelf=shelf, file=rel, framework=fwmap.get(rel),
                                 bib=bib, title=title_from_bib(bib) or humanize(stem)))
+    ids = [s["id"] for s in sources]        # the card namespace is flat: same stem on two shelves
+    dups = sorted({i for i in ids if ids.count(i) > 1})   # would collide onto one card, silently
+    if dups:
+        raise ConfigError(f"source filename stems collide across shelves: {', '.join(dups)} — "
+                          "rename so each source has a unique stem (cards are keyed by stem only)")
     return sources
 
 

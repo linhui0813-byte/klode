@@ -133,7 +133,7 @@ _TYPO = {"‘": "'", "’": "'", "“": '"', "”": '"',
          "–": "-", "—": "-", "‐": "-", "‑": "-", "…": "..."}
 # Control bytes an extractor drops mid-word ("de\x1fnition") become spaces; kept OUT of \s so
 # tab/newline/CR survive to the whitespace collapse below.
-CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # incl. \x7f (DEL), matching config._CTRL_RE
 
 
 def _norm(s: str) -> str:
@@ -233,6 +233,8 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
         after = _dehyphenate(_norm(m.after)) if m.after else None
         occ = [i for i in _occurrences(pd, nohy)
                if _context_ok(nohy, i, len(pd), before, after)]
+        if m.nth is not None:      # honour the `#n` pin here too — don't fail OPEN on a context match
+            return Resolution(len(occ) >= m.nth, len(occ), False)
         return Resolution(bool(occ), len(occ), False)
 
     # literal — try the hyphen-preserving space first, then the de-hyphenated (wrapped) space

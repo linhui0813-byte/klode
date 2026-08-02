@@ -11,7 +11,8 @@ sys.path.insert(0, str(REPO))
 
 class Packaging(unittest.TestCase):
     def _pyproject(self) -> dict:
-        return tomllib.load(open(REPO / "pyproject.toml", "rb"))
+        with open(REPO / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)
 
     def test_wheel_ships_every_package(self):
         # every dir under klode/ with an __init__.py must be covered by the build's package config,

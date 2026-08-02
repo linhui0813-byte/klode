@@ -233,12 +233,12 @@ def _params_for(name: str, args: dict) -> dict:
         return {"name": str(args.get("name", "")).strip(), "projection": "writer"}
     if name == "search_sources":
         return {"terms": str(args.get("query", "")).split(),
-                "full": bool(args.get("full", False)), "limit": int(args.get("limit", 10))}
+                "full": bool(args.get("full", False)), "limit": args.get("limit", 10)}
     if name == "zoom_card":
         return {"id": str(args.get("id", "")).strip(), "level": str(args.get("level", "thin"))}
     if name == "verify_quote":
         return {"card": str(args.get("id", "")).strip(), "phrase": str(args.get("phrase", "")),
-                "max_lines": int(args.get("max_lines", 10))}
+                "max_lines": args.get("max_lines", 10)}
     if name == "diagnose":
         return {"symptom": str(args.get("symptom", ""))}
     return {}

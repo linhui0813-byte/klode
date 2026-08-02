@@ -508,7 +508,11 @@ def cmd_cards(args) -> int:
 
 def cmd_review(args) -> int:
     draft = sys.stdin.read() if args.draft == "-" else args.draft
-    r = _run(args, "review", {"draft": draft, "dimension": args.dimension})
+    try:
+        r = _run(args, "review", {"draft": draft, "dimension": args.dimension})
+    except ValueError as e:      # the stub gate raises ValueError when nothing grounds (corpus absent)
+        print(f"review unavailable: {e}", file=sys.stderr)
+        return 1
     if args.json:
         return _emit_json(r)
     rv = r.value

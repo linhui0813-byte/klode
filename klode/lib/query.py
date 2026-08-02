@@ -162,7 +162,7 @@ def source_of(cfg: Config, card_id: str) -> Source | None:
             return Source(rel=rel, path=None, size=None)
     except (OSError, ValueError):
         return Source(rel=rel, path=None, size=None)
-    if not abspath.exists():
+    if not abspath.is_file():           # a directory `file:` is not an installed source (avoid IsADirectoryError)
         return Source(rel=rel, path=None, size=None)
     return Source(rel=rel, path=abspath, size=abspath.stat().st_size)
 

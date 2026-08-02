@@ -101,14 +101,16 @@ def _check_entailment(cfg: Config, r: Report, backend, threshold: float) -> None
     the anchor resolves in (premise) against the card's claim (SummaC granularity). A low score
     is a second opinion to review — never a failure; grep resolution remains the only gate."""
     from . import entail as entail_mod
+    SRC_RE = src_path_re(cfg)
     scored = low = 0
     for p in card_files(cfg):
         text = read(p)
-        rel = fm_get(front_matter(text), "file")
-        if not rel:
-            continue
-        abspath = os.path.join(cfg.root, rel.strip())
-        if not os.path.exists(abspath):
+        rel = (fm_get(front_matter(text), "file") or "").strip()
+        abspath = os.path.join(cfg.root, rel)
+        # same path discipline as the rot/freshness checks: only a valid, in-tree shelf source is read
+        if not (rel and SRC_RE.fullmatch(rel)
+                and os.path.realpath(abspath).startswith(os.path.realpath(cfg.lib) + os.sep)
+                and os.path.exists(abspath)):
             continue
         cid = os.path.basename(p)[:-3]
         try:
@@ -322,17 +324,27 @@ def _check_copyright_leak(cfg: Config, r: Report) -> None:
     except FileNotFoundError:
         r.notes.append("[E] git not found on PATH — copyright-leak guard N/A (nothing to leak into)")
         return
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        r.notes.append("[E] not a git work tree — copyright-leak guard N/A (nothing to leak into)")
+    out = inside.stdout.strip()
+    # "not a git repository" (rc=128) is a genuine N/A; a DIFFERENT git error (e.g. dubious ownership,
+    # also rc=128) must NOT be silently skipped — the leak guard fails CLOSED on it. Distinguish by stderr.
+    not_a_repo = (inside.returncode == 0 and out in ("false", "")) \
+        or (inside.returncode != 0 and "not a git repository" in inside.stderr.lower())
+    if not (inside.returncode == 0 and out == "true"):
+        if not_a_repo:
+            r.notes.append("[E] not a git work tree — copyright-leak guard N/A (nothing to leak into)")
+        else:
+            r.errors.append("[E] could not determine git work tree "
+                            f"({inside.stderr.strip()[:120] or 'rc=' + str(inside.returncode)}); "
+                            "the copyright-leak guard must not fail open")
         return
     try:
         tracked = subprocess.run(
-            ["git", "-C", str(cfg.root), "ls-files", *cfg.guard_relpaths],
-            capture_output=True, text=True, check=True).stdout.splitlines()
+            ["git", "-C", str(cfg.root), "ls-files", "-z", *cfg.guard_relpaths],   # -z: no C-quoting of non-ASCII names
+            capture_output=True, text=True, check=True).stdout.split("\0")
     except Exception as e:
         r.errors.append(f"[E] could not run git ls-files ({e}); the copyright-leak guard must not fail open")
         return
-    for f in (f for f in tracked if f.lower().endswith((".txt", ".pdf"))):   # case-insensitive: .TXT must not slip
+    for f in (f for f in tracked if f and f.lower().endswith((".txt", ".pdf"))):   # case-insensitive: .TXT must not slip
         r.errors.append(f"[E copyright-leak] corpus file is git-tracked (must be ignored): {f}")
     for d in glob.glob(os.path.join(cfg.lib, ".normalize-backup-*")):
         r.errors.append(f"[E] in-tree normalize backup present (should live outside the repo): "

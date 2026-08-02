@@ -302,7 +302,7 @@ def prune_backups(root: str, keep: int) -> list[str]:
             if d.startswith("normalize-backup-") and os.path.isdir(os.path.join(root, d))]
     runs.sort(key=os.path.getmtime, reverse=True)
     pruned = []
-    for old in runs[keep:]:
+    for old in runs[max(1, keep):]:       # never prune below 1 — protects the run just written
         shutil.rmtree(old, ignore_errors=True)
         pruned.append(old)
     return pruned
