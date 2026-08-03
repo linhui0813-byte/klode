@@ -51,7 +51,7 @@ def verify_context(cfg, card, phrase, *, context_lines=3, max_window=40, require
     return services.verify_context(cfg, card, phrase, context_lines=context_lines,
                                    max_window=max_window, require_stamp=require_stamp, today=today)
 
-__version__ = "0.2.0"      # the single source of truth: pyproject reads this; mcp_server derives from it
+__version__ = "0.2.1"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
     "Config", "ConfigError",
