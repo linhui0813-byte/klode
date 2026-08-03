@@ -2,9 +2,10 @@
 submit a draft, score it against grounded criteria, and return a Cooper-style verdict whose every
 cited defect is verifiable against the source.
 
-Verdict logic (Cooper's should-meet scorecard): score each grounded criterion 0-10; a criterion whose
-citation cannot be verified is dropped and flagged (an ungrounded criterion is not trustworthy);
-percentage >= hurdle -> Go, else Recycle ("send back with these specific, grounded defects").
+Verdict logic (fail-CLOSED): the rubric only scores when EVERY criterion grounds. If any criterion
+lacks current, unambiguous evidence, the verdict is "Unavailable" (no score) — a criterion is never
+dropped-and-renormalized, since that could turn a Recycle into a Go. When all ground, score each
+0-10: percentage >= hurdle -> Go, else Recycle ("send back with these specific, grounded defects").
 """
 from __future__ import annotations
 
@@ -23,11 +24,11 @@ class Line:
 
 @dataclass(frozen=True)
 class Verdict:
-    decision: str                       # "Go" | "Recycle"
-    score: int                          # 0-100
+    decision: str                       # "Go" | "Recycle" | "Unavailable"
+    score: int | None                   # 0-100, or None when Unavailable (no valid verdict)
     hurdle: int
-    lines: tuple[Line, ...]             # grounded criteria, scored
-    ungrounded: tuple[str, ...]         # criterion ids dropped for failing to ground (flagged, not silent)
+    lines: tuple[Line, ...]             # grounded criteria, scored (empty when Unavailable)
+    unavailable: tuple[tuple[str, str], ...] = ()   # (criterion_id, reason) that blocked a verdict
 
     @property
     def defects(self) -> tuple[Line, ...]:
@@ -35,21 +36,36 @@ class Verdict:
         grounded, un-fakeable citation. The threshold tracks the verdict policy, not a magic 6."""
         return tuple(sorted((l for l in self.lines if l.score * 10 < self.hurdle), key=lambda l: l.score))
 
+    @property
+    def ungrounded(self) -> tuple[str, ...]:
+        """Deprecated compat shim for the pre-fail-closed field: the ids that blocked the verdict.
+        Prefer `unavailable`, which also carries each id's reason."""
+        return tuple(cid for cid, _ in self.unavailable)
 
-def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60) -> Verdict:
+
+def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
+                 require_stamp: bool = True, today=None) -> Verdict:
+    """Fail-CLOSED: EVERY criterion must have current, unambiguous evidence or the verdict is
+    "Unavailable" — never Go/Recycle. Dropping an ungrounded criterion and renormalizing the average
+    (the old behavior) could turn a Recycle into a Go, so a gate that loses evidence must abstain,
+    not pass. Only when the whole rubric grounds does the judge score and a threshold verdict issue.
+
+    Secure by default: `require_stamp=True` — an UNSTAMPED source (no `source_sha256`, so no trusted
+    baseline against tampering) does not ground. Stamp sources with `klode build --stamp`; a caller
+    with an intentionally unstamped corpus can pass `require_stamp=False`."""
     if not 0 <= hurdle <= 100:
         raise ValueError(f"hurdle must be in 0..100, got {hurdle}")
     crit, panel = _crit.load_criteria(cfg, dimension)
     grounded: list[tuple[_crit.Criterion, _crit.Grounding]] = []
-    ungrounded: list[str] = []
+    unavailable: list[tuple[str, str]] = []
     for c in crit:
-        g = _crit.ground(cfg, c, panel)
+        g = _crit.ground(cfg, c, panel, require_stamp=require_stamp, today=today)
         if g.grounded:
             grounded.append((c, g))
         else:
-            ungrounded.append(c.id)
-    if not grounded:                                    # no evidence to score against — do not fake a verdict
-        raise ValueError(f"no criterion for {dimension!r} grounded in a source — the gate cannot operate")
+            unavailable.append((c.id, g.resolution or "not-grounded"))
+    if unavailable:                                     # any missing/stale/ambiguous evidence -> no verdict
+        return Verdict("Unavailable", None, hurdle, (), tuple(unavailable))
     by_id: dict = {}
     for s in judge.score(draft, [c for c, _ in grounded]):
         if s.criterion_id in by_id:
@@ -62,4 +78,4 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60) ->
         raise ValueError(f"judge did not score grounded criteria: {sorted(missing)}")
     lines = tuple(Line(c, by_id[c.id].score, by_id[c.id].note, g) for c, g in grounded)
     total = round(100 * sum(l.score for l in lines) / (10 * len(lines)))
-    return Verdict("Go" if total >= hurdle else "Recycle", total, hurdle, lines, tuple(ungrounded))
+    return Verdict("Go" if total >= hurdle else "Recycle", total, hurdle, lines, ())

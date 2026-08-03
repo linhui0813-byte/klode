@@ -8,6 +8,15 @@ lodlib is **Loop A** — it encodes expertise as grep-grounded, citable knowledg
 verdict (**Go / Recycle**). It is a separate package that imports only the `lodlib` facade; it never
 reaches into lodlib internals.
 
+> **Hardening update (2026-08-02).** Two safety defects were closed after an external design review.
+> (1) **Grounding is now freshness-aware.** Criteria ground through the structured
+> `verify_evidence` (occurrence **+** source-freshness + review-date), not the occurrence-only
+> `verify` — a stale, unstamped (when required), review-expired, or *ambiguous* citation no longer
+> grounds. (2) **The verdict is fail-CLOSED.** If any criterion lacks current, unambiguous evidence
+> the verdict is **Unavailable** (a third state beside Go/Recycle) — the gate no longer drops the
+> criterion and renormalizes the average, which could turn a Recycle into a Go. Proven in
+> `tests/test_gate_hardening.py`.
+
 ## The one mechanism this proves
 
 A source-grounded judge's #1 failure mode is *"cited but not verified"* — it names a source that

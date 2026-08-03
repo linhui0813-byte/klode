@@ -1,4 +1,4 @@
-"""WI-2 — core value types: provenance, scope, the six-value grounding resolution taxonomy, and the
+"""WI-2 — core value types: provenance, scope, the grounding resolution taxonomy, and the
 discriminated lens results. A stdlib-only leaf that imports no adapter."""
 import sys
 import unittest
@@ -16,10 +16,13 @@ class CoreTypes(unittest.TestCase):
         self.assertEqual((p.op_id, p.kb, p.source_sha, p.policy), ("verify", "storycraft", "abc", "p"))
         self.assertEqual(p.op_version, "1")
 
-    def test_resolution_has_exactly_the_six_taxonomy_values(self):
-        self.assertEqual(
-            {r.value for r in core.Resolution},
-            {"found", "ambiguous", "folded-only", "source-stale", "source-not-installed", "not-found"})
+    def test_resolution_taxonomy(self):
+        # six occurrence/freshness states emitted by the `verify` op, plus three review/stamp states
+        # emitted only by the structured `verify_evidence` grounding path.
+        occurrence = {"found", "ambiguous", "folded-only", "source-stale", "source-not-installed",
+                      "not-found"}
+        evidence_only = {"source-unstamped", "review-expired", "review-date-invalid"}
+        self.assertEqual({r.value for r in core.Resolution}, occurrence | evidence_only)
 
     def test_capability_status_values(self):
         self.assertEqual({c.value for c in core.CapabilityStatus},

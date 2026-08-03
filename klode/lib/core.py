@@ -20,13 +20,20 @@ class CapabilityStatus(str, Enum):
 
 
 class Resolution(str, Enum):
-    """A grounding result records textual OCCURRENCE, never claim truth/entailment."""
+    """A grounding result records textual OCCURRENCE, never claim truth/entailment.
+
+    The review/stamp states (SOURCE_UNSTAMPED, REVIEW_EXPIRED, REVIEW_DATE_INVALID) are produced only
+    by the structured `verify_evidence` grounding path. The other six — including SOURCE_STALE and
+    SOURCE_NOT_INSTALLED — are emitted by the occurrence/freshness `verify` op (`_svc_verify`) too."""
     FOUND = "found"
     AMBIGUOUS = "ambiguous"
     FOLDED_ONLY = "folded-only"
     SOURCE_STALE = "source-stale"
     SOURCE_NOT_INSTALLED = "source-not-installed"
     NOT_FOUND = "not-found"
+    SOURCE_UNSTAMPED = "source-unstamped"          # freshness required but no source_sha256 stored
+    REVIEW_EXPIRED = "review-expired"              # review_by date has passed
+    REVIEW_DATE_INVALID = "review-date-invalid"    # review_by is not an ISO date
 
 
 @dataclass(frozen=True)
@@ -139,6 +146,25 @@ class EvidenceHit:
     def found(self) -> bool:
         # a folded-only hit IS a genuine occurrence (it resolves, just not on one raw line)
         return self.resolution in (Resolution.FOUND, Resolution.FOLDED_ONLY)
+
+
+# --- EvidenceContext: a bounded source window around a grounded anchor (what a judge reads) ---
+@dataclass(frozen=True)
+class EvidenceContext:
+    """The occurrence-only guarantee, plus the surrounding source text a reviewer needs to judge a
+    claim against the book's actual words. `usable` is True only when the anchor resolves
+    (FOUND/FOLDED_ONLY) AND a span was located. The window is at most `max_window` lines and always
+    contains the match (its whole span when that fits, else the match start); a source shorter than
+    the window is returned in full."""
+    resolution: Resolution
+    card: str | None = None
+    rel: str | None = None
+    source_sha: str | None = None
+    usable: bool = False                     # resolution in (FOUND, FOLDED_ONLY) AND a span was located
+    line_start: int | None = None            # 1-indexed window bounds (None when no span located)
+    line_end: int | None = None
+    match_lines: tuple[int, ...] = ()        # the matched line numbers inside the window
+    text: str = ""                           # the bounded surrounding source text
 
 
 # --- ReviewResult: capability-gated supervision (never an authoritative stub verdict) ---
