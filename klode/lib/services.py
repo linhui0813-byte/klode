@@ -237,11 +237,11 @@ def _locate(marker: "common.Marker", source_lines: list, max_lines: int) -> list
             start = 0
             while (j := ln.find(marker.phrase, start)) != -1:
                 occ.append((i, ln, j, j + len(marker.phrase)))
-                start = j + 1
-    if marker.before or marker.after:                               # keep only occurrences with the pinned context
+                start = j + len(marker.phrase)                      # NON-overlapping, matching the resolver's count
+    if marker.before or marker.after:                               # keep occurrences whose context is ADJACENT
         occ = [o for o in occ
-               if (not marker.before or marker.before in o[1][:o[2]])
-               and (not marker.after or marker.after in o[1][o[3]:])]
+               if (not marker.before or o[1][:o[2]].rstrip().endswith(marker.before))
+               and (not marker.after or o[1][o[3]:].lstrip().startswith(marker.after))]
     if marker.nth is not None:                                      # the `#n` pin: exactly the nth occurrence
         occ = [occ[marker.nth - 1]] if len(occ) >= marker.nth else []
     out: list = []

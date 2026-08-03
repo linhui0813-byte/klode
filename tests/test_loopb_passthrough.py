@@ -133,6 +133,36 @@ class JudgeSeam(unittest.TestCase):
         self.assertIn(review_draft(cfg, "d", "cadence", FixtureJudge({}, default=(9, "x")),
                                    require_stamp=False).decision, ("Go", "Recycle"))
 
+    def test_grounded_but_unshowable_evidence_is_unavailable(self):
+        # a criterion can RESOLVE (folded/de-hyphenated) yet have no showable single-line span; the
+        # judge must never score without the evidence it cites -> abstain.
+        import hashlib
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="klode-ev-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        libd = tmp / "library"
+        (libd / "books").mkdir(parents=True)
+        (libd / "cards").mkdir()
+        (libd / "frameworks" / "_syntheses").mkdir(parents=True)
+        (tmp / "library.toml").write_text(
+            '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n[bibliography]\nenabled = false\n'
+            '[frameworks]\nenabled = true\ndir = "frameworks"\nsyntheses = "_syntheses"\n', encoding="utf-8")
+        (libd / "books" / "s.txt").write_text("the informa-\ntion here", encoding="utf-8")   # de-hyphenation only
+        sha = hashlib.sha256((libd / "books" / "s.txt").read_bytes()).hexdigest()
+        (libd / "cards" / "s.md").write_text(
+            f"---\nid: s\nshelf: books\nfile: library/books/s.txt\ngrep_ready: true\nsource_sha256: {sha}\n---\n# s\n",
+            encoding="utf-8")
+        (libd / "cards" / "INDEX.md").write_text("# I\n\n- [s](s.md)\n", encoding="utf-8")
+        (libd / "frameworks" / "_syntheses" / "d.md").write_text(
+            "---\ntitle: d\nstatus: canonical\ndimension: d\ncards: [s]\n---\n\n# d\n\n**Core question:** q?\n\n"
+            "## Craft\n\nx.\n\n- **M.** (grep: `information`)\n", encoding="utf-8")
+        cfg = lib.Config.load(tmp / "library.toml")
+        crit, panel = load_criteria(cfg, "d")
+        self.assertTrue(ground(cfg, crit[0], panel).grounded)          # decision: grounded (folded)
+        v = review_draft(cfg, "d", "d", FixtureJudge({}, default=(9, "x")))
+        self.assertEqual(v.decision, "Unavailable")                    # evidence not showable -> abstain
+
     def test_deterministic(self):
         cfg = lib.Config.load(FIX)
         a = review_draft(cfg, "d", "pacing", FixtureJudge({"C1": (2, "x")}, default=(9, "y")))

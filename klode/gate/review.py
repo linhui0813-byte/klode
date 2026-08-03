@@ -94,6 +94,12 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
     items = [GradingItem(c, lib.build_context_bundle(
                 cfg, [(card, marker) for marker, card, _ in g.anchors],   # the full Marker — selector preserved
                 require_stamp=require_stamp, today=today)) for c, g in grounded]
+    # fail-CLOSED on evidence, end to end: a criterion may resolve (decision) yet have no SHOWABLE span
+    # (e.g. a folded/cross-line match). The judge must never score without the evidence it cites, so if
+    # any criterion's bundle carries a rejection, abstain rather than issue a verdict on absent evidence.
+    gaps = [(it.criterion.id, it.context.rejected[0].resolution.value) for it in items if it.context.rejected]
+    if gaps:
+        return Verdict("Unavailable", None, hurdle, (), tuple(gaps))
     grounded_ids = {c.id for c, _ in grounded}
     by_id: dict = {}
     for s in judge.score(draft, items):
