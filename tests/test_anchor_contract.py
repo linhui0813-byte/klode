@@ -147,6 +147,14 @@ class GateConsumesTheSharedParser(unittest.TestCase):
         self.assertEqual(ev.resolution, lib.EvidenceResolution.FOUND)
         self.assertEqual([n for n, _ in ev.lines], [2])
 
+    def test_context_selector_pins_the_adjacent_occurrence(self):
+        src = "beta target here\nalpha target there"                 # 'target' twice; 'alpha' pins line 2
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cc2", dim="dc2",
+                                       moves="- **Ctx.** (grep: `target` before `alpha`)", source_text=src))
+        ev = lib.verify_evidence(cfg, "cc2", load_criteria(cfg, "dc2")[0][0].markers[0])
+        self.assertEqual(ev.resolution, lib.EvidenceResolution.FOUND)
+        self.assertEqual([n for n, _ in ev.lines], [2])              # the occurrence preceded by 'alpha'
+
     def test_empty_phrase_or_regex_does_not_ground(self):
         cfg = lib.Config.load(_make_kb(self.tmp, cid="ce", dim="de",
                                        moves="- **M.** (grep: `present`)", source_text="present here"))
