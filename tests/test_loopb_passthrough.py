@@ -58,6 +58,12 @@ class MultiAnchorGrounding(unittest.TestCase):
         self.assertEqual(cards, {"brevity", "structure"})        # both anchors kept, not just the first
         self.assertEqual(len(g.anchors), len(c2.markers))
 
+    def test_a_criterion_with_no_anchors_is_not_grounded(self):
+        from klode.gate import Criterion
+        cfg = lib.Config.load(FIX)
+        panel = load_criteria(cfg, "pacing")[1]
+        self.assertFalse(ground(cfg, Criterion("X", "empty", ()), panel).grounded)
+
 
 class JudgeSeam(unittest.TestCase):
     def test_unknown_criterion_id_fails_loud(self):
@@ -70,6 +76,31 @@ class JudgeSeam(unittest.TestCase):
         with self.assertRaises(ValueError):
             review_draft(cfg, "d", "pacing", PhantomJudge())
 
+    def test_duplicate_score_id_fails_loud(self):
+        cfg = lib.Config.load(FIX)
+
+        class DupJudge:
+            def score(self, draft, items):
+                return [Score(it.id, 9, "n") for it in items] + [Score(items[0].id, 8, "dup")]
+
+        with self.assertRaises(ValueError):
+            review_draft(cfg, "d", "pacing", DupJudge())
+
+    def test_missing_score_fails_loud(self):
+        cfg = lib.Config.load(FIX)
+
+        class ShortJudge:
+            def score(self, draft, items):
+                return [Score(items[0].id, 9, "n")]              # scores only the first — the rest are missing
+
+        with self.assertRaises(ValueError):
+            review_draft(cfg, "d", "pacing", ShortJudge())
+
+    def test_ungrounded_compat_property(self):
+        cfg = lib.Config.load(FIX2)
+        v = review_draft(cfg, "d", "cadence", FixtureJudge({}, default=(9, "x")))
+        self.assertEqual(v.ungrounded, tuple(cid for cid, _ in v.unavailable))
+
     def test_judge_receives_verified_evidence_bundle(self):
         cfg = lib.Config.load(FIX)
         spy = SpyJudge(default=9)
@@ -79,6 +110,18 @@ class JudgeSeam(unittest.TestCase):
         for item in spy.captured:                                 # every item carries its verified evidence
             self.assertIsInstance(item.context, lib.ContextBundle)
             self.assertTrue(item.context.grounded)                # real spans from the real grounding path
+
+    def test_judge_can_read_statement_and_guidance_off_the_grading_item(self):
+        cfg = lib.Config.load(FIX)
+        seen = []
+
+        class ReadingJudge:
+            def score(self, draft, items):
+                seen.extend((it.statement, it.guidance) for it in items)
+                return [Score(it.id, 9, "n") for it in items]
+
+        review_draft(cfg, "d", "pacing", ReadingJudge())
+        self.assertTrue(seen and all(stmt for stmt, _ in seen))    # statement delegates to the criterion
 
     def test_ungrounded_criterion_is_unavailable(self):
         cfg = lib.Config.load(FIX2)                               # unstamped cards + require_stamp default True

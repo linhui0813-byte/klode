@@ -115,6 +115,22 @@ class GateConsumesTheSharedParser(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_criteria(cfg, "dx")
 
+    def test_unknown_dimension_raises(self):
+        cfg = lib.Config.load(FIX)
+        with self.assertRaises(ValueError):
+            load_criteria(cfg, "no-such-dimension")
+
+    def test_craft_with_no_moves_raises(self):
+        # a Craft layer with prose but NO bold-move bullets yields no criteria — fail loud
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cp", dim="dp",
+                                       moves="just prose, no move bullets here", source_text="x"))
+        with self.assertRaises(ValueError):
+            load_criteria(cfg, "dp")
+
+    def test_panel_skips_empty_entries(self):
+        from klode.gate.criteria import _panel
+        self.assertEqual(_panel("a, , b"), ["a", "b"])            # an empty segment is skipped
+
 
 class ZeroDep(unittest.TestCase):
     def test_import_klode_lib_stays_stdlib_only(self):
