@@ -164,18 +164,22 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
                             lines=(tuple(v.lines) if v else ()), source_sha=cur_sha)
 
 
-def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today,
+def _resolve_snapshot(cfg, card: str, anchor: "str | common.Marker", *, require_stamp: bool, today,
                       max_lines: int = 10) -> "tuple[core.EvidenceHit, list[str] | None]":
     """Read the source ONCE and resolve occurrence + freshness + review against that single snapshot,
     returning `(hit, source_lines)`. `source_lines` is the source split into lines (so a caller can
-    window without re-reading) or None when the source is not installed. Line location is
-    case-SENSITIVE literal — matching the citation discipline (`check.py` treats anchors literally),
-    which the occurrence-only `verify` op's case-insensitive line lookup does not. This is the single
-    read shared by `verify_evidence` and `verify_context`: no double read, no between-read TOCTOU."""
+    window without re-reading) or None when the source is not installed. `anchor` is a bare phrase
+    OR a full `common.Marker` — passing the Marker honours the linter's selector semantics (regex,
+    prefix/suffix context, `#n` occurrence). Line location is case-SENSITIVE literal — matching the
+    citation discipline (`check.py` treats anchors literally), which the occurrence-only `verify`
+    op's case-insensitive lookup does not. This is the single read shared by `verify_evidence` and
+    `verify_context`: no double read, no between-read TOCTOU."""
     from datetime import date
 
+    marker = anchor if isinstance(anchor, common.Marker) else common.Marker(anchor)
+
     def hit(res, *, lines=(), sha=None, rel=None):
-        return core.EvidenceHit(res, phrase, card=card, rel=rel, lines=lines, source_sha=sha)
+        return core.EvidenceHit(res, marker.phrase, card=card, rel=rel, lines=lines, source_sha=sha)
 
     src = query.source_of(cfg, card)
     if src is None or not src.installed:
@@ -187,7 +191,7 @@ def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today
     source_lines = text.splitlines()
     if stored and stored != cur_sha:                                 # source drifted since it was stamped
         return hit(core.Resolution.SOURCE_STALE, sha=cur_sha, rel=src.rel), source_lines
-    res = common.resolve(common.Marker(phrase), common.haystacks(text))   # occurrence + ambiguity (shared matcher)
+    res = common.resolve(marker, common.haystacks(text))             # occurrence + ambiguity (shared matcher)
     if not res.found:
         return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
     if res.ambiguous:
@@ -204,7 +208,7 @@ def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today
             return hit(core.Resolution.REVIEW_EXPIRED, sha=cur_sha, rel=src.rel), source_lines
     if require_stamp and not stored:
         return hit(core.Resolution.SOURCE_UNSTAMPED, sha=cur_sha, rel=src.rel), source_lines
-    located = [(i, ln.strip()) for i, ln in enumerate(source_lines, 1) if phrase in ln][:max_lines]
+    located = [(i, ln.strip()) for i, ln in enumerate(source_lines, 1) if marker.phrase in ln][:max_lines]
     resolution = core.Resolution.FOUND if located else core.Resolution.FOLDED_ONLY
     return hit(resolution, lines=tuple(located), sha=cur_sha, rel=src.rel), source_lines
 

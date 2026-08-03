@@ -19,10 +19,12 @@ from klode import lib   # the public facade — this package never reaches into 
 class Criterion:
     id: str
     statement: str                 # the bold move — the imperative summary of what a draft should do
-    phrases: tuple[str, ...]       # verbatim source phrases backing it (the anchors)
+    phrases: tuple[str, ...]       # verbatim source phrases backing it (mirrors [m.phrase for m in markers])
     guidance: str = ""             # the move's prose — what it means / how to judge it (a judge needs this)
     criticality: str = "required"  # parsed from an optional [advisory] tag; NOT yet enforced — every
     #                                criterion currently gates the verdict (an advisory path is future work)
+    markers: tuple = ()            # the full structured anchors (lib.Marker) — regex/context/#n honoured
+    #                                at grounding; a Criterion built with only `phrases` grounds them bare
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,6 @@ class Grounding:
 
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
-_GREP_RE = re.compile(r"grep:\s*`([^`]+)`")
 # a whole (grep: …) marker — backtick-aware, so a `)` INSIDE the quoted phrase does not close it early
 _GREP_MARKER = re.compile(r"\(\s*grep:(?:[^`)]|`[^`]*`)*\)", re.S)
 _ADVISORY = re.compile(r"\[advisory\]", re.I)          # an optional criticality tag on a move
@@ -80,8 +81,8 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
         head = _MOVE_HEAD.match(b)
         if not head:
             continue                                    # not a bold-headed move bullet — ignore
-        phrases = tuple(_GREP_RE.findall(b))
-        if not phrases:
+        markers = tuple(lib.parse_markers(b))          # the SHARED anchor parser (same as the linter)
+        if not markers:
             # FAIL-CLOSED at the parser boundary: a stated move with no resolvable anchor must not be
             # silently dropped — that would let the gate score a reduced rubric and return Go.
             raise ValueError(f"{dimension!r} Craft move {head.group(1).strip()!r} has no (grep: `…`) "
@@ -90,8 +91,9 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
         demarked = _GREP_MARKER.sub("", after)          # anchor markers removed (so [advisory]/prose below
         criticality = "advisory" if _ADVISORY.search(demarked) else "required"   # can't false-match inside one)
         guidance = " ".join(_ADVISORY.sub("", demarked).split()).strip(" .—-")
-        crit.append(Criterion(f"C{len(crit) + 1}", head.group(1).strip().rstrip("."), phrases,
-                              guidance=guidance, criticality=criticality))
+        crit.append(Criterion(f"C{len(crit) + 1}", head.group(1).strip().rstrip("."),
+                              tuple(m.phrase for m in markers),
+                              guidance=guidance, criticality=criticality, markers=markers))
     if not crit:
         raise ValueError(f"{dimension!r} Craft layer has no anchored moves — the gate cannot operate")
     return crit, panel
@@ -106,21 +108,23 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
     (ambiguous provenance — every panel card is checked, not just the first). The reason is recorded."""
     ok = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
     first: tuple | None = None
-    for phrase in criterion.phrases:
+    # full Markers when present (regex/context/#n honoured); a phrase-only Criterion grounds bare.
+    markers = criterion.markers or tuple(lib.Marker(p) for p in criterion.phrases)
+    for marker in markers:
         hits: list[tuple] = []
         reason = lib.EvidenceResolution.NOT_FOUND.value           # if the panel is empty, it is not found
         for card in panel:                                        # check EVERY card — don't stop at the first
-            ev = lib.verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
+            ev = lib.verify_evidence(cfg, card, marker, require_stamp=require_stamp, today=today)
             if ev.resolution in ok:
-                hits.append((phrase, card, ev.lines[0][0] if ev.lines else None))
+                hits.append((marker.phrase, card, ev.lines[0][0] if ev.lines else None))
                 continue
             cand = ev.resolution.value                            # keep the most diagnostic failure reason
             if _REASON_RANK.get(cand, 0) >= _REASON_RANK.get(reason, 0):
                 reason = cand
         if len(hits) > 1:                                         # resolves in >1 card -> provenance is ambiguous
-            return Grounding(False, phrase=phrase, resolution="ambiguous-panel")
+            return Grounding(False, phrase=marker.phrase, resolution="ambiguous-panel")
         if not hits:
-            return Grounding(False, phrase=phrase, resolution=reason)   # resolves in no panel source
+            return Grounding(False, phrase=marker.phrase, resolution=reason)   # resolves in no panel source
         if first is None:
             first = hits[0]
     return Grounding(True, *first) if first else Grounding(False)

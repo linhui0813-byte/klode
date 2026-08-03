@@ -16,6 +16,7 @@ re-exported here (the name would shadow the `klode.lib.check` module).
 """
 from .config import Config, ConfigError
 from .console import ConsultRequest, ConsultResult, consult
+from .common import Marker, parse_markers   # the structured anchor contract, shared by linter + gate
 from .core import EvidenceContext, EvidenceHit
 from .core import Resolution as EvidenceResolution   # the grounding-outcome enum (distinct from query.Resolution)
 from .query import (
@@ -58,6 +59,7 @@ __all__ = [
     "consult", "ConsultRequest", "ConsultResult",
     "resolve", "Resolution",
     "verify", "Verification",
+    "Marker", "parse_markers",
     "verify_evidence", "verify_context", "EvidenceHit", "EvidenceContext", "EvidenceResolution",
     "dimension", "framework", "diagnose", "search",
     "__version__",
