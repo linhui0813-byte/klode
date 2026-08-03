@@ -21,7 +21,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import __version__, console, core, opspec, query, services
+from . import __version__, console, core, opspec, query, services, untrusted
 from .config import Config, ConfigError
 from .pool import KBPool
 
@@ -356,8 +356,8 @@ def _r_verify(result, args):
     if e.resolution is R.FOLDED_ONLY:
         return (f"VERIFIED — {phrase!r} resolves in {e.rel}, but only across line or "
                 f"hyphenation folding, so it sits on no single raw line.")
-    body = "\n".join(f"  {n}: {ln}" for n, ln in e.lines)
-    return f"VERIFIED — {phrase!r} occurs in {e.rel}:\n{body}"
+    body = "\n".join(f"  {n}: {ln}" for n, ln in e.lines)   # raw source lines — untrusted at a model boundary
+    return f"VERIFIED — {phrase!r} occurs in {e.rel}:\n{untrusted.wrap_untrusted(body)}"
 
 
 def _source_summary_from(v: "core.SourceCardResult") -> str:
