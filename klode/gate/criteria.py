@@ -99,25 +99,28 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
 
 def ground(cfg, criterion: Criterion, panel: list[str], *,
            require_stamp: bool = False, today=None) -> Grounding:
-    """Grounded only if EVERY cited phrase resolves — freshly and unambiguously — in a panel source,
-    as decided by `lib.verify_evidence` (NOT the occurrence-only `verify`). A criterion mixing one
-    real and three fabricated citations is NOT grounded; nor is one whose source is stale, unstamped
-    (when required), or past its review date. The failure reason is recorded for the verdict."""
+    """Grounded only if EVERY cited phrase resolves — freshly and in EXACTLY ONE panel source, as
+    decided by `lib.verify_evidence` (NOT the occurrence-only `verify`). A criterion mixing one real
+    and three fabricated citations is NOT grounded; nor is one whose source is stale, unstamped (when
+    required), or past its review date; nor one whose phrase resolves in more than one panel card
+    (ambiguous provenance — every panel card is checked, not just the first). The reason is recorded."""
     ok = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
     first: tuple | None = None
     for phrase in criterion.phrases:
-        hit = None
+        hits: list[tuple] = []
         reason = lib.EvidenceResolution.NOT_FOUND.value           # if the panel is empty, it is not found
-        for card in panel:
+        for card in panel:                                        # check EVERY card — don't stop at the first
             ev = lib.verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
             if ev.resolution in ok:
-                hit = (phrase, card, ev.lines[0][0] if ev.lines else None)
-                break
+                hits.append((phrase, card, ev.lines[0][0] if ev.lines else None))
+                continue
             cand = ev.resolution.value                            # keep the most diagnostic failure reason
             if _REASON_RANK.get(cand, 0) >= _REASON_RANK.get(reason, 0):
                 reason = cand
-        if hit is None:
+        if len(hits) > 1:                                         # resolves in >1 card -> provenance is ambiguous
+            return Grounding(False, phrase=phrase, resolution="ambiguous-panel")
+        if not hits:
             return Grounding(False, phrase=phrase, resolution=reason)   # resolves in no panel source
         if first is None:
-            first = hit
+            first = hits[0]
     return Grounding(True, *first) if first else Grounding(False)

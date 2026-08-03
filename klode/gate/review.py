@@ -44,11 +44,15 @@ class Verdict:
 
 
 def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
-                 require_stamp: bool = False, today=None) -> Verdict:
+                 require_stamp: bool = True, today=None) -> Verdict:
     """Fail-CLOSED: EVERY criterion must have current, unambiguous evidence or the verdict is
     "Unavailable" — never Go/Recycle. Dropping an ungrounded criterion and renormalizing the average
     (the old behavior) could turn a Recycle into a Go, so a gate that loses evidence must abstain,
-    not pass. Only when the whole rubric grounds does the judge score and a threshold verdict issue."""
+    not pass. Only when the whole rubric grounds does the judge score and a threshold verdict issue.
+
+    Secure by default: `require_stamp=True` — an UNSTAMPED source (no `source_sha256`, so no trusted
+    baseline against tampering) does not ground. Stamp sources with `klode build --stamp`; a caller
+    with an intentionally unstamped corpus can pass `require_stamp=False`."""
     if not 0 <= hurdle <= 100:
         raise ValueError(f"hurdle must be in 0..100, got {hurdle}")
     crit, panel = _crit.load_criteria(cfg, dimension)

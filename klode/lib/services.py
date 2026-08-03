@@ -164,38 +164,59 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
                             lines=(tuple(v.lines) if v else ()), source_sha=cur_sha)
 
 
-def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
-                    today: "date | None" = None) -> core.EvidenceHit:
-    """The structured, freshness- AND review-aware grounding verifier — stricter than the
-    occurrence-only `verify` op. A source that is stale (stamped hash drifted) or past its
-    `review_by` date does NOT ground; an UNSTAMPED source grounds unless `require_stamp=True` (a
-    supervising gate should set that). `superseded_by` is NOT enforced here — it is an advisory
-    re-point signal (check H WARN), not a grounding gate.
-
-    Layered on `_svc_verify` (which already yields SOURCE_NOT_INSTALLED / SOURCE_STALE / NOT_FOUND /
-    AMBIGUOUS / FOLDED_ONLY / FOUND). Only when the phrase actually resolves does the extra policy
-    apply, in order: review_by validity → review_by expiry → (optional) source-stamp presence. The
-    review-date rule matches `check.py` freshness exactly (`date.fromisoformat(rb) < today`)."""
+def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today,
+                      max_lines: int = 10) -> "tuple[core.EvidenceHit, list[str] | None]":
+    """Read the source ONCE and resolve occurrence + freshness + review against that single snapshot,
+    returning `(hit, source_lines)`. `source_lines` is the source split into lines (so a caller can
+    window without re-reading) or None when the source is not installed. Line location is
+    case-SENSITIVE literal — matching the citation discipline (`check.py` treats anchors literally),
+    which the occurrence-only `verify` op's case-insensitive line lookup does not. This is the single
+    read shared by `verify_evidence` and `verify_context`: no double read, no between-read TOCTOU."""
     from datetime import date
-    hit = _svc_verify(cfg, {"card": card, "phrase": phrase})
-    if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY):
-        return hit                                            # already a non-grounding outcome
-    p = query.card_path(cfg, card)
+
+    def hit(res, *, lines=(), sha=None, rel=None):
+        return core.EvidenceHit(res, phrase, card=card, rel=rel, lines=lines, source_sha=sha)
+
+    src = query.source_of(cfg, card)
+    if src is None or not src.installed:
+        return hit(core.Resolution.SOURCE_NOT_INSTALLED, rel=(src.rel if src else None)), None
+    raw = src.path.read_bytes()                                       # the ONE read
+    cur_sha = hashlib.sha256(raw).hexdigest()                        # same convention as check.py freshness
+    stored = _stored_sha(cfg, card)
+    text = raw.decode("utf-8", "replace")
+    source_lines = text.splitlines()
+    if stored and stored != cur_sha:                                 # source drifted since it was stamped
+        return hit(core.Resolution.SOURCE_STALE, sha=cur_sha, rel=src.rel), source_lines
+    res = common.resolve(common.Marker(phrase), common.haystacks(text))   # occurrence + ambiguity (shared matcher)
+    if not res.found:
+        return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
+    if res.ambiguous:
+        return hit(core.Resolution.AMBIGUOUS, sha=cur_sha, rel=src.rel), source_lines
+    p = query.card_path(cfg, card)                                   # freshness of the RESOLVED claim
     fm = common.front_matter(common.read(p)) if p else {}
     rb = common.fm_get(fm, "review_by")
     if rb and rb.strip():
         try:
             expires = date.fromisoformat(rb.strip())
         except ValueError:
-            return core.EvidenceHit(core.Resolution.REVIEW_DATE_INVALID, phrase, card=card,
-                                    rel=hit.rel, source_sha=hit.source_sha)
+            return hit(core.Resolution.REVIEW_DATE_INVALID, sha=cur_sha, rel=src.rel), source_lines
         if expires < (date.today() if today is None else today):
-            return core.EvidenceHit(core.Resolution.REVIEW_EXPIRED, phrase, card=card,
-                                    rel=hit.rel, source_sha=hit.source_sha)
-    if require_stamp and not _stored_sha(cfg, card):
-        return core.EvidenceHit(core.Resolution.SOURCE_UNSTAMPED, phrase, card=card,
-                                rel=hit.rel, source_sha=hit.source_sha)
-    return hit
+            return hit(core.Resolution.REVIEW_EXPIRED, sha=cur_sha, rel=src.rel), source_lines
+    if require_stamp and not stored:
+        return hit(core.Resolution.SOURCE_UNSTAMPED, sha=cur_sha, rel=src.rel), source_lines
+    located = [(i, ln.strip()) for i, ln in enumerate(source_lines, 1) if phrase in ln][:max_lines]
+    resolution = core.Resolution.FOUND if located else core.Resolution.FOLDED_ONLY
+    return hit(resolution, lines=tuple(located), sha=cur_sha, rel=src.rel), source_lines
+
+
+def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
+                    today: "date | None" = None) -> core.EvidenceHit:
+    """The structured, freshness- AND review-aware grounding verifier — stricter than the
+    occurrence-only `verify` op. A source that is stale (stamped hash drifted) or past its
+    `review_by` date does NOT ground; an UNSTAMPED source grounds unless `require_stamp=True` (a
+    supervising gate should set that). `superseded_by` is NOT enforced here — it is an advisory
+    re-point signal (check H WARN), not a grounding gate. Line location is case-sensitive literal."""
+    return _resolve_snapshot(cfg, card, phrase, require_stamp=require_stamp, today=today)[0]
 
 
 def _locate_folded(text: str, phrase: str) -> tuple[int, int] | None:
@@ -217,23 +238,19 @@ def _locate_folded(text: str, phrase: str) -> tuple[int, int] | None:
 def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_window: int = 40,
                    require_stamp: bool = False, today: "date | None" = None) -> core.EvidenceContext:
     """The evidence-context op: a grounding result PLUS the bounded surrounding source text a judge
-    reads to score a claim against the book's own words. Built on `verify_evidence`, so a stale,
-    unstamped (when required), or review-expired source is `usable=False`. The window is at most
-    `max_window` lines and always contains the match — its whole span when that fits, otherwise the
-    match start (an over-long match is truncated at the tail). A source shorter than the window is
-    returned in full; for large sources it is never a whole-source dump."""
+    reads to score a claim against the book's own words. A stale, unstamped (when required), or
+    review-expired source is `usable=False`. Shares ONE source read with the grounding check (no
+    double read, no between-read drift). The window is at most `max_window` lines and always contains
+    the match — its whole span when that fits, otherwise the match start (an over-long match is
+    truncated at the tail). A source shorter than the window is returned in full; never a whole dump."""
     if not isinstance(context_lines, int) or isinstance(context_lines, bool) or context_lines < 0:
         raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
     if not isinstance(max_window, int) or isinstance(max_window, bool) or max_window < 1:
         raise ValueError(f"max_window must be a positive int, got {max_window!r}")
-    hit = verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
+    hit, lines = _resolve_snapshot(cfg, card, phrase, require_stamp=require_stamp, today=today)
     base = dict(resolution=hit.resolution, card=card, rel=hit.rel, source_sha=hit.source_sha)
-    if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY):
+    if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY) or lines is None:
         return core.EvidenceContext(**base)                          # not usable: no span
-    src = query.source_of(cfg, card)
-    if src is None or not src.installed:
-        return core.EvidenceContext(**base)
-    lines = src.path.read_text(encoding="utf-8", errors="replace").splitlines()
     match_nums = tuple(n for n, _ in hit.lines)
     if not match_nums:                                               # folded match: locate the span
         span = _locate_folded("\n".join(lines), phrase)

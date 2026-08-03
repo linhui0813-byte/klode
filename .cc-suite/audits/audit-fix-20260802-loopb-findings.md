@@ -20,7 +20,7 @@
 | 12 | review.py:24-30 | Med | D4 | `Verdict.ungrounded` removed with no compat alias | Add deprecated `ungrounded` property | fixed | R1 |
 | 13 | review.py:5-7 / criteria.py:51 | Low | D9 | Module docstring still says "dropped and flagged" + Go/Recycle; `_panel` says verify() | Update docstrings | fixed | R1 |
 | 14 | tests | Med | D7 | Weak/absent tests: bounded-window needle presence, folded-unlocatable, parser-omission, parens-in-anchor, advisory-in-anchor, input validation, reason precedence | Add targeted tests | fixed | R1 |
-| D1 | services verify_context | Med | D6 | Whole-source read / up to 3 reads / no cache | DEFERRED — matches existing klode read pattern for book-sized sources | deferred |
-| D2 | services verify_context | Med | D3 | TOCTOU: verify and context use different fs snapshots | DEFERRED — local single-user; would require threading one snapshot through the shared verifier | deferred |
-| D3 | criteria.py:96 | Med | D3 | First-card-wins provenance in multi-card panels | DEFERRED — all current panels are single-card; documented as policy | deferred |
-| D4 | gate default | Med | D2 | require_stamp=False default (unstamped grounds) | DEFERRED (default) — narrowing docstrings instead (finding 6); production sets require_stamp=True | deferred |
+| D1 | services verify_context | Med | D6 | Whole-source read / up to 3 reads / no cache | DEFERRED — matches existing klode read pattern for book-sized sources | fixed (R3: single-read _resolve_snapshot shared by verify_evidence/verify_context) |
+| D2 | services verify_context | Med | D3 | TOCTOU: verify and context use different fs snapshots | DEFERRED — local single-user; would require threading one snapshot through the shared verifier | fixed (R3: one snapshot — no between-read TOCTOU) |
+| D3 | criteria.py:96 | Med | D3 | First-card-wins provenance in multi-card panels | DEFERRED — all current panels are single-card; documented as policy | fixed (R3: ground() requires exactly one panel card (ambiguous-panel otherwise)) |
+| D4 | gate default | Med | D2 | require_stamp=False default (unstamped grounds) | DEFERRED (default) — narrowing docstrings instead (finding 6); production sets require_stamp=True | fixed (R3: one snapshot — no between-read TOCTOU) |

@@ -137,7 +137,7 @@ class GateHardening(unittest.TestCase):
         # the grounded one 10/10, the verdict must be Unavailable — never Go, never Recycle.
         cfg = self._cfg(
             moves=[("Present move", ["anchor phrase"]), ("Absent move", ["nowhere in the source"])],
-            source_text="anchor phrase here")
+            source_text="anchor phrase here", stamp=True)
         v = review_draft(cfg, "a draft", "craft", FixtureJudge({}, default=(10, "great")))
         self.assertEqual(v.decision, "Unavailable")
         self.assertIsNone(v.score)
@@ -152,14 +152,14 @@ class GateHardening(unittest.TestCase):
         ]
         for kw in cases:
             with self.subTest(kw=kw):
-                cfg = self._cfg(**kw)
+                cfg = self._cfg(stamp=True, **kw)                    # stamp: isolate the INTENDED failure
                 v = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(10, "x")),
                                  today=date(2026, 1, 1))
                 self.assertEqual(v.decision, "Unavailable")
 
     def test_all_grounded_still_scores_normally(self):
         # the fix must NOT break the happy path: all criteria grounded -> a real Go/Recycle
-        cfg = self._cfg(moves=[("M", ["anchor phrase"])], source_text="anchor phrase here")
+        cfg = self._cfg(moves=[("M", ["anchor phrase"])], source_text="anchor phrase here", stamp=True)
         go = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(9, "strong")))
         self.assertEqual(go.decision, "Go")
         rec = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(2, "weak")))
@@ -303,6 +303,58 @@ class EvidenceContextOp(unittest.TestCase):
         ctx = lib.verify_context(cfg, "src1", "anchor here")
         self.assertEqual(ctx.resolution, R.SOURCE_STALE)
         self.assertFalse(ctx.usable)
+
+
+class DeferredClosures(unittest.TestCase):
+    """The findings that were once deferred, now closed: single-read/case-sensitive location,
+    multi-card provenance, and secure-by-default stamping."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-def-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_context_line_location_is_case_sensitive(self):
+        # an earlier different-CASE occurrence must not steal the window from the exact-case match
+        src = "deep modules appear early lowercase\n" + "\n".join(["filler"] * 20) + "\nDeep Modules exact here"
+        cfg = lib.Config.load(_make_kb(self.tmp, moves=[("M", ["Deep Modules"])], source_text=src))
+        ev = lib.verify_evidence(cfg, "src1", "Deep Modules")
+        if ev.resolution == R.FOUND:                                 # case-sensitive resolver => unique
+            ctx = lib.verify_context(cfg, "src1", "Deep Modules", context_lines=0, max_window=3)
+            self.assertIn("Deep Modules exact here", ctx.text)       # the exact-case line, not the earlier one
+            self.assertNotIn("appear early", ctx.text)
+
+    def test_phrase_in_two_panel_cards_is_ambiguous_provenance(self):
+        # a phrase that grounds in MORE THAN ONE panel card is not grounded — provenance is ambiguous
+        libd = self.tmp / "library"
+        (libd / "books").mkdir(parents=True)
+        (libd / "cards").mkdir()
+        (libd / "frameworks" / "_syntheses").mkdir(parents=True)
+        (self.tmp / "library.toml").write_text(
+            '[library]\ndir = "library"\ncards = "cards"\nshelves = ["books"]\n'
+            '[bibliography]\nenabled = false\n'
+            '[frameworks]\nenabled = true\ndir = "frameworks"\nsyntheses = "_syntheses"\n', encoding="utf-8")
+        for cid in ("a", "b"):
+            (libd / "books" / f"{cid}.txt").write_text("the shared phrase appears here", encoding="utf-8")
+            (libd / "cards" / f"{cid}.md").write_text(
+                f"---\nid: {cid}\nshelf: books\nfile: library/books/{cid}.txt\ngrep_ready: true\n---\n# {cid}\n",
+                encoding="utf-8")
+        (libd / "cards" / "INDEX.md").write_text("# Card Index\n\n- [a](a.md)\n- [b](b.md)\n", encoding="utf-8")
+        (libd / "frameworks" / "_syntheses" / "multi.md").write_text(
+            "---\ntitle: M\nstatus: canonical\ndimension: multi\ncards: [a, b]\n---\n\n# M\n\n"
+            "**Core question:** q?\n\n## Craft\n\nintro.\n\n- **Move.** (grep: `the shared phrase`)\n",
+            encoding="utf-8")
+        cfg = lib.Config.load(self.tmp / "library.toml")
+        crit, panel = load_criteria(cfg, "multi")
+        self.assertEqual(panel, ["a", "b"])
+        g = ground(cfg, crit[0], panel)
+        self.assertFalse(g.grounded)
+        self.assertEqual(g.resolution, "ambiguous-panel")
+
+    def test_gate_is_secure_by_default_unstamped_source_does_not_ground(self):
+        # review_draft defaults to require_stamp=True: an unstamped source yields Unavailable
+        cfg = lib.Config.load(_make_kb(self.tmp, moves=[("M", ["anchor here"])], source_text="anchor here"))
+        v = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(9, "strong")))
+        self.assertEqual(v.decision, "Unavailable")
+        self.assertTrue(any("unstamped" in r for _, r in v.unavailable))
 
 
 if __name__ == "__main__":
