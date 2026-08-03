@@ -251,13 +251,14 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
         raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
     if not isinstance(max_window, int) or isinstance(max_window, bool) or max_window < 1:
         raise ValueError(f"max_window must be a positive int, got {max_window!r}")
+    marker = phrase if isinstance(phrase, common.Marker) else common.Marker(phrase)
     hit, lines = _resolve_snapshot(cfg, card, phrase, require_stamp=require_stamp, today=today)
-    base = dict(resolution=hit.resolution, card=card, rel=hit.rel, source_sha=hit.source_sha)
+    base = dict(resolution=hit.resolution, card=card, phrase=marker.phrase, rel=hit.rel, source_sha=hit.source_sha)
     if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY) or lines is None:
         return core.EvidenceContext(**base)                          # not usable: no span
     match_nums = tuple(n for n, _ in hit.lines)
     if not match_nums:                                               # folded match: locate the span
-        span = _locate_folded("\n".join(lines), phrase)
+        span = _locate_folded("\n".join(lines), marker.phrase)
         if span is None:
             return core.EvidenceContext(**base)                      # resolves but not locatable -> unusable
         match_nums = span                                            # (start, end) — not a materialized range
@@ -274,6 +275,26 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
             hi = min(len(lines), lo + max_window - 1)
     return core.EvidenceContext(usable=True, line_start=lo, line_end=hi, match_lines=match_nums,
                                 text="\n".join(lines[lo - 1:hi]), **base)
+
+
+def build_context_bundle(cfg, requests, *, context_lines: int = 3, max_window: int = 40,
+                         require_stamp: bool = False, today: "date | None" = None) -> core.ContextBundle:
+    """Fail-CLOSED verified-context bundle for a sequence of `(card, anchor)` requests (`anchor` is a
+    phrase or a `common.Marker`). Each request either grounds — its verified `EvidenceContext` (with
+    phrase/card/lines/source_sha provenance) joins `grounded` — or is rejected with its explicit
+    resolution in `rejected`. Nothing is silently dropped; there is NO generation. Deterministic:
+    both partitions follow request order. `today=` is injectable for freshness determinism."""
+    grounded: list[core.EvidenceContext] = []
+    rejected: list[core.RejectedContext] = []
+    for card, anchor in requests:
+        ctx = verify_context(cfg, card, anchor, context_lines=context_lines, max_window=max_window,
+                             require_stamp=require_stamp, today=today)
+        if ctx.usable:
+            grounded.append(ctx)
+        else:
+            phrase = anchor.phrase if isinstance(anchor, common.Marker) else anchor
+            rejected.append(core.RejectedContext(card, phrase, ctx.resolution))
+    return core.ContextBundle(tuple(grounded), tuple(rejected))
 
 
 # ---------------------------------------------------------------------------
