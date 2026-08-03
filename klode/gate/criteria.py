@@ -30,10 +30,11 @@ class Criterion:
 @dataclass(frozen=True)
 class Grounding:
     grounded: bool
-    phrase: str | None = None      # the phrase that resolved (grounded) or failed (ungrounded)
-    card: str | None = None        # the source card it resolved in
-    line: int | None = None        # 1-indexed line
+    phrase: str | None = None      # the FIRST anchor's phrase (grounded) or the failing phrase (ungrounded)
+    card: str | None = None        # the first anchor's source card
+    line: int | None = None        # the first anchor's 1-indexed line
     resolution: str | None = None  # when NOT grounded: the EvidenceResolution value (the reason why)
+    anchors: tuple = ()            # EVERY resolved anchor: (phrase, card, line) — not just the first
 
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
@@ -107,7 +108,7 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
     required), or past its review date; nor one whose phrase resolves in more than one panel card
     (ambiguous provenance — every panel card is checked, not just the first). The reason is recorded."""
     ok = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
-    first: tuple | None = None
+    resolved: list[tuple] = []                                    # EVERY anchor's grounding, not just the first
     # full Markers when present (regex/context/#n honoured); a phrase-only Criterion grounds bare.
     markers = criterion.markers or tuple(lib.Marker(p) for p in criterion.phrases)
     for marker in markers:
@@ -125,6 +126,8 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
             return Grounding(False, phrase=marker.phrase, resolution="ambiguous-panel")
         if not hits:
             return Grounding(False, phrase=marker.phrase, resolution=reason)   # resolves in no panel source
-        if first is None:
-            first = hits[0]
-    return Grounding(True, *first) if first else Grounding(False)
+        resolved.append(hits[0])
+    if not resolved:
+        return Grounding(False)
+    p, c, ln = resolved[0]
+    return Grounding(True, phrase=p, card=c, line=ln, anchors=tuple(resolved))

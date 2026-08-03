@@ -314,7 +314,9 @@ def _svc_review(cfg, params: dict) -> core.ReviewResult:
         judge_identity=identity,
         non_production=True,                                   # the stub verdict is never authoritative
         decision=v.decision, score=v.score,
-        defects=tuple((ln.criterion.statement, ln.score, ln.note) for ln in v.defects),
+        # carry the source-verified grounding (card, line) to the public surface — not just the note
+        defects=tuple((ln.criterion.statement, ln.score, ln.note, ln.grounding.card, ln.grounding.line)
+                      for ln in v.defects),
     )
 
 
