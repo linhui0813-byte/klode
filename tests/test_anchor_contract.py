@@ -131,6 +131,47 @@ class GateConsumesTheSharedParser(unittest.TestCase):
         from klode.gate.criteria import _panel
         self.assertEqual(_panel("a, , b"), ["a", "b"])            # an empty segment is skipped
 
+    def test_occurrence_selector_locates_the_nth_line_not_the_first(self):
+        src = "intro\nthe target phrase\nfiller line\nthe target phrase\nend"   # occurs on lines 2 and 4
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cn", dim="dn",
+                                       moves="- **Second.** (grep: `the target phrase` #2)", source_text=src))
+        m = load_criteria(cfg, "dn")[0][0].markers[0]
+        ev = lib.verify_evidence(cfg, "cn", m)
+        self.assertEqual(ev.resolution, lib.EvidenceResolution.FOUND)
+        self.assertEqual([n for n, _ in ev.lines], [4])          # the SECOND occurrence, not the first
+
+    def test_regex_selector_locates_via_pattern(self):
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cr", dim="dr",
+                                       moves="- **Rx.** (grep-re: `t.rget`)", source_text="pre\ntarget here\npost"))
+        ev = lib.verify_evidence(cfg, "cr", load_criteria(cfg, "dr")[0][0].markers[0])
+        self.assertEqual(ev.resolution, lib.EvidenceResolution.FOUND)
+        self.assertEqual([n for n, _ in ev.lines], [2])
+
+    def test_empty_phrase_or_regex_does_not_ground(self):
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="ce", dim="de",
+                                       moves="- **M.** (grep: `present`)", source_text="present here"))
+        for bad in ("", "   ", lib.Marker("", regex=True), lib.Marker("  ")):
+            self.assertEqual(lib.verify_evidence(cfg, "ce", bad).resolution,
+                             lib.EvidenceResolution.NOT_FOUND)
+
+    def test_zeroth_occurrence_does_not_ground(self):
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cz", dim="dz",
+                                       moves="- **M.** (grep: `x`)", source_text="x here"))
+        self.assertEqual(lib.verify_evidence(cfg, "cz", lib.Marker("x", nth=0)).resolution,
+                         lib.EvidenceResolution.NOT_FOUND)
+
+    def test_divergent_phrases_and_markers_are_rejected(self):
+        from klode.gate import Criterion
+        with self.assertRaises(ValueError):                      # a fabricated phrase paired with a real marker
+            Criterion("X", "s", ("missing",), markers=(lib.Marker("real"),))
+        with self.assertRaises(ValueError):                      # non-Marker element
+            Criterion("Y", "s", ("p",), markers=("not-a-marker",))
+
+    def test_advisory_inside_a_regex_anchor_does_not_flip_criticality(self):
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="ca", dim="da",
+                                       moves="- **M.** (grep-re: `[advisory]item`)", source_text="Xitem here"))
+        self.assertEqual(load_criteria(cfg, "da")[0][0].criticality, "required")
+
 
 class ZeroDep(unittest.TestCase):
     def test_import_klode_lib_stays_stdlib_only(self):

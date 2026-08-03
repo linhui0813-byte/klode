@@ -92,7 +92,7 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
         return Verdict("Unavailable", None, hurdle, (), tuple(unavailable))
     # hand the judge each grounded criterion WITH its verified evidence (the seam for a real judge).
     items = [GradingItem(c, lib.build_context_bundle(
-                cfg, [(card, phrase) for phrase, card, _ in g.anchors],
+                cfg, [(card, marker) for marker, card, _ in g.anchors],   # the full Marker — selector preserved
                 require_stamp=require_stamp, today=today)) for c, g in grounded]
     grounded_ids = {c.id for c, _ in grounded}
     by_id: dict = {}

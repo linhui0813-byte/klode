@@ -26,6 +26,15 @@ class Criterion:
     markers: tuple = ()            # the full structured anchors (lib.Marker) — regex/context/#n honoured
     #                                at grounding; a Criterion built with only `phrases` grounds them bare
 
+    def __post_init__(self):
+        # markers and phrases must not diverge: a fabricated phrase paired with a real marker would
+        # otherwise be silently omitted from grounding (only markers are grounded when present).
+        if self.markers:
+            if any(not isinstance(m, lib.Marker) for m in self.markers):
+                raise ValueError("Criterion.markers must all be lib.Marker instances")
+            if tuple(m.phrase for m in self.markers) != tuple(self.phrases):
+                raise ValueError("Criterion.phrases must mirror markers (phrase-per-marker, in order)")
+
 
 @dataclass(frozen=True)
 class Grounding:
@@ -34,12 +43,14 @@ class Grounding:
     card: str | None = None        # the first anchor's source card
     line: int | None = None        # the first anchor's 1-indexed line
     resolution: str | None = None  # when NOT grounded: the EvidenceResolution value (the reason why)
-    anchors: tuple = ()            # EVERY resolved anchor: (phrase, card, line) — not just the first
+    anchors: tuple = ()            # EVERY resolved anchor: (lib.Marker, card, line) — the full selector,
+    #                                not just the phrase, so downstream re-verification is faithful
 
 
 _MOVE_HEAD = re.compile(r"^- \*\*(.+?)\*\*")            # the bold move name at a bullet's head
-# a whole (grep: …) marker — backtick-aware, so a `)` INSIDE the quoted phrase does not close it early
-_GREP_MARKER = re.compile(r"\(\s*grep:(?:[^`)]|`[^`]*`)*\)", re.S)
+# a whole (grep:/grep-re:/search:/search-re: …) marker — backtick-aware, so a `)` INSIDE the quoted
+# phrase does not close it early, and every anchor key is stripped from the guidance/advisory text
+_GREP_MARKER = re.compile(r"\(\s*(?:grep|search)(?:-re)?:(?:[^`)]|`[^`]*`)*\)", re.S)
 _ADVISORY = re.compile(r"\[advisory\]", re.I)          # an optional criticality tag on a move
 _PANEL_RE = re.compile(r"[\[\]]")
 _ANNOT_RE = re.compile(r"\s*\([^)]*\)")                 # a card annotation, e.g. `sternberg (cross-ref)`
@@ -117,7 +128,7 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
         for card in panel:                                        # check EVERY card — don't stop at the first
             ev = lib.verify_evidence(cfg, card, marker, require_stamp=require_stamp, today=today)
             if ev.resolution in ok:
-                hits.append((marker.phrase, card, ev.lines[0][0] if ev.lines else None))
+                hits.append((marker, card, ev.lines[0][0] if ev.lines else None))   # keep the MARKER, not the bare phrase
                 continue
             cand = ev.resolution.value                            # keep the most diagnostic failure reason
             if _REASON_RANK.get(cand, 0) >= _REASON_RANK.get(reason, 0):
@@ -129,5 +140,5 @@ def ground(cfg, criterion: Criterion, panel: list[str], *,
         resolved.append(hits[0])
     if not resolved:
         return Grounding(False)
-    p, c, ln = resolved[0]
-    return Grounding(True, phrase=p, card=c, line=ln, anchors=tuple(resolved))
+    marker0, c, ln = resolved[0]                                  # anchors hold (Marker, card, line)
+    return Grounding(True, phrase=marker0.phrase, card=c, line=ln, anchors=tuple(resolved))

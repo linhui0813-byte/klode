@@ -114,6 +114,18 @@ class ContextBundle(unittest.TestCase):
         self.assertEqual(lib.build_context_bundle(cfg, reqs, today=date(2026, 1, 1)),
                          lib.build_context_bundle(cfg, reqs, today=date(2026, 1, 1)))
 
+    def test_empty_phrase_is_rejected_not_grounded(self):
+        cfg = _kb(self.tmp, {"a": "some content here"})
+        b = lib.build_context_bundle(cfg, [("a", "")])
+        self.assertEqual(b.grounded, ())
+        self.assertEqual(b.rejected[0].resolution, R.NOT_FOUND)
+
+    def test_occurrence_marker_bundle_locates_the_nth(self):
+        cfg = _kb(self.tmp, {"a": "l1\nthe mark\nl3\nthe mark\nl5"})     # 'the mark' on lines 2 and 4
+        b = lib.build_context_bundle(cfg, [("a", lib.Marker("the mark", nth=2))], context_lines=0)
+        self.assertEqual(len(b.grounded), 1)
+        self.assertEqual(b.grounded[0].match_lines, (4,))               # the SECOND occurrence, not the first
+
     def test_facade_and_zero_dep(self):
         for name in ("build_context_bundle", "ContextBundle", "RejectedContext"):
             self.assertIn(name, lib.__all__)

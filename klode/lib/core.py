@@ -158,7 +158,6 @@ class EvidenceContext:
     the window is returned in full."""
     resolution: Resolution
     card: str | None = None
-    phrase: str | None = None                # the anchor phrase this context grounds (provenance)
     rel: str | None = None
     source_sha: str | None = None
     usable: bool = False                     # resolution in (FOUND, FOLDED_ONLY) AND a span was located
@@ -166,6 +165,8 @@ class EvidenceContext:
     line_end: int | None = None
     match_lines: tuple[int, ...] = ()        # the matched line numbers inside the window
     text: str = ""                           # the bounded surrounding source text
+    phrase: str | None = None                # the anchor phrase this context grounds (provenance; appended
+    #                                          to keep positional construction of the earlier fields stable)
 
 
 @dataclass(frozen=True)

@@ -191,6 +191,10 @@ def _resolve_snapshot(cfg, card: str, anchor: "str | common.Marker", *, require_
     source_lines = text.splitlines()
     if stored and stored != cur_sha:                                 # source drifted since it was stamped
         return hit(core.Resolution.SOURCE_STALE, sha=cur_sha, rel=src.rel), source_lines
+    if not marker.phrase.strip() or (marker.nth is not None and marker.nth < 1):
+        # an empty phrase / empty regex matches everywhere, and #0 makes `len >= nth` trivially true —
+        # both would ground ARBITRARY text. Reject at the boundary; never a grounding bypass.
+        return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
     res = common.resolve(marker, common.haystacks(text))             # occurrence + ambiguity (shared matcher)
     if not res.found:
         return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
@@ -208,9 +212,47 @@ def _resolve_snapshot(cfg, card: str, anchor: "str | common.Marker", *, require_
             return hit(core.Resolution.REVIEW_EXPIRED, sha=cur_sha, rel=src.rel), source_lines
     if require_stamp and not stored:
         return hit(core.Resolution.SOURCE_UNSTAMPED, sha=cur_sha, rel=src.rel), source_lines
-    located = [(i, ln.strip()) for i, ln in enumerate(source_lines, 1) if marker.phrase in ln][:max_lines]
+    located = _locate(marker, source_lines, max_lines)               # honours regex / #n / before-after
     resolution = core.Resolution.FOUND if located else core.Resolution.FOLDED_ONLY
     return hit(resolution, lines=tuple(located), sha=cur_sha, rel=src.rel), source_lines
+
+
+def _locate(marker: "common.Marker", source_lines: list, max_lines: int) -> list:
+    """Raw-line location for a resolved marker, HONOURING its selector (regex, prefix/suffix context,
+    `#n` occurrence) — not a bare substring scan. A match that resolves only across whitespace or
+    hyphenation folding has no raw-line occurrence here, so this returns [] and the caller records
+    FOLDED_ONLY (as before). The grounding DECISION already came from `common.resolve`; this pins the
+    exact occurrence for provenance and the context window."""
+    import re
+    occ: list = []                                                   # (line_no, raw_line, start, end), in order
+    if marker.regex:
+        try:
+            pat = re.compile(marker.phrase)
+        except re.error:
+            return []
+        for i, ln in enumerate(source_lines, 1):
+            occ.extend((i, ln, m.start(), m.end()) for m in pat.finditer(ln))
+    else:
+        for i, ln in enumerate(source_lines, 1):
+            start = 0
+            while (j := ln.find(marker.phrase, start)) != -1:
+                occ.append((i, ln, j, j + len(marker.phrase)))
+                start = j + 1
+    if marker.before or marker.after:                               # keep only occurrences with the pinned context
+        occ = [o for o in occ
+               if (not marker.before or marker.before in o[1][:o[2]])
+               and (not marker.after or marker.after in o[1][o[3]:])]
+    if marker.nth is not None:                                      # the `#n` pin: exactly the nth occurrence
+        occ = [occ[marker.nth - 1]] if len(occ) >= marker.nth else []
+    out: list = []
+    seen: set = set()
+    for i, ln, *_ in occ:
+        if i not in seen:
+            seen.add(i)
+            out.append((i, ln.strip()))
+        if len(out) >= max_lines:
+            break
+    return out
 
 
 def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,

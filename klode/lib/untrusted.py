@@ -13,9 +13,10 @@ _NEUTRALIZED = "<<<END UNTRUSTED SOURCE (neutralized)>>>"
 
 
 def wrap_untrusted(text: str) -> str:
-    """Delimit `text` as untrusted data for a model boundary. Any embedded copy of the close sentinel
-    is neutralized, so a malicious payload cannot close the block early and hoist an instruction into
-    the trusted region. Deterministic — identical input yields byte-identical output. An empty payload
-    still yields a well-formed, closed block."""
+    """Delimit `text` as untrusted data for a model boundary. An embedded byte-exact copy of the close
+    sentinel is neutralized so a payload cannot close the block early. This is BEST-EFFORT framing, not
+    a hard guarantee — a determined payload can still be semantically close-like (confusables, altered
+    case/whitespace, "ignore the delimiter" prose); the real defense is a higher-priority trust rule in
+    the model's own instructions. Deterministic; an empty payload still yields a well-formed block."""
     safe = text.replace(_CLOSE, _NEUTRALIZED)
     return f"{_OPEN}\n{safe}\n{_CLOSE}"
