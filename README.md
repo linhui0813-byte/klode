@@ -65,11 +65,13 @@ machine-readable operation table.
 
 ## Status
 
-`0.2.1` — beta. The engine (`klode.lib`) is solid: **426 tests**, a stable public-API facade, an AST
+`0.2.2` — beta. The engine (`klode.lib`) is solid: **490 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
-grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), and an enriched,
-anchor-validated criterion schema are in place — but the rubric **judge is still a stub**
+grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed
+verified-context bundle (`build_context_bundle`), a shared structured anchor contract
+(`parse_markers`/`Marker`, regex/context/`#n`), and an enriched, anchor-validated criterion schema
+are in place — but the rubric **judge is still a stub**
 (`FixtureJudge`); a real LLM judge plugs into the `Judge` protocol. The optional entailment check
 (`klode check --entail`) pulls a small NLI model behind `klode[entail]` and is advisory, warn-only.
 
