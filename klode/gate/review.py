@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from klode import lib   # the public facade — for the verified-context bundle handed to the judge
+
 from . import criteria as _crit
 
 
@@ -20,6 +22,28 @@ class Line:
     score: int
     note: str
     grounding: _crit.Grounding
+
+
+@dataclass(frozen=True)
+class GradingItem:
+    """What the judge scores: a criterion PLUS its verified evidence (a `ContextBundle` of the
+    criterion's grounded anchors). The judge reads `.id`/`.statement`/`.guidance` and MAY read
+    `.context` — the evidence-rich seam the future real judge consumes. It sees only grounded
+    criteria; it never influences the grounding decision. `FixtureJudge` ignores `.context`."""
+    criterion: _crit.Criterion
+    context: "lib.ContextBundle"
+
+    @property
+    def id(self) -> str:
+        return self.criterion.id
+
+    @property
+    def statement(self) -> str:
+        return self.criterion.statement
+
+    @property
+    def guidance(self) -> str:
+        return self.criterion.guidance
 
 
 @dataclass(frozen=True)
@@ -66,14 +90,27 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
             unavailable.append((c.id, g.resolution or "not-grounded"))
     if unavailable:                                     # any missing/stale/ambiguous evidence -> no verdict
         return Verdict("Unavailable", None, hurdle, (), tuple(unavailable))
+    # hand the judge each grounded criterion WITH its verified evidence (the seam for a real judge).
+    items = [GradingItem(c, lib.build_context_bundle(
+                cfg, [(card, marker) for marker, card, _ in g.anchors],   # the full Marker — selector preserved
+                require_stamp=require_stamp, today=today)) for c, g in grounded]
+    # fail-CLOSED on evidence, end to end: a criterion may resolve (decision) yet have no SHOWABLE span
+    # (e.g. a folded/cross-line match). The judge must never score without the evidence it cites, so if
+    # any criterion's bundle carries a rejection, abstain rather than issue a verdict on absent evidence.
+    gaps = [(it.criterion.id, it.context.rejected[0].resolution.value) for it in items if it.context.rejected]
+    if gaps:
+        return Verdict("Unavailable", None, hurdle, (), tuple(gaps))
+    grounded_ids = {c.id for c, _ in grounded}
     by_id: dict = {}
-    for s in judge.score(draft, [c for c, _ in grounded]):
+    for s in judge.score(draft, items):
         if s.criterion_id in by_id:
             raise ValueError(f"judge returned a duplicate score for {s.criterion_id!r}")
         if not 0 <= s.score <= 10:
             raise ValueError(f"judge score for {s.criterion_id!r} out of range 0..10: {s.score}")
+        if s.criterion_id not in grounded_ids:          # a phantom/unknown criterion id is a fail-loud error
+            raise ValueError(f"judge scored an unknown criterion {s.criterion_id!r}")
         by_id[s.criterion_id] = s
-    missing = {c.id for c, _ in grounded} - by_id.keys()
+    missing = grounded_ids - by_id.keys()
     if missing:
         raise ValueError(f"judge did not score grounded criteria: {sorted(missing)}")
     lines = tuple(Line(c, by_id[c.id].score, by_id[c.id].note, g) for c, g in grounded)

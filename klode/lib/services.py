@@ -164,18 +164,22 @@ def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
                             lines=(tuple(v.lines) if v else ()), source_sha=cur_sha)
 
 
-def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today,
+def _resolve_snapshot(cfg, card: str, anchor: "str | common.Marker", *, require_stamp: bool, today,
                       max_lines: int = 10) -> "tuple[core.EvidenceHit, list[str] | None]":
     """Read the source ONCE and resolve occurrence + freshness + review against that single snapshot,
     returning `(hit, source_lines)`. `source_lines` is the source split into lines (so a caller can
-    window without re-reading) or None when the source is not installed. Line location is
-    case-SENSITIVE literal — matching the citation discipline (`check.py` treats anchors literally),
-    which the occurrence-only `verify` op's case-insensitive line lookup does not. This is the single
-    read shared by `verify_evidence` and `verify_context`: no double read, no between-read TOCTOU."""
+    window without re-reading) or None when the source is not installed. `anchor` is a bare phrase
+    OR a full `common.Marker` — passing the Marker honours the linter's selector semantics (regex,
+    prefix/suffix context, `#n` occurrence). Line location is case-SENSITIVE literal — matching the
+    citation discipline (`check.py` treats anchors literally), which the occurrence-only `verify`
+    op's case-insensitive lookup does not. This is the single read shared by `verify_evidence` and
+    `verify_context`: no double read, no between-read TOCTOU."""
     from datetime import date
 
+    marker = anchor if isinstance(anchor, common.Marker) else common.Marker(anchor)
+
     def hit(res, *, lines=(), sha=None, rel=None):
-        return core.EvidenceHit(res, phrase, card=card, rel=rel, lines=lines, source_sha=sha)
+        return core.EvidenceHit(res, marker.phrase, card=card, rel=rel, lines=lines, source_sha=sha)
 
     src = query.source_of(cfg, card)
     if src is None or not src.installed:
@@ -187,7 +191,11 @@ def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today
     source_lines = text.splitlines()
     if stored and stored != cur_sha:                                 # source drifted since it was stamped
         return hit(core.Resolution.SOURCE_STALE, sha=cur_sha, rel=src.rel), source_lines
-    res = common.resolve(common.Marker(phrase), common.haystacks(text))   # occurrence + ambiguity (shared matcher)
+    if not marker.phrase.strip() or (marker.nth is not None and marker.nth < 1):
+        # an empty phrase / empty regex matches everywhere, and #0 makes `len >= nth` trivially true —
+        # both would ground ARBITRARY text. Reject at the boundary; never a grounding bypass.
+        return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
+    res = common.resolve(marker, common.haystacks(text))             # occurrence + ambiguity (shared matcher)
     if not res.found:
         return hit(core.Resolution.NOT_FOUND, sha=cur_sha, rel=src.rel), source_lines
     if res.ambiguous:
@@ -204,9 +212,47 @@ def _resolve_snapshot(cfg, card: str, phrase: str, *, require_stamp: bool, today
             return hit(core.Resolution.REVIEW_EXPIRED, sha=cur_sha, rel=src.rel), source_lines
     if require_stamp and not stored:
         return hit(core.Resolution.SOURCE_UNSTAMPED, sha=cur_sha, rel=src.rel), source_lines
-    located = [(i, ln.strip()) for i, ln in enumerate(source_lines, 1) if phrase in ln][:max_lines]
+    located = _locate(marker, source_lines, max_lines)               # honours regex / #n / before-after
     resolution = core.Resolution.FOUND if located else core.Resolution.FOLDED_ONLY
     return hit(resolution, lines=tuple(located), sha=cur_sha, rel=src.rel), source_lines
+
+
+def _locate(marker: "common.Marker", source_lines: list, max_lines: int) -> list:
+    """Raw-line location for a resolved marker, HONOURING its selector (regex, prefix/suffix context,
+    `#n` occurrence) — not a bare substring scan. A match that resolves only across whitespace or
+    hyphenation folding has no raw-line occurrence here, so this returns [] and the caller records
+    FOLDED_ONLY (as before). The grounding DECISION already came from `common.resolve`; this pins the
+    exact occurrence for provenance and the context window."""
+    import re
+    occ: list = []                                                   # (line_no, raw_line, start, end), in order
+    if marker.regex:
+        try:
+            pat = re.compile(marker.phrase)
+        except re.error:
+            return []
+        for i, ln in enumerate(source_lines, 1):
+            occ.extend((i, ln, m.start(), m.end()) for m in pat.finditer(ln))
+    else:
+        for i, ln in enumerate(source_lines, 1):
+            start = 0
+            while (j := ln.find(marker.phrase, start)) != -1:
+                occ.append((i, ln, j, j + len(marker.phrase)))
+                start = j + len(marker.phrase)                      # NON-overlapping, matching the resolver's count
+    if marker.before or marker.after:                               # keep occurrences whose context is ADJACENT
+        occ = [o for o in occ
+               if (not marker.before or o[1][:o[2]].rstrip().endswith(marker.before))
+               and (not marker.after or o[1][o[3]:].lstrip().startswith(marker.after))]
+    if marker.nth is not None:                                      # the `#n` pin: exactly the nth occurrence
+        occ = [occ[marker.nth - 1]] if len(occ) >= marker.nth else []
+    out: list = []
+    seen: set = set()
+    for i, ln, *_ in occ:
+        if i not in seen:
+            seen.add(i)
+            out.append((i, ln.strip()))
+        if len(out) >= max_lines:
+            break
+    return out
 
 
 def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
@@ -247,13 +293,14 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
         raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
     if not isinstance(max_window, int) or isinstance(max_window, bool) or max_window < 1:
         raise ValueError(f"max_window must be a positive int, got {max_window!r}")
+    marker = phrase if isinstance(phrase, common.Marker) else common.Marker(phrase)
     hit, lines = _resolve_snapshot(cfg, card, phrase, require_stamp=require_stamp, today=today)
-    base = dict(resolution=hit.resolution, card=card, rel=hit.rel, source_sha=hit.source_sha)
+    base = dict(resolution=hit.resolution, card=card, phrase=marker.phrase, rel=hit.rel, source_sha=hit.source_sha)
     if hit.resolution not in (core.Resolution.FOUND, core.Resolution.FOLDED_ONLY) or lines is None:
         return core.EvidenceContext(**base)                          # not usable: no span
     match_nums = tuple(n for n, _ in hit.lines)
     if not match_nums:                                               # folded match: locate the span
-        span = _locate_folded("\n".join(lines), phrase)
+        span = _locate_folded("\n".join(lines), marker.phrase)
         if span is None:
             return core.EvidenceContext(**base)                      # resolves but not locatable -> unusable
         match_nums = span                                            # (start, end) — not a materialized range
@@ -270,6 +317,26 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
             hi = min(len(lines), lo + max_window - 1)
     return core.EvidenceContext(usable=True, line_start=lo, line_end=hi, match_lines=match_nums,
                                 text="\n".join(lines[lo - 1:hi]), **base)
+
+
+def build_context_bundle(cfg, requests, *, context_lines: int = 3, max_window: int = 40,
+                         require_stamp: bool = False, today: "date | None" = None) -> core.ContextBundle:
+    """Fail-CLOSED verified-context bundle for a sequence of `(card, anchor)` requests (`anchor` is a
+    phrase or a `common.Marker`). Each request either grounds — its verified `EvidenceContext` (with
+    phrase/card/lines/source_sha provenance) joins `grounded` — or is rejected with its explicit
+    resolution in `rejected`. Nothing is silently dropped; there is NO generation. Deterministic:
+    both partitions follow request order. `today=` is injectable for freshness determinism."""
+    grounded: list[core.EvidenceContext] = []
+    rejected: list[core.RejectedContext] = []
+    for card, anchor in requests:
+        ctx = verify_context(cfg, card, anchor, context_lines=context_lines, max_window=max_window,
+                             require_stamp=require_stamp, today=today)
+        if ctx.usable:
+            grounded.append(ctx)
+        else:
+            phrase = anchor.phrase if isinstance(anchor, common.Marker) else anchor
+            rejected.append(core.RejectedContext(card, phrase, ctx.resolution))
+    return core.ContextBundle(tuple(grounded), tuple(rejected))
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +356,9 @@ def _svc_review(cfg, params: dict) -> core.ReviewResult:
         judge_identity=identity,
         non_production=True,                                   # the stub verdict is never authoritative
         decision=v.decision, score=v.score,
-        defects=tuple((ln.criterion.statement, ln.score, ln.note) for ln in v.defects),
+        # carry the source-verified grounding (card, line) to the public surface — not just the note
+        defects=tuple((ln.criterion.statement, ln.score, ln.note, ln.grounding.card, ln.grounding.line)
+                      for ln in v.defects),
     )
 
 

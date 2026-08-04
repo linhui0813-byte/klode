@@ -16,7 +16,8 @@ re-exported here (the name would shadow the `klode.lib.check` module).
 """
 from .config import Config, ConfigError
 from .console import ConsultRequest, ConsultResult, consult
-from .core import EvidenceContext, EvidenceHit
+from .common import Marker, parse_markers   # the structured anchor contract, shared by linter + gate
+from .core import ContextBundle, EvidenceContext, EvidenceHit, RejectedContext
 from .core import Resolution as EvidenceResolution   # the grounding-outcome enum (distinct from query.Resolution)
 from .query import (
     Resolution,        # a resolved lookup (outcome + candidates + canonical message)
@@ -51,6 +52,14 @@ def verify_context(cfg, card, phrase, *, context_lines=3, max_window=40, require
     return services.verify_context(cfg, card, phrase, context_lines=context_lines,
                                    max_window=max_window, require_stamp=require_stamp, today=today)
 
+
+def build_context_bundle(cfg, requests, *, context_lines=3, max_window=40, require_stamp=False, today=None):
+    """Fail-closed verified-context bundle for `(card, anchor)` requests — `grounded` verified spans +
+    `rejected` (with explicit resolution). Nothing is dropped; no generation. See `ContextBundle`."""
+    from . import services
+    return services.build_context_bundle(cfg, requests, context_lines=context_lines,
+                                         max_window=max_window, require_stamp=require_stamp, today=today)
+
 __version__ = "0.2.1"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
@@ -58,7 +67,9 @@ __all__ = [
     "consult", "ConsultRequest", "ConsultResult",
     "resolve", "Resolution",
     "verify", "Verification",
+    "Marker", "parse_markers",
     "verify_evidence", "verify_context", "EvidenceHit", "EvidenceContext", "EvidenceResolution",
+    "build_context_bundle", "ContextBundle", "RejectedContext",
     "dimension", "framework", "diagnose", "search",
     "__version__",
 ]

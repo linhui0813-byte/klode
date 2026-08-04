@@ -165,6 +165,25 @@ class EvidenceContext:
     line_end: int | None = None
     match_lines: tuple[int, ...] = ()        # the matched line numbers inside the window
     text: str = ""                           # the bounded surrounding source text
+    phrase: str | None = None                # the anchor phrase this context grounds (provenance; appended
+    #                                          to keep positional construction of the earlier fields stable)
+
+
+@dataclass(frozen=True)
+class RejectedContext:
+    """A request that did NOT ground — kept, never silently dropped, with the explicit reason."""
+    card: str
+    phrase: str
+    resolution: Resolution                   # WHY (not-found / ambiguous / stale / expired / unstamped / …)
+
+
+@dataclass(frozen=True)
+class ContextBundle:
+    """A fail-CLOSED retrieval result: verified evidence a reviewer may read, and the rejected
+    requests with their reasons. There is deliberately NO generation/`completion` field — grounding
+    is the contract; synthesis is a separate, opt-in concern that never enters this bundle."""
+    grounded: tuple["EvidenceContext", ...]  # usable=True verified spans, each with its provenance
+    rejected: tuple[RejectedContext, ...]    # everything that did not ground, with an explicit resolution
 
 
 # --- ReviewResult: capability-gated supervision (never an authoritative stub verdict) ---
