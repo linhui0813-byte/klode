@@ -18,7 +18,7 @@ Zero runtime dependencies — Python 3.11+, standard library only.
 ## Install
 
 ```bash
-pip install klode              # once published
+pip install klode
 # or from a source checkout:
 pipx install -e .              # provides the `klode` and `klode-mcp` commands
 ```
