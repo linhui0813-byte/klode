@@ -8,6 +8,12 @@ tool *works*; the other two are cost. All three are stdlib-only and take `-c pat
 | `retrieval.py` | does `search` surface the **right** sources? (efficacy) | `python3 eval/retrieval.py -c LIB -v` |
 | `tokens.py` | does "pull the cheapest layer" **pay**? (token cost) | `python3 eval/tokens.py -c LIB` |
 | `bench.py` | how **fast**, and how does it grow? (speed/scaling) | `python3 eval/bench.py -c LIB` |
+| `rate.py` | does a **rubric** mean the same thing to two people? (Loop B) | `python3 eval/rate.py score a.jsonl b.jsonl` |
+
+`rate.py` is the odd one out: it measures a `CriterionSpec`, not the library. It reports
+quadratic-weighted kappa per criterion between two raters, because a rubric two people apply
+differently is under-specified — and the fix is the criterion, not the rater. See
+[`../dev-docs/SPEC-criterion.md`](../dev-docs/SPEC-criterion.md).
 
 ## retrieval.py — the one that matters
 

@@ -43,6 +43,14 @@ def verify_evidence(cfg, card, phrase, *, require_stamp=False, today=None):
     return services.verify_evidence(cfg, card, phrase, require_stamp=require_stamp, today=today)
 
 
+def source_digest(cfg, card):
+    """sha256 of the card's source as it is on disk NOW (None when not installed) — the primitive a
+    consumer needs to PIN corpus state in a derived artifact and detect drift later. Compare against
+    the card's stamped `source_sha256` for the freshness question."""
+    from . import services
+    return services.source_digest(cfg, card)
+
+
 def verify_context(cfg, card, phrase, *, context_lines=3, max_window=40, require_stamp=False, today=None):
     """The evidence-context op — `verify_evidence` PLUS the bounded surrounding source text a judge
     reads to score a claim. Returns an `EvidenceContext`; `usable` is True only for a resolved, fresh
@@ -69,6 +77,7 @@ __all__ = [
     "verify", "Verification",
     "Marker", "parse_markers",
     "verify_evidence", "verify_context", "EvidenceHit", "EvidenceContext", "EvidenceResolution",
+    "source_digest",
     "build_context_bundle", "ContextBundle", "RejectedContext",
     "dimension", "framework", "diagnose", "search",
     "__version__",

@@ -65,6 +65,8 @@ class Config:
     fw_enabled: bool
     frameworks: Path | None    # lib / [frameworks].dir
     syntheses: Path | None     # frameworks / [frameworks].syntheses
+    criteria: Path | None      # frameworks / [frameworks].criteria — authored CriterionSpec v1 rubrics
+    #                            (the gate's sole input; see dev-docs/SPEC-criterion.md)
 
     # --- copyright-leak guard ---
     copyright_guard: bool
@@ -151,6 +153,16 @@ class Config:
             (frameworks / str(fw_section.get("syntheses", "_syntheses"))).resolve()
             if fw_enabled and frameworks else None
         )
+        criteria = None
+        if fw_enabled and frameworks:
+            crit_rel = str(fw_section.get("criteria", "_criteria"))
+            criteria = (frameworks / crit_rel).resolve()
+            # The rubric dir is the gate's root of trust; an absolute or `../` value would relocate
+            # canonical rubric loading outside the framework tree the rest of the config describes.
+            if not criteria.is_relative_to(frameworks.resolve()):
+                raise ConfigError(
+                    f"[frameworks].criteria = {crit_rel!r} resolves outside the frameworks dir "
+                    f"({frameworks}) — it must be a relative name inside it")
 
         cp_section = _table("copyright")
         copyright_guard = bool(cp_section.get("guard", True))
@@ -214,7 +226,7 @@ class Config:
             config_path=path, root=root,
             lib=lib, lib_rel=lib_rel, cards=cards, shelves=shelves,
             bib_enabled=bib_enabled, bib=bib,
-            fw_enabled=fw_enabled, frameworks=frameworks, syntheses=syntheses,
+            fw_enabled=fw_enabled, frameworks=frameworks, syntheses=syntheses, criteria=criteria,
             copyright_guard=copyright_guard, guard_relpaths=guard_relpaths,
             backup_dir=backup_dir, backup_keep=backup_keep, dict_path=dict_path,
             id=kb_id, name=name, description=description, tags=tags,

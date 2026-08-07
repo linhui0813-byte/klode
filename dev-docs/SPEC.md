@@ -17,6 +17,8 @@ library/                     # [library].dir
   BIBLIOGRAPHY.md            # optional catalog ([bibliography])
   frameworks/                # optional per-dimension distillations ([frameworks], off by default)
     _syntheses/              #   optional best-of-breed adjudications
+    _criteria/               #   authored gate rubrics, one <dimension>.json per dimension
+                             #   ([frameworks].criteria — see SPEC-criterion.md)
 ```
 
 The card `id` is the source filename stem, so `library/books/aristotle-poetics.txt` ⇒ card

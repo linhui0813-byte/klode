@@ -1,7 +1,7 @@
 """Demo — review a deliberately inert, over-specified draft against the fixture KB's `pacing`
-dimension's grounded Craft criteria. Every cited defect is verified against a real source by
-lib.verify. The KB is the committed synthetic fixture under tests/fixtures/, resolved relative
-to this file, so the demo runs on any checkout.
+rubric (a human-approved CriterionSpec with behaviorally anchored 0..5 levels). Every cited defect
+is verified against a real source by lib.verify. The KB is the committed synthetic fixture under
+tests/fixtures/, resolved relative to this file, so the demo runs on any checkout.
 
     python3 examples/gate_demo.py
 """
@@ -28,16 +28,18 @@ def main() -> None:
     cfg = lib.Config.load(KB)
     # A judge that (as an LLM rubric judge would) marks the pacing moves LOW for this inert draft.
     judge = FixtureJudge({
-        "C1": (2, "spends words on what the reader could infer — inert specification"),
-        "C2": (3, "flat tempo; no variation of sentence length to steer the reader"),
+        "pacing.cut-inferable": (1, "spends words on what the reader could infer — inert specification"),
+        "pacing.vary-sentence-length": (1, "flat tempo; no variation of sentence length to steer the reader"),
+        "pacing.end-on-a-turn": (2, "closes on a full resolution; nothing carries the reader forward"),
     })
     v = review_draft(cfg, DRAFT, "pacing", judge)
     print(f"VERDICT: {v.decision}   score {v.score}/100 (hurdle {v.hurdle})")
     print(f"grounded criteria: {len(v.lines)}   unavailable (blocked the verdict): {len(v.unavailable)}\n")
+    print(f"rubric: {len(v.lines)} criteria, each scored on its own behavioral scale\n")
     print("Defects sent back with Recycle — each citation grounded in a real source by lib.verify:")
     for l in v.defects:
         g = l.grounding
-        print(f"  • [{l.score}/10] {l.criterion.statement}")
+        print(f"  • [{l.score}/{l.max_score} = {l.pct}%] {l.criterion.statement}")
         print(f"        {l.note}")
         print(f"        grounded: “{g.phrase[:58]}…”  →  {g.card}:{g.line}")
 

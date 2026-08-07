@@ -14,10 +14,13 @@ Zero runtime dependencies — Python 3.11+, standard library only.
 
 - **Loop A — encode expertise** (`klode.lib`): turn sources into cited, retrievable knowledge. Every
   card claim carries a verbatim `(grep: …)` anchor; `klode check` fails if any citation stops resolving.
-- **Loop B — supervise work** (`klode.gate`): submit a draft, score it against criteria loaded from a
-  knowledge base's craft layer, and return **Go / Recycle** — each cited defect grounded through
-  `klode.lib.verify`, so the judge's citations are un-fakeable. The boundary is enforced: `klode.gate`
+- **Loop B — supervise work** (`klode.gate`): submit a draft, score it against a **CriterionSpec** —
+  an authored, corpus-pinned, human-approved rubric with stable ids and behaviorally anchored levels
+  — and return **Go / Recycle**. Each cited defect is grounded through `klode.lib.verify`, so the
+  judge's citations are un-fakeable, and every authored field declares whether it is the source's
+  words, a paraphrase, an inference, or *not stated at all*. The boundary is enforced: `klode.gate`
   consumes only the `klode.lib` public API, never its internals.
+  See [`dev-docs/SPEC-criterion.md`](dev-docs/SPEC-criterion.md).
 
 ## Install
 
@@ -69,13 +72,14 @@ machine-readable operation table.
 
 ## Status
 
-`0.2.2` — beta. The engine (`klode.lib`) is solid: **490 tests**, a stable public-API facade, an AST
+`0.2.2` — beta. The engine (`klode.lib`) is solid: **574 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed
 verified-context bundle (`build_context_bundle`), a shared structured anchor contract
-(`parse_markers`/`Marker`, regex/context/`#n`), and an enriched, anchor-validated criterion schema
-are in place — but the rubric **judge is still a stub**
+(`parse_markers`/`Marker`, regex/context/`#n`), and **CriterionSpec v1** as its sole rubric input
+(field-level epistemics, behaviorally anchored levels, a computed corpus fingerprint, and a
+human-approval admission gate) are in place — but the rubric **judge is still a stub**
 (`FixtureJudge`); a real LLM judge plugs into the `Judge` protocol. The optional entailment check
 (`klode check --entail`) pulls a small NLI model behind `klode[entail]` and is advisory, warn-only.
 

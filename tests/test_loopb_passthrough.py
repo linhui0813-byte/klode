@@ -11,6 +11,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _rubric                                                           # noqa: E402
 
 from klode import lib                                                     # noqa: E402
 from klode.lib import services                                           # noqa: E402
@@ -23,14 +26,15 @@ FIX2 = REPO / "tests" / "fixtures" / "kb-fixture-2" / "library.toml"     # dim "
 
 class SpyJudge:
     """Captures what it was handed, returns deterministic scores by id."""
-    def __init__(self, scores=None, default=9):
+    def __init__(self, scores=None, default=None):
         self.captured = None
         self._scores = scores or {}
-        self._default = default
+        self._default = default          # None -> top of each criterion's own behavioral scale
 
     def score(self, draft, items):
         self.captured = list(items)
-        return [Score(it.id, self._scores.get(it.id, self._default), "note") for it in items]
+        top = lambda it: it.max_score if self._default is None else self._default
+        return [Score(it.id, self._scores.get(it.id, top(it)), "note") for it in items]
 
 
 class PublicDefectGrounding(unittest.TestCase):
@@ -42,7 +46,7 @@ class PublicDefectGrounding(unittest.TestCase):
         rv = r.value
         self.assertEqual(rv.decision, "Recycle")
         statement, score, note, card, line = rv.defects[0]        # now 5-tuple: grounding carried through
-        self.assertEqual(card, "brevity")                         # C1's anchor grounds in brevity
+        self.assertEqual(card, "brevity")                         # the first move grounds in brevity
         src = (REPO / "tests" / "fixtures" / "kb-fixture" / "library" / "books" / "brevity.txt").read_text()
         self.assertIn("Trim every clause the reader can infer", src.splitlines()[line - 1])
 
@@ -71,7 +75,7 @@ class JudgeSeam(unittest.TestCase):
 
         class PhantomJudge:
             def score(self, draft, items):
-                return [Score(it.id, 9, "ok") for it in items] + [Score("C99", 5, "phantom")]
+                return [Score(it.id, it.max_score, "ok") for it in items] + [Score("C99", 0, "phantom")]
 
         with self.assertRaises(ValueError):
             review_draft(cfg, "d", "pacing", PhantomJudge())
@@ -81,7 +85,7 @@ class JudgeSeam(unittest.TestCase):
 
         class DupJudge:
             def score(self, draft, items):
-                return [Score(it.id, 9, "n") for it in items] + [Score(items[0].id, 8, "dup")]
+                return [Score(it.id, it.max_score, "n") for it in items] + [Score(items[0].id, 0, "dup")]
 
         with self.assertRaises(ValueError):
             review_draft(cfg, "d", "pacing", DupJudge())
@@ -91,7 +95,7 @@ class JudgeSeam(unittest.TestCase):
 
         class ShortJudge:
             def score(self, draft, items):
-                return [Score(items[0].id, 9, "n")]              # scores only the first — the rest are missing
+                return [Score(items[0].id, items[0].max_score, "n")]              # scores only the first — the rest are missing
 
         with self.assertRaises(ValueError):
             review_draft(cfg, "d", "pacing", ShortJudge())
@@ -103,7 +107,7 @@ class JudgeSeam(unittest.TestCase):
 
     def test_judge_receives_verified_evidence_bundle(self):
         cfg = lib.Config.load(FIX)
-        spy = SpyJudge(default=9)
+        spy = SpyJudge()
         v = review_draft(cfg, "d", "pacing", spy)
         self.assertEqual(v.decision, "Go")                        # deterministic verdict from the spy's scores
         self.assertTrue(spy.captured)
@@ -118,7 +122,7 @@ class JudgeSeam(unittest.TestCase):
         class ReadingJudge:
             def score(self, draft, items):
                 seen.extend((it.statement, it.guidance) for it in items)
-                return [Score(it.id, 9, "n") for it in items]
+                return [Score(it.id, it.max_score, "n") for it in items]
 
         review_draft(cfg, "d", "pacing", ReadingJudge())
         self.assertTrue(seen and all(stmt for stmt, _ in seen))    # statement delegates to the criterion
@@ -158,6 +162,7 @@ class JudgeSeam(unittest.TestCase):
             "---\ntitle: d\nstatus: canonical\ndimension: d\ncards: [s]\n---\n\n# d\n\n**Core question:** q?\n\n"
             "## Craft\n\nx.\n\n- **M.** (grep: `information`)\n", encoding="utf-8")
         cfg = lib.Config.load(tmp / "library.toml")
+        _rubric.write(cfg, "d", ["s"], [("M", ["information"])])
         crit, panel = load_criteria(cfg, "d")
         self.assertTrue(ground(cfg, crit[0], panel).grounded)          # decision: grounded (folded)
         v = review_draft(cfg, "d", "d", FixtureJudge({}, default=(9, "x")))
@@ -165,8 +170,8 @@ class JudgeSeam(unittest.TestCase):
 
     def test_deterministic(self):
         cfg = lib.Config.load(FIX)
-        a = review_draft(cfg, "d", "pacing", FixtureJudge({"C1": (2, "x")}, default=(9, "y")))
-        b = review_draft(cfg, "d", "pacing", FixtureJudge({"C1": (2, "x")}, default=(9, "y")))
+        a = review_draft(cfg, "d", "pacing", FixtureJudge({"pacing.cut-inferable": (2, "x")}, default_fraction=0.9))
+        b = review_draft(cfg, "d", "pacing", FixtureJudge({"pacing.cut-inferable": (2, "x")}, default_fraction=0.9))
         self.assertEqual(a, b)
 
 

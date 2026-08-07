@@ -15,3 +15,8 @@ build/
 # coverage.py artifacts (dev-only; coverage is not a runtime dep)
 .coverage
 coverage.json
+
+# Rating sheets from `eval/rate.py` — they carry draft text and human evaluations.
+# Keep them out of the repo by default; move them somewhere deliberate to retain them.
+.klode-ratings/
+*.ratings.jsonl

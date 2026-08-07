@@ -1,0 +1,290 @@
+{
+  "schema": "klode.criterion-spec/v1",
+  "dimension": "pacing",
+  "note": "Fixture rubric over two INVENTED, non-copyrighted sources. Approved for the test suite only — the sources are synthetic, so there is no real expertise here to launder. A rubric over a real book must be approved by a human who has read it.",
+  "panel": [
+    "brevity",
+    "structure"
+  ],
+  "admission": "human_approved",
+  "derived_from": "_syntheses/pacing.md",
+  "fingerprint": {
+    "sources": {
+      "brevity": "9bb23762004dc4330040206d8ad8fcebddd2535f4a9195c1692f0bbcbd05eb0a",
+      "structure": "e142aa6dc0eabb06b2f4b54e71caba488e193313b30f93c49bd705a5eb6d2458"
+    }
+  },
+  "criteria": [
+    {
+      "id": "pacing.cut-inferable",
+      "criticality": "required",
+      "statement": {
+        "value": "Cut every clause the reader could supply from context.",
+        "kind": "paraphrase",
+        "warrant": "Vega states the cut as an imperative over inferable clauses; this restates it in the second person without narrowing what counts as inferable.",
+        "evidence": [
+          {
+            "card": "brevity",
+            "phrase": "Trim every clause the reader can infer from context"
+          }
+        ]
+      },
+      "guidance": {
+        "value": "Judge what the surrounding text already establishes, not what a first-time reader might miss in isolation. A clause restating an established fact is the clearest case.",
+        "kind": "derived",
+        "warrant": "Vega ties the test to what the reader can supply, which is a property of context, not of the sentence alone; 'judge against the surrounding text' is the operational reading of that.",
+        "evidence": [
+          {
+            "card": "brevity",
+            "phrase": "A sentence should carry only what the reader cannot supply alone"
+          }
+        ]
+      },
+      "fields": {
+        "source_claim": {
+          "value": "A sentence should carry only what the reader cannot supply alone",
+          "kind": "explicit",
+          "evidence": [
+            {
+              "card": "brevity",
+              "phrase": "A sentence should carry only what the reader cannot supply alone"
+            }
+          ]
+        },
+        "exceptions": {
+          "value": null,
+          "kind": "unknown"
+        }
+      },
+      "evidence": [
+        {
+          "card": "brevity",
+          "phrase": "Trim every clause the reader can infer from context"
+        }
+      ],
+      "levels": [
+        {
+          "score": 0,
+          "descriptor": {
+            "value": "Most sentences restate what the reader already knows.",
+            "kind": "operator_policy",
+            "warrant": "Anchors the floor at pervasive redundancy so raters do not reserve 0 for an empty draft."
+          }
+        },
+        {
+          "score": 1,
+          "descriptor": {
+            "value": "Redundant clauses appear in most paragraphs.",
+            "kind": "operator_policy",
+            "warrant": "Frequency band between pervasive and occasional; keeps 0 and 2 distinguishable."
+          }
+        },
+        {
+          "score": 2,
+          "descriptor": {
+            "value": "Redundant clauses appear occasionally and are noticeable when they do.",
+            "kind": "operator_policy",
+            "warrant": "The band where a reader notices drag without being able to point at every instance."
+          }
+        },
+        {
+          "score": 3,
+          "descriptor": {
+            "value": "Most clauses earn their place; a few could be inferred.",
+            "kind": "operator_policy",
+            "warrant": "The passing band: the default is compression, with lapses."
+          }
+        },
+        {
+          "score": 4,
+          "descriptor": {
+            "value": "Every clause carries something the context does not already supply.",
+            "kind": "operator_policy",
+            "warrant": "Vega's rule met as stated, with no further demand."
+          }
+        },
+        {
+          "score": 5,
+          "descriptor": {
+            "value": "Cuts go beyond the inferable: what remains could not be shortened without losing content.",
+            "kind": "operator_policy",
+            "warrant": "Reserves the ceiling for prose that is not merely compliant but irreducible, so 4 is reachable and 5 is rare."
+          }
+        }
+      ]
+    },
+    {
+      "id": "pacing.vary-sentence-length",
+      "criticality": "required",
+      "statement": {
+        "value": "Vary sentence length so tempo tracks what the moment needs.",
+        "kind": "paraphrase",
+        "warrant": "Two sources state the two directions — short runs quicken, a long sentence slows — and this joins them into the single control they describe without adding a rule about when to use which.",
+        "evidence": [
+          {
+            "card": "brevity",
+            "phrase": "A run of short sentences quickens the pace"
+          },
+          {
+            "card": "structure",
+            "phrase": "A single long sentence slows the tempo"
+          }
+        ]
+      },
+      "guidance": {
+        "value": "Look for length changing WITH the scene's demands, not merely changing. Uniform length is the failure; random variation is not the fix.",
+        "kind": "derived",
+        "warrant": "Both sources pair a length with an effect, which makes the effect the criterion; variation with no matching demand satisfies neither statement.",
+        "evidence": [
+          {
+            "card": "structure",
+            "phrase": "slows the tempo and lets a moment breathe"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "card": "brevity",
+          "phrase": "A run of short sentences quickens the pace"
+        },
+        {
+          "card": "structure",
+          "phrase": "A single long sentence slows the tempo"
+        }
+      ],
+      "levels": [
+        {
+          "score": 0,
+          "descriptor": {
+            "value": "Sentence length is effectively uniform throughout.",
+            "kind": "operator_policy",
+            "warrant": "The floor is the absence of the control, not its misuse."
+          }
+        },
+        {
+          "score": 1,
+          "descriptor": {
+            "value": "Length varies slightly, with no relation to the scene.",
+            "kind": "operator_policy",
+            "warrant": "Separates incidental variation from the deliberate kind."
+          }
+        },
+        {
+          "score": 2,
+          "descriptor": {
+            "value": "Length varies noticeably but the variation does not track the moment.",
+            "kind": "operator_policy",
+            "warrant": "Names the 'random variation' failure the guidance warns about."
+          }
+        },
+        {
+          "score": 3,
+          "descriptor": {
+            "value": "Length tracks the moment in places, drifts elsewhere.",
+            "kind": "operator_policy",
+            "warrant": "The passing band: the control is present but not sustained."
+          }
+        },
+        {
+          "score": 4,
+          "descriptor": {
+            "value": "Length consistently tracks what each moment needs.",
+            "kind": "operator_policy",
+            "warrant": "Both sources' pairings honored throughout."
+          }
+        },
+        {
+          "score": 5,
+          "descriptor": {
+            "value": "Tempo shifts land on the beats that matter and are invisible in the reading.",
+            "kind": "operator_policy",
+            "warrant": "Reserves the ceiling for craft that the reader feels without noticing, so 4 remains achievable."
+          }
+        }
+      ]
+    },
+    {
+      "id": "pacing.end-on-a-turn",
+      "criticality": "required",
+      "statement": {
+        "value": "End a scene on an open question rather than a settled answer.",
+        "kind": "paraphrase",
+        "warrant": "Rho states the close as question-not-answer and gives momentum as its purpose; 'open' and 'settled' name the same contrast in the reader's state.",
+        "evidence": [
+          {
+            "card": "structure",
+            "phrase": "End a scene on a question, not an answer"
+          }
+        ]
+      },
+      "guidance": {
+        "value": "Judge the last beat of each scene, not the last sentence of the draft. A scene that resolves entirely leaves the reader no reason to continue.",
+        "kind": "derived",
+        "warrant": "Rho's claim is about scene endings and their effect on forward momentum, so the unit of judgment is the scene boundary, not the document's end.",
+        "evidence": [
+          {
+            "card": "structure",
+            "phrase": "momentum carries the reader forward"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "card": "structure",
+          "phrase": "End a scene on a question, not an answer"
+        }
+      ],
+      "levels": [
+        {
+          "score": 0,
+          "descriptor": {
+            "value": "Every scene closes on a full resolution.",
+            "kind": "operator_policy",
+            "warrant": "The floor is the systematic opposite of the move."
+          }
+        },
+        {
+          "score": 1,
+          "descriptor": {
+            "value": "Scenes mostly resolve; one leaves a thread open by accident.",
+            "kind": "operator_policy",
+            "warrant": "Distinguishes accident from intent, which is the distinction the move turns on."
+          }
+        },
+        {
+          "score": 2,
+          "descriptor": {
+            "value": "Some scenes leave a question, but the strongest beats are spent resolving.",
+            "kind": "operator_policy",
+            "warrant": "The partial band: the move appears but not where it pays."
+          }
+        },
+        {
+          "score": 3,
+          "descriptor": {
+            "value": "Most scenes end on something unresolved.",
+            "kind": "operator_policy",
+            "warrant": "The passing band: the default is the move."
+          }
+        },
+        {
+          "score": 4,
+          "descriptor": {
+            "value": "Every scene ends on a question that the next scene has reason to answer.",
+            "kind": "operator_policy",
+            "warrant": "Adds the linkage Rho's 'carries forward' implies, met as stated."
+          }
+        },
+        {
+          "score": 5,
+          "descriptor": {
+            "value": "Each close reframes what the reader thought the scene was about.",
+            "kind": "operator_policy",
+            "warrant": "Reserves the ceiling for a turn that changes the question, not merely defers the answer."
+          }
+        }
+      ]
+    }
+  ],
+  "approved_digest": "e897191cb000e90a5ea44b50c338ccfac083df276b2c216f623ec5df38970340"
+}

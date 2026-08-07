@@ -42,7 +42,7 @@ class Supervision(unittest.TestCase):
 
     def test_no_authoritative_verdict_without_the_envelope(self):
         # a Recycle from the stub still carries non_production=True — it can never look authoritative
-        judge = gate.FixtureJudge({"C1": (2, "info-dump"), "C2": (3, "no blanks")}, default=(5, "borderline"))
+        judge = gate.FixtureJudge({"pacing.cut-inferable": (1, "info-dump")}, default_fraction=0.4)
         r = self._review(draft="a draft", judge=judge)
         self.assertEqual(r.value.decision, "Recycle")
         self.assertTrue(r.value.non_production)

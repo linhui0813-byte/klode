@@ -138,6 +138,19 @@ def _stored_sha(cfg, card: str) -> str | None:
     return val.strip() if val and val.strip() else None
 
 
+def source_digest(cfg, card: str) -> str | None:
+    """sha256 of the card's source AS IT IS ON DISK NOW, or None when the source is not installed.
+
+    Distinct from the card's stamped `source_sha256` (the baseline recorded when its claims were last
+    verified): this is the live digest, so a consumer can PIN the corpus state a derived artifact was
+    built against and detect drift later. `_stored_sha` answers "what was it?"; this answers "what is
+    it?" — comparing the two is the freshness check."""
+    src = query.source_of(cfg, card)
+    if src is None or not src.installed:
+        return None
+    return hashlib.sha256(src.path.read_bytes()).hexdigest()
+
+
 def _svc_verify(cfg, params: dict) -> core.EvidenceHit:
     card = params.get("card") or params.get("id", "")
     phrase = params.get("phrase", "")
@@ -381,7 +394,9 @@ def build_context_bundle(cfg, requests, *, context_lines: int = 3, max_window: i
 # ---------------------------------------------------------------------------
 def _svc_review(cfg, params: dict) -> core.ReviewResult:
     from klode import gate                                      # lazy: only review needs the gate
-    judge = params.get("judge") or gate.FixtureJudge({}, default=(7, "acceptable"))
+    # a FRACTION of each criterion's own behavioral scale — rubrics declare their own 0..N levels,
+    # so a hardcoded 7 is out of range the moment a rubric uses six levels instead of eleven.
+    judge = params.get("judge") or gate.FixtureJudge({}, default_fraction=0.7, note="acceptable")
     identity = type(judge).__name__
     if params.get("refuse_non_production"):                    # a caller may refuse non-production output
         return core.ReviewResult(CapabilityStatus.UNAVAILABLE, judge_identity=identity)

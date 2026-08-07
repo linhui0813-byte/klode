@@ -19,7 +19,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _rubric                                                            # noqa: E402
 from klode import lib                                                     # noqa: E402
 from klode.gate import FixtureJudge, ground, load_criteria, review_draft  # noqa: E402
 
@@ -78,7 +80,14 @@ class GateHardening(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _cfg(self, **kw):
-        return lib.Config.load(_make_kb(self.tmp, **kw))
+        cfg = lib.Config.load(_make_kb(self.tmp, **kw))
+        # The gate's sole input is an authored rubric, so every review_draft test needs one. The
+        # criteria mirror the Craft moves, INCLUDING the deliberately-broken citations each case
+        # exercises — the point is that a bad citation yields Unavailable at review time, not that
+        # the rubric refuses to load. (Corpus validation is the authoring check; see review.py.)
+        _rubric.write(cfg, kw.get("dim", "craft"), [kw.get("cid", "src1")],
+                      [(m[0], m[1]) for m in kw["moves"]])
+        return cfg
 
     # --- the structured verifier: explicit outcomes, freshness- and review-aware ---
     def test_found_grounds(self):
@@ -141,7 +150,8 @@ class GateHardening(unittest.TestCase):
         v = review_draft(cfg, "a draft", "craft", FixtureJudge({}, default=(10, "great")))
         self.assertEqual(v.decision, "Unavailable")
         self.assertIsNone(v.score)
-        self.assertTrue(any(cid == "C2" for cid, _ in v.unavailable))
+        # a STABLE id, not a position: the rubric keeps its names when the prose is reordered
+        self.assertTrue(any(cid == "craft.absent-move" for cid, _ in v.unavailable))
 
     def test_no_evidence_failure_can_yield_a_verdict(self):
         # every failure mode routes to Unavailable, not Go/Recycle
@@ -352,6 +362,7 @@ class DeferredClosures(unittest.TestCase):
     def test_gate_is_secure_by_default_unstamped_source_does_not_ground(self):
         # review_draft defaults to require_stamp=True: an unstamped source yields Unavailable
         cfg = lib.Config.load(_make_kb(self.tmp, moves=[("M", ["anchor here"])], source_text="anchor here"))
+        _rubric.write(cfg, "craft", ["src1"], [("M", ["anchor here"])])
         v = review_draft(cfg, "d", "craft", FixtureJudge({}, default=(9, "strong")))
         self.assertEqual(v.decision, "Unavailable")
         self.assertTrue(any("unstamped" in r for _, r in v.unavailable))

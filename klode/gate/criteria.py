@@ -111,6 +111,27 @@ def load_criteria(cfg, dimension: str) -> tuple[list[Criterion], list[str]]:
     return crit, panel
 
 
+def ground_bindings(cfg, criterion: Criterion, bindings, *,
+                    require_stamp: bool = False, today=None) -> Grounding:
+    """Ground each anchor against the ONE card it was declared against.
+
+    `ground()` searches the whole panel, which is right when the citation carries no card (a Craft
+    move's bare `(grep: …)`). A CriterionSpec DOES name a card per anchor, and searching past it let
+    a rotted citation migrate: a phrase filed to `structure` resolved in `brevity` and scored Go.
+    Per-citation provenance means the declared card is the only place the quote may come from."""
+    ok = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
+    resolved: list[tuple] = []
+    for marker, card in bindings:
+        ev = lib.verify_evidence(cfg, card, marker, require_stamp=require_stamp, today=today)
+        if ev.resolution not in ok:
+            return Grounding(False, phrase=marker.phrase, resolution=ev.resolution.value)
+        resolved.append((marker, card, ev.lines[0][0] if ev.lines else None))
+    if not resolved:
+        return Grounding(False)
+    marker0, c, ln = resolved[0]
+    return Grounding(True, phrase=marker0.phrase, card=c, line=ln, anchors=tuple(resolved))
+
+
 def ground(cfg, criterion: Criterion, panel: list[str], *,
            require_stamp: bool = False, today=None) -> Grounding:
     """Grounded only if EVERY cited phrase resolves — freshly and in EXACTLY ONE panel source, as

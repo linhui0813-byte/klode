@@ -50,9 +50,20 @@ building…" → elliott-2013…:1*.
 
 ## What is real vs. what plugs in
 
+> **Rubric update (2026-08-07).** The gate's sole input is now a **CriterionSpec v1** — an authored,
+> corpus-pinned, human-approved rubric with stable ids, field-level epistemics
+> (`explicit`/`paraphrase`/`derived`/`operator_policy`/`unknown`), and behaviorally anchored levels.
+> It replaces the promotion of a synthesis's bold Craft bullets into positional `C1`/`C2` criteria,
+> which made the rubric an accident of prose order and let a `statement` contradict its own anchor
+> and still ground. Craft-move loading survives as the *seed* for authoring
+> (`python3 -m klode.gate derive`). See [`SPEC-criterion.md`](SPEC-criterion.md).
+
 | Piece | State |
 |---|---|
-| Criteria loading from a lodlib dimension's Craft layer | **real** (`criteria.load_criteria`) |
+| CriterionSpec v1: load, fail-closed validate, admission gate | **real** (`gate/spec.py`) |
+| Authoring: derive a candidate, pin the corpus, re-pin | **real** (`gate/authoring.py`, `python3 -m klode.gate`) |
+| Inter-rater agreement as the rubric's acceptance test | **real** (`eval/rate.py`) |
+| Criteria loading from a lodlib dimension's Craft layer | **real** (`criteria.load_criteria`) — now the authoring seed, not the gate's input |
 | Grounding every citation via `lodlib.verify` | **real** — the un-fakeable step |
 | Cooper Go/Recycle verdict + should-meet scorecard | **real** (`review.review_draft`) |
 | The rubric **judge** | **stub** (`FixtureJudge`) — the real LLM judge (G-Eval two-step form-filling, position-bias-debiased via balanced permutation, a *different* model than the author, **calibrated against a human gold set**) drops into the `Judge` protocol, same `score()` signature |
@@ -65,8 +76,8 @@ building…" → elliott-2013…:1*.
 - **Must-meet knockouts** — the skeleton demonstrates should-meet scoring only. Cooper's must-meet
   (single No → Kill) and Hold belong on a dedicated `kind: gate-criteria` card.
 - **A dedicated gate card grounded in a method source** (e.g. Cooper's *Winning at New Products*, once
-  ingested) — the skeleton reuses a dimension's Craft moves as criteria, which is enough to prove the
-  chain but is not a purpose-built gate.
+  ingested). CriterionSpec v1 is now the purpose-built rubric *artifact*; what is still owed is a
+  rubric whose criteria come from a **method** source rather than a craft dimension.
 - **The human at the gate** — the agent *recommends* Go/Recycle; the human commits it.
 
 ## Dependency

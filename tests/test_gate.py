@@ -48,7 +48,8 @@ class WalkingSkeleton(unittest.TestCase):
         self.assertFalse(ground(self.cfg, fake, panel).grounded)   # the judge cannot fake a citation
 
     def test_recycle_with_grounded_defects(self):
-        judge = FixtureJudge({"C1": (2, "info-dump"), "C2": (3, "no blanks")}, default=(5, "borderline"))
+        # ids are the rubric's STABLE names now, not positions — `C1` was an accident of prose order
+        judge = FixtureJudge({"pacing.cut-inferable": (1, "info-dump")}, default_fraction=0.4)
         v = review_draft(self.cfg, "some draft", DIM, judge)
         self.assertEqual(v.decision, "Recycle")
         self.assertTrue(v.defects)
@@ -57,8 +58,9 @@ class WalkingSkeleton(unittest.TestCase):
             self.assertIsNotNone(l.grounding.card)
 
     def test_go_when_all_criteria_clear_the_hurdle(self):
+        # a FRACTION of each criterion's own scale: the fixture rubric is 0..5, not a fixed 0-10
         v = review_draft(self.cfg, "a strong draft", DIM,
-                         FixtureJudge({}, default=(9, "strong")))
+                         FixtureJudge({}, default_fraction=0.9))
         self.assertEqual(v.decision, "Go")
         self.assertGreaterEqual(v.score, 60)
 

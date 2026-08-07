@@ -1,0 +1,276 @@
+{
+  "schema": "klode.criterion-spec/v1",
+  "dimension": "cadence",
+  "panel": [
+    "rhythm",
+    "meter"
+  ],
+  "admission": "human_approved",
+  "fingerprint": {
+    "sources": {
+      "rhythm": "8a9513934815f4caf185cb94620be5caaf0a9986c3ad48390fb814e568416d48",
+      "meter": "0fed5064105a9da778dc1ecb8c83bb6b352b7fdfb280782d5a90da84024cab5a"
+    }
+  },
+  "derived_from": "_syntheses/cadence.md",
+  "criteria": [
+    {
+      "id": "cadence.break-on-the-breath",
+      "criticality": "required",
+      "statement": {
+        "value": "Break on the breath",
+        "kind": "paraphrase",
+        "evidence": [
+          {
+            "card": "rhythm",
+            "phrase": "Break a long clause where the breath would break"
+          }
+        ],
+        "warrant": "the Craft move restates the cited phrase as an imperative; the cited words carry the claim, this carries the instruction"
+      },
+      "guidance": {
+        "value": "Split a long clause where a reader would draw breath — Nyx:",
+        "kind": "derived",
+        "warrant": "operational reading of the cited phrase — how a rater applies it to a draft",
+        "evidence": [
+          {
+            "card": "rhythm",
+            "phrase": "Break a long clause where the breath would break"
+          }
+        ]
+      },
+      "levels": [
+        {
+          "score": 0,
+          "descriptor": {
+            "value": "band 0 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 1,
+          "descriptor": {
+            "value": "band 1 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 2,
+          "descriptor": {
+            "value": "band 2 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 3,
+          "descriptor": {
+            "value": "band 3 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 4,
+          "descriptor": {
+            "value": "band 4 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 5,
+          "descriptor": {
+            "value": "band 5 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 6,
+          "descriptor": {
+            "value": "band 6 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 7,
+          "descriptor": {
+            "value": "band 7 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 8,
+          "descriptor": {
+            "value": "band 8 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 9,
+          "descriptor": {
+            "value": "band 9 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 10,
+          "descriptor": {
+            "value": "band 10 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "card": "rhythm",
+          "phrase": "Break a long clause where the breath would break"
+        }
+      ]
+    },
+    {
+      "id": "cadence.count-beats-before-words",
+      "criticality": "required",
+      "statement": {
+        "value": "Count beats before words",
+        "kind": "paraphrase",
+        "evidence": [
+          {
+            "card": "meter",
+            "phrase": "Count the beats before you count the words"
+          },
+          {
+            "card": "meter",
+            "phrase": "missed beat lands harder"
+          }
+        ],
+        "warrant": "the Craft move restates the cited phrase as an imperative; the cited words carry the claim, this carries the instruction"
+      },
+      "guidance": {
+        "value": "Fix the pulse first, then fit the words — Vale: , because a than a missed word",
+        "kind": "derived",
+        "warrant": "operational reading of the cited phrase — how a rater applies it to a draft",
+        "evidence": [
+          {
+            "card": "meter",
+            "phrase": "Count the beats before you count the words"
+          },
+          {
+            "card": "meter",
+            "phrase": "missed beat lands harder"
+          }
+        ]
+      },
+      "levels": [
+        {
+          "score": 0,
+          "descriptor": {
+            "value": "band 0 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 1,
+          "descriptor": {
+            "value": "band 1 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 2,
+          "descriptor": {
+            "value": "band 2 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 3,
+          "descriptor": {
+            "value": "band 3 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 4,
+          "descriptor": {
+            "value": "band 4 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 5,
+          "descriptor": {
+            "value": "band 5 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 6,
+          "descriptor": {
+            "value": "band 6 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 7,
+          "descriptor": {
+            "value": "band 7 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 8,
+          "descriptor": {
+            "value": "band 8 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 9,
+          "descriptor": {
+            "value": "band 9 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        },
+        {
+          "score": 10,
+          "descriptor": {
+            "value": "band 10 of 10 for this move",
+            "kind": "operator_policy",
+            "warrant": "fixture scale: evenly spaced bands, no source claim implied"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "card": "meter",
+          "phrase": "Count the beats before you count the words"
+        },
+        {
+          "card": "meter",
+          "phrase": "missed beat lands harder"
+        }
+      ]
+    }
+  ],
+  "note": "Fixture rubric over two INVENTED, non-copyrighted sources, with UNSTAMPED cards on purpose (it is the require_stamp fixture). Approved for the test suite only. Levels are 0..10 so the suite's absolute scores read unchanged; pacing.json exercises 0..5.",
+  "approved_digest": "0528585f32cb3adfe1c68aa1e83262176ebaef4c2af0a85ab545cee30edac244"
+}
