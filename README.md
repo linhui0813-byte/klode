@@ -2,7 +2,11 @@
 
 A **klode** — a rich vein — of grounded, verifiable knowledge, with the machinery to encode it and to
 *supervise work* against it. Every claim is anchored to a verbatim source and checked by a fail-closed
-linter, so the system can't quietly drift or hallucinate: **cite, don't recall.**
+linter, so a citation can't quietly rot: **cite, don't recall.**
+
+That guarantee is **referential, not semantic** — it proves the quoted text is still there, in a
+current source, in exactly one place. It does *not* prove the quote supports the claim built on it.
+Green `klode check` means "no citation rot," never "this is true."
 
 Zero runtime dependencies — Python 3.11+, standard library only.
 
