@@ -214,14 +214,18 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
             matches = list(re.finditer(_norm(m.phrase), flat))
         except re.error:
             return Resolution(False, 0, False)
-        if m.before or m.after:      # honour the pin for regex anchors too, don't silently drop it
+        pinned = bool(m.before or m.after)
+        if pinned:                   # honour the pin for regex anchors too, don't silently drop it
             before = _norm(m.before) if m.before else None
             after = _norm(m.after) if m.after else None
             matches = [mm for mm in matches
                        if _context_ok(flat, mm.start(), mm.end() - mm.start(), before, after)]
         if m.nth is not None:
             return Resolution(len(matches) >= m.nth, len(matches), False)
-        return Resolution(bool(matches), len(matches), False)
+        # A BARE regex is exactly as unpinned as a bare literal, so it earns the same ambiguity
+        # report. Hardcoding False here exempted the loosest anchors from the only breadth check
+        # there is: `grep-re: .*` resolved as a clean, unambiguous hit and GROUNDED arbitrary text.
+        return Resolution(bool(matches), len(matches), len(matches) > 1)
 
     p = _norm(m.phrase)
     if m.before or m.after:
@@ -235,7 +239,11 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
                if _context_ok(nohy, i, len(pd), before, after)]
         if m.nth is not None:      # honour the `#n` pin here too — don't fail OPEN on a context match
             return Resolution(len(occ) >= m.nth, len(occ), False)
-        return Resolution(bool(occ), len(occ), False)
+        # Context that STILL leaves several candidates has not disambiguated anything. Reporting
+        # False merely because a pin was present was a fail-open: `before: "alpha"` over
+        # "alpha target one; alpha target two" resolved as a clean, unique hit. Only `#n` selects
+        # unconditionally; every other unpinned outcome is judged by how many places it resolves in.
+        return Resolution(bool(occ), len(occ), len(occ) > 1)
 
     # literal — try the hyphen-preserving space first, then the de-hyphenated (wrapped) space
     occ = _occurrences(p, flat)

@@ -162,6 +162,25 @@ class GateConsumesTheSharedParser(unittest.TestCase):
             self.assertEqual(lib.verify_evidence(cfg, "ce", bad).resolution,
                              lib.EvidenceResolution.NOT_FOUND)
 
+    def test_bare_regex_resolving_widely_is_ambiguous_not_grounded(self):
+        # A bare `grep-re:` was exempted from the ambiguity report that guards every bare literal,
+        # so the loosest possible anchor was also the least checked: `.*` resolved as a clean hit
+        # and GROUNDED arbitrary text. A bare anchor is a bare anchor, whatever its match engine.
+        cfg = lib.Config.load(_make_kb(self.tmp, cid="cw", dim="dw",
+                                       moves="- **M.** (grep: `alpha`)", source_text="alpha\nbeta\ngamma"))
+        for loose in (".*", "[a-z]+", "a|b"):
+            self.assertEqual(lib.verify_evidence(cfg, "cw", lib.Marker(loose, regex=True)).resolution,
+                             lib.EvidenceResolution.AMBIGUOUS, f"bare regex {loose!r} must not ground")
+        # a regex that matches exactly once still grounds — the fix narrows nothing legitimate
+        self.assertEqual(lib.verify_evidence(cfg, "cw", lib.Marker("g.mma", regex=True)).resolution,
+                         lib.EvidenceResolution.FOUND)
+        # and a PIN is still the way to ground a wide pattern deliberately, as for literals.
+        # Either grounded state counts — the same pair `gate.ground()` accepts.
+        grounded = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
+        for pinned in (lib.Marker("[a-z]+", regex=True, nth=2),
+                       lib.Marker("[a-z]+", regex=True, after="beta")):
+            self.assertIn(lib.verify_evidence(cfg, "cw", pinned).resolution, grounded)
+
     def test_zeroth_occurrence_does_not_ground(self):
         cfg = lib.Config.load(_make_kb(self.tmp, cid="cz", dim="dz",
                                        moves="- **M.** (grep: `x`)", source_text="x here"))
@@ -191,6 +210,22 @@ class ZeroDep(unittest.TestCase):
                              cwd=str(REPO))
         self.assertEqual(out.stdout.strip(), "CLEAN", out.stderr)
 
+class FoldedLocationHonoursSelectors(unittest.TestCase):
+    def test_it_refuses_rather_than_point_at_the_wrong_occurrence(self):
+        # This locator folds whitespace only; the resolver also folds hyphenation. When the counts
+        # disagree, occurrence NUMBERS do not line up and `#1` would return the resolver's second
+        # match — a confidently wrong citation shown to the judge.
+        from klode.lib import common, services
+        text = "alpha tar-\nget phrase FIRST\nalpha target\nphrase SECOND"
+        m = common.Marker("target phrase", before="alpha", nth=1)
+        self.assertEqual(common.resolve(m, common.haystacks(text)).count, 2)
+        self.assertIsNone(services._locate_folded(text, m))
+
+    def test_an_unambiguous_folded_match_is_still_located(self):
+        from klode.lib import common, services
+        text = "intro\nthe target\nphrase here\nend"
+        m = common.Marker("target phrase")
+        self.assertEqual(services._locate_folded(text, m), (2, 3))
 
 if __name__ == "__main__":
     unittest.main()

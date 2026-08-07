@@ -265,19 +265,55 @@ def verify_evidence(cfg, card: str, phrase: str, *, require_stamp: bool = False,
     return _resolve_snapshot(cfg, card, phrase, require_stamp=require_stamp, today=today)[0]
 
 
-def _locate_folded(text: str, phrase: str) -> tuple[int, int] | None:
+def _locate_folded(text: str, marker: "common.Marker") -> tuple[int, int] | None:
     """Best-effort 1-indexed (start,end) line span for a phrase that resolved only across line/space
     folding, so it has no single matched line. Matches the phrase's words separated by any run of
     whitespace (the common line-break fold) — case-SENSITIVELY, to match the literal resolver rather
     than locate a different-case occurrence. Returns None if it cannot be placed (hyphenation and
-    smart-quote folds are not reconstructed here; the caller treats an unlocatable span as unusable)."""
+    smart-quote folds are not reconstructed here; the caller treats an unlocatable span as unusable).
+
+    HONOURS the marker's selector. Taking only the phrase meant a context- or `#n`-pinned anchor was
+    located by a bare scan: `Marker("target", before="alpha")` over lines
+    ["wrong target", "alpha", "target"] resolved to the third line but showed the judge the FIRST —
+    evidence that does not support the criterion, presented as if it did. A selector we cannot
+    reproduce here returns None (unusable) rather than an arbitrary occurrence."""
     import re
-    words = [re.escape(w) for w in phrase.split()]           # str.split() never yields empty tokens
+    if marker.regex:
+        # a regex that resolved only when folded cannot be re-run meaningfully against raw text
+        return None
+    words = [re.escape(w) for w in marker.phrase.split()]     # str.split() never yields empty tokens
     if not words:
         return None
-    m = re.search(r"\s+".join(words), text)                  # case-sensitive, like the literal matcher
-    if not m:
+    matches = list(re.finditer(r"\s+".join(words), text))     # case-sensitive, like the literal matcher
+    if marker.before or marker.after:
+        flat = common._norm(text)
+        keep = []
+        for m in matches:
+            # re-check the pin in the SAME folded space the resolver used, at this occurrence
+            probe = common._norm(text[:m.start()])
+            before_ok = (not marker.before) or probe.rstrip().endswith(common._norm(marker.before).rstrip())
+            post = common._norm(text[m.end():]).lstrip()
+            after_ok = (not marker.after) or post.startswith(common._norm(marker.after).lstrip())
+            if before_ok and after_ok:
+                keep.append(m)
+        matches = keep
+        del flat
+    # This locator matches across WHITESPACE folding only; the resolver additionally folds
+    # hyphenation. When the counts disagree, some occurrence is hyphen-wrapped and invisible here,
+    # so occurrence NUMBERS do not line up: `#1` would return the resolver's second match. Refuse
+    # rather than point at the wrong line — an unusable span is honest, a confident wrong one is not.
+    expected = common.resolve(marker, common.haystacks(text))
+    if expected.count != len(matches):
         return None
+    if marker.nth is not None:
+        if len(matches) < marker.nth:
+            return None
+        matches = [matches[marker.nth - 1]]
+    elif len(matches) != 1:
+        # zero (cannot place) or several (which one is the evidence?) — both are unusable, and
+        # silently taking the first is how the wrong line reached the judge.
+        return None
+    m = matches[0]
     return text.count("\n", 0, m.start()) + 1, text.count("\n", 0, m.end()) + 1
 
 
@@ -300,7 +336,7 @@ def verify_context(cfg, card: str, phrase: str, *, context_lines: int = 3, max_w
         return core.EvidenceContext(**base)                          # not usable: no span
     match_nums = tuple(n for n, _ in hit.lines)
     if not match_nums:                                               # folded match: locate the span
-        span = _locate_folded("\n".join(lines), marker.phrase)
+        span = _locate_folded("\n".join(lines), marker)
         if span is None:
             return core.EvidenceContext(**base)                      # resolves but not locatable -> unusable
         match_nums = span                                            # (start, end) — not a materialized range
