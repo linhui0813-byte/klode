@@ -1,4 +1,4 @@
-# eval — how to test lodlib's efficiency
+# eval — how to test klode's efficiency
 
 "Efficiency" splits three ways for a knowledge library. Only one (retrieval) is about whether the
 tool *works*; the other two are cost. All three are stdlib-only and take `-c path/to/library.toml`.
@@ -27,6 +27,10 @@ scores are a *lower bound* (an unlabelled-but-relevant card counts as a miss), b
 robust regardless. Add lines to `retrieval.jsonl` and re-run.
 
 ## Baseline — 2026-07-24, doxai corpus (129 cards, 46 MB source, 1903 anchors)
+
+**`retrieval.jsonl` is labelled against that corpus**, which is private and not in this
+repo. Point `-c` at it, or pass `--gold` with a set labelled for your KB; running it
+against another library now exits with that message rather than reporting 0.000.
 
 ### Retrieval efficacy (16 seed questions)
 | ranker | P@5 | R@10 | MRR | nDCG@10 |

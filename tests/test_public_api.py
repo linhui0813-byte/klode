@@ -38,7 +38,7 @@ class PublicApiContract(unittest.TestCase):
         from klode.lib.check import check as _check_fn
         self.assertTrue(callable(_check_fn))
 
-    def test_importing_lodlib_does_not_eager_import_frontends_or_optional_deps(self):
+    def test_importing_klode_lib_does_not_eager_import_frontends_or_optional_deps(self):
         # a FRESH process, so the test runner's own imports don't pollute sys.modules
         probe = ("import klode.lib, sys\n"
                  "leak=[m for m in ('klode.lib.cli','klode.lib.mcp_server','klode.lib.ingest',"

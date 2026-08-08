@@ -1,4 +1,4 @@
-# lodlib card format & disciplines
+# klode card format & disciplines
 
 This is the contract. A library is a directory tree; a **card** is one Markdown file per source.
 The format is deliberately plain — human-readable, greppable, diffable, and machine-checkable — so
@@ -22,7 +22,7 @@ library/                     # [library].dir
 ```
 
 The card `id` is the source filename stem, so `library/books/aristotle-poetics.txt` ⇒ card
-`library/cards/aristotle-poetics.md`. That bijection is enforced by `lib check`.
+`library/cards/aristotle-poetics.md`. That bijection is enforced by `klode check`.
 
 ## The card
 
@@ -45,7 +45,7 @@ grep_ready: true
 `library/books/aristotle-poetics.txt` — full text (git-ignored, grep-ready). Never duplicated
 here; grep it to verify.
 
-<!-- scaffold: managed by lodlib — edit Thin/Full below the marker by hand -->
+<!-- scaffold: managed by klode — edit Thin/Full below the marker by hand -->
 
 ## Thin
 <L1: 1–3 sentences, the source's core engine, each load-bearing claim `(grep: "…")`-anchored>
@@ -54,8 +54,8 @@ here; grep it to verify.
 <L2: main points outlined, every claim `(grep: "…")`-anchored>
 ```
 
-**Above the scaffold marker is machine-managed** (`lib build` writes it). **Below the marker is
-yours** — `lib build` never touches it, so a rebuild is a safe no-op on your prose.
+**Above the scaffold marker is machine-managed** (`klode build` writes it). **Below the marker is
+yours** — `klode build` never touches it, so a rebuild is a safe no-op on your prose.
 
 ### Front-matter fields
 
@@ -66,11 +66,11 @@ yours** — `lib build` never touches it, so a rebuild is a safe no-op on your p
 | `file` | path to the source `.txt`, relative to the library root |
 | `framework` | `none`, or a path to a per-dimension distillation (optional layer) |
 | `zoom` | how far the card is filled: `stub` (L0) → `thin` (L0+L1) → `full` (L0+L1+L2) |
-| `aliases` | `[term, …]` concept synonyms, to widen `lib search` recall — hand-filled, never invented |
-| `grep_ready` | the source has been normalized for grep (see `lib normalize`) |
-| `source_sha256` | *(optional, freshness)* hash of the source when claims were last verified — set by `lib build --stamp`; `lib check` warns when the live source no longer matches |
-| `review_by` | *(optional, freshness)* an ISO date; `lib check` warns once it has passed — re-review |
-| `superseded_by` | *(optional, freshness)* a newer source's id; `lib check` warns so references are re-pointed |
+| `aliases` | `[term, …]` concept synonyms, to widen `klode search` recall — hand-filled, never invented |
+| `grep_ready` | the source has been normalized for grep (see `klode normalize`) |
+| `source_sha256` | *(optional, freshness)* hash of the source when claims were last verified — set by `klode build --stamp`; `klode check` warns when the live source no longer matches |
+| `review_by` | *(optional, freshness)* an ISO date; `klode check` warns once it has passed — re-review |
+| `superseded_by` | *(optional, freshness)* a newer source's id; `klode check` warns so references are re-pointed |
 
 ## The two disciplines (non-negotiable — they keep it from rotting)
 
@@ -80,7 +80,7 @@ yours** — `lib build` never touches it, so a rebuild is a safe no-op on your p
    - `` (grep: `phrase`) `` — backtick-delimited
    - `` (`grep: "phrase"`) `` — whole marker backticked, phrase double-quoted
 
-   `lib check` normalizes before matching (folds whitespace, hyphenation, and smart quotes), so a
+   `klode check` normalizes before matching (folds whitespace, hyphenation, and smart quotes), so a
    phrase wrapped across extracted lines still resolves. An anchor that no longer resolves is a
    **citation-rot ERROR**.
 
@@ -95,7 +95,7 @@ yours** — `lib build` never touches it, so a rebuild is a safe no-op on your p
    - `` (grep: `phrase` before `preceding words` after `following words`) `` — prefix/suffix context
    - `` (grep: `phrase` #2) `` — the 2nd occurrence
 
-   `lib check --strict` additionally WARNs when a bare anchor resolves in more than one place (add
+   `klode check --strict` additionally WARNs when a bare anchor resolves in more than one place (add
    `before:`/`after:`/`#n` to pin it).
 
    **Several anchors can share one marker**, `;`/`|`-separated. Each phrase is checked:
@@ -103,10 +103,10 @@ yours** — `lib build` never touches it, so a rebuild is a safe no-op on your p
    - `` (`grep: "A"`; `grep: "B"`) `` — each phrase re-states the key; both are full anchors
 
 2. **Stub cheap, fill on demand.** Every source gets a card (L0) the moment it lands; L1/L2 are
-   written only when the source is actually used. `lib build` **never invents** a summary — it only
+   written only when the source is actually used. `klode build` **never invents** a summary — it only
    scaffolds L0 and marks L1/L2 *owed*. `zoom:` records how far each card is filled.
 
-## What `lib check` enforces
+## What `klode check` enforces
 
 | id | check | severity |
 |----|-------|----------|
@@ -124,7 +124,7 @@ source-dependent checks (A per-card, B, F, and the H hash) are skipped rather th
 tracked-file checks (D, E) still run. Outside a git work tree, the copyright guard (E) reports N/A
 rather than erroring, since there is nothing to leak into.
 
-**A separate, opt-in semantic pass.** `lib check --entail` (needs the `lodlib[entail]` extra) scores,
+**A separate, opt-in semantic pass.** `klode check --entail` (needs the `klode[entail]` extra) scores,
 for each anchor, whether the source *window* actually supports the card's claim — a small, pinned NLI
 model (SummaC-style windowing). It is **warn-only, never a gate**: the automatic-attribution accuracy
 ceiling is ~77–80%, so a low score is a review prompt, not a failure. Grep resolution stays the only
@@ -133,11 +133,11 @@ hard gate, and the default (no-extra) path stays zero-dependency.
 ## Adding a source
 
 1. Drop the `.txt` on its shelf; add a `BIBLIOGRAPHY.md` row.
-2. `lib normalize --apply` (if it's a pdftotext/ebook dump) to make it grep-ready.
-3. `lib build` — scaffolds the card (L0) and refreshes the board.
+2. `klode normalize --apply` (if it's a pdftotext/ebook dump) to make it grep-ready.
+3. `klode build` — scaffolds the card (L0) and refreshes the board.
 4. Write L1 (and L2 if you're mining the source), grep-anchored, below the scaffold marker; bump
    `zoom:`.
-5. `lib check` — must pass.
+5. `klode check` — must pass.
 
 ## The synthesis craft layer (the `_syntheses` contract)
 
@@ -156,34 +156,34 @@ that answers" promise. So a synthesis SHOULD open with a self-contained writer l
   (ε-test / falsification designs, `Owed`, the skeptic-gate row, promotion history) keep their
   existing sections below.
 
-`lib consult <dimension>` returns the `## Craft` section by default (falling back to a section menu
+`klode consult <dimension>` returns the `## Craft` section by default (falling back to a section menu
 when a synthesis has none yet); `--full` returns the whole document; `--section engine` / `--section
 provenance` (or any heading keyword) select the deeper layers. The MCP `consult_dimension` mirrors
 this (`audience=writer` default). This is the same level-of-zoom discipline the source cards use,
 applied one tier up.
 
-**Resolving a name.** `lib consult <name>` resolves a dimension/framework stem, an author, or a book
+**Resolving a name.** `klode consult <name>` resolves a dimension/framework stem, an author, or a book
 title. Dimensions are matched by **exact stem or family prefix only** (`viewpoint` →
 `viewpoint-who` / `viewpoint-showing`); only frameworks and source cards additionally fuzzy-match on
 title + aliases. Dimensions are **deliberately kept out of the fuzzy token index** — a generic word in
 one synthesis's haystack must never silently outrank the right lens. A dimension's informal or
 historical names (e.g. an old name kept after a rename) therefore live in
-`_syntheses/_diagnostics.md`, the hand-editable `words → dimensions` table that `lib diagnose` reads;
+`_syntheses/_diagnostics.md`, the hand-editable `words → dimensions` table that `klode diagnose` reads;
 that is how a legacy term like `presence` reaches its current dimension (`reader-immersion`). There is
 intentionally no `aliases:` field on a synthesis.
 
 ## Public API and internal layering
 
-`import lodlib` exposes a small, stable **Loop-A contract** — `Config`, `consult` /
+`import klode.lib` exposes a small, stable **Loop-A contract** — `Config`, `consult` /
 `ConsultRequest` / `ConsultResult`, `resolve` / `Resolution`, `verify` / `Verification`, `dimension`,
 `framework`, `diagnose`, `search`. A consumer (e.g. a supervising "Loop B" agent) imports from
-`lodlib`, not from submodules; submodules are internal and may be refactored. Importing `lodlib` is
+`klode.lib`, not from submodules; submodules are internal and may be refactored. Importing `klode.lib` is
 cheap and pulls in **no** frontends or optional/heavy deps (`cli`, `mcp_server`, `entail`, `ingest`,
-OCR). The citation-rot linter is a maintenance tool, reached at `lodlib.check.check` or the `lib check`
-CLI — deliberately not re-exported (the name would shadow the `lodlib.check` module).
+OCR). The citation-rot linter is a maintenance tool, reached at `klode.lib.check.check` or the `klode check`
+CLI — deliberately not re-exported (the name would shadow the `klode.lib.check` module).
 
 The package is **flat** by design (no `core/services/adapters` nesting — it would add no mechanism at
-this size and would break `packages=["lodlib"]`). The one boundary that carries a mechanism is
+this size and would break `packages=["klode"]`). The one boundary that carries a mechanism is
 enforced by `tests/test_layering.py`: the two frontends (`cli`, `mcp_server`) are **adapters** —
 nothing depends on them, they don't depend on each other, and both route consult through the shared
 **`console`** layer. `console` owns *what* to return (resolution + lens loading + section selection);

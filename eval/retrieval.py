@@ -112,6 +112,22 @@ def main(argv=None):
     cfg = Config.load(Path(args.config) if args.config else None)
     gold_rows = [json.loads(l) for l in Path(args.gold).read_text().splitlines() if l.strip()]
 
+    # A gold set written for a DIFFERENT corpus scores 0.000 on every metric and every ranker —
+    # indistinguishable from a broken ranker, and the A/B this harness exists for becomes vacuous.
+    # The shipped set targets a private corpus, so a plain checkout hits exactly this. Fail loud.
+    have = {os.path.basename(p)[:-3] for p in card_files(cfg)}
+    want = {cid for row in gold_rows for cid in row["relevant"]}
+    if not (want & have):
+        raise SystemExit(
+            f"none of the gold set's {len(want)} card ids exist in this KB "
+            f"({cfg.config_path}) — every score would be 0.000 for every ranker, which measures\n"
+            f"the gold set, not the ranker. {Path(args.gold).name} is written against a specific\n"
+            "corpus; point -c at that corpus, or pass --gold with a set labelled for this one.")
+    missing = want - have
+    if missing:
+        print(f"note: {len(missing)} of {len(want)} gold card ids are absent from this KB — "
+              f"those questions can only lose points\n", file=sys.stderr)
+
     configs = [("raw-count", rank_rawcount, False),
                ("BM25 (L0/L1)", rank_bm25, False),
                ("BM25 +Full (L2)", rank_bm25, True)]
