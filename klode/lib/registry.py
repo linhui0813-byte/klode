@@ -57,9 +57,12 @@ class KBInfo:
     error: str | None = None
 
 
-def _manifest_path(explicit: str | Path | None, *,
+def manifest_path(explicit: str | Path | None, *,
                    start: str | Path | None, home: str | Path | None) -> Path | None:
-    """Resolve the manifest to read by precedence, or None when no registry exists."""
+    """Resolve the manifest to read by precedence, or None when no registry exists.
+
+    Public because a long-lived pool must know WHICH file to watch for edits, not merely what it
+    contained at startup."""
     if explicit is not None:
         p = Path(explicit).expanduser()      # accept `~/…` like the manifest's own entry paths
         if not p.is_file():
@@ -78,7 +81,7 @@ def load(explicit: str | Path | None = None, *,
     """The registered KBs, sorted by id. Empty when no manifest exists. Fails loud (`RegistryError`)
     on an explicitly-named-but-missing manifest, invalid TOML, a missing `id`/`path`, an id that is
     not a slug, or a duplicate id."""
-    path = _manifest_path(explicit, start=start, home=home)
+    path = manifest_path(explicit, start=start, home=home)
     if path is None:
         return ()
     try:
