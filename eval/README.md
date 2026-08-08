@@ -26,11 +26,22 @@ MRR, nDCG@10**, A/B'd against the pre-BM25 raw-count ranking and the `--full` (L
 scores are a *lower bound* (an unlabelled-but-relevant card counts as a miss), but the ranker A/B is
 robust regardless. Add lines to `retrieval.jsonl` and re-run.
 
-## Baseline — 2026-07-24, doxai corpus (129 cards, 46 MB source, 1903 anchors)
+## Baseline — 2026-07-24, `storycraft` corpus (129 cards, 46 MB source, 1903 anchors)
 
-**`retrieval.jsonl` is labelled against that corpus**, which is private and not in this
-repo. Point `-c` at it, or pass `--gold` with a set labelled for your KB; running it
-against another library now exits with that message rather than reporting 0.000.
+**`retrieval.jsonl` is labelled against the `storycraft` KB**, which is private and not in
+this repo — it lives at `~/klode-libs/storycraft/` (registered as `storycraft`; see
+`~/.klode/registry.toml`). Run it there:
+
+```bash
+python3 eval/retrieval.py -c ~/klode-libs/storycraft/library.toml
+```
+
+Against any other library the harness now exits 1 naming the mismatch, rather than
+reporting 0.000 for every ranker as if the ranker were broken. Pass `--gold` with a set
+labelled for your own KB to measure that one instead.
+
+The corpus has grown since this baseline (181 cards today), so current numbers drift
+slightly from the table below; the ranker A/B is the part that stays comparable.
 
 ### Retrieval efficacy (16 seed questions)
 | ranker | P@5 | R@10 | MRR | nDCG@10 |
