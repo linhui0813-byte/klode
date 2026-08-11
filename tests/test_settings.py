@@ -185,6 +185,35 @@ class InvalidInputFailsLoud(unittest.TestCase):
                     os.environ.pop("KLODE_INGEST_VERIFY", None)
 
 
+class OneTierListNotThree(unittest.TestCase):
+    """The tier list was declared in three places — argparse choices, the settings SPEC, and the
+    extractor table — with nothing binding them. They drifted exactly as that invites: `marker` was
+    a valid tier everywhere except argparse, so `--tier marker` was rejected while the identical
+    value in settings.toml worked. One capability, reachable from one surface and not the other.
+
+    argparse now derives its choices from the SPEC. These tests bind the SPEC to the extractor
+    table, which is the pair a cycle-free import cannot bind at runtime."""
+
+    def _spec(self):
+        return next(s for s in settings.SPEC if (s.section, s.key) == ("ingest", "tier"))
+
+    def test_every_settable_tier_has_an_extractor(self):
+        from klode.lib.formats import pdf
+        settable = set(self._spec().choices) - {"auto"}
+        self.assertEqual(settable, set(pdf._EXTRACTORS),
+                         "a tier nobody can extract with, or an extractor nobody can select")
+
+    def test_the_cli_offers_exactly_the_settable_tiers(self):
+        action = next(a for a in build_parser()._subparsers._group_actions[0]
+                      .choices["ingest"]._actions if a.dest == "tier")
+        self.assertEqual(tuple(action.choices), self._spec().choices)
+
+    def test_marker_is_selectable_from_the_command_line(self):
+        # the concrete regression: this raised SystemExit
+        self.assertEqual(build_parser().parse_args(
+            ["ingest", "x.pdf", "--shelf", "s", "--tier", "marker"]).tier, "marker")
+
+
 class SecretsStayOut(unittest.TestCase):
     """The line is CREDENTIALS, not 'anything that looks infrastructural'.
 

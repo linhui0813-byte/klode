@@ -3,6 +3,79 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
+## Unreleased — 0.4.0
+
+Extraction integrity: an ingest can now say whether the text it wrote actually represents the
+document, and refuse the shelf when it does not. Plus a settings file, and two remote layout
+backends reachable from it.
+
+### Breaking
+
+- **`klode ingest` refuses to promote a measured integrity FAILURE.** A candidate that drops,
+  duplicates, or scrambles material relative to the control raises `VerificationError` and writes
+  nothing — no shelf source, no provenance row. Override with `--accept-unverified`, which records
+  the finding as `unverified` rather than erasing it. Skip the check with `--no-verify`.
+- **`abstained` is not `verified`.** Verification has four states, and `Integrity.ok` is true only
+  for `verified`. Anything reading "no failure reported" as success is now wrong on purpose:
+  abstention means *could not measure*, and it is the honest answer for a document with no control,
+  too few anchors, or no rendering tools installed.
+- **Settings-backed CLI flags default to `None`, not to their value.** `--tier` no longer defaults
+  to `"auto"`, so `klode ingest x` and `klode ingest x --tier auto` produce different namespaces.
+  With a value default the argument level of the precedence chain silently swallowed environment,
+  file, and default. Anything inspecting `args.tier` must handle `None`.
+
+### Added
+
+- **Extraction integrity** — three independent measurements that fail differently: `containment`
+  (dropped material), `inflation` (duplication), and per-page rank correlation (reading order).
+  Order is measured **per page**, using real page boundaries when the control supplies them: a
+  whole-book correlation scores 300 pages with *every page internally reversed* at ρ = 0.999978,
+  which is invisible. Both numbers are reproduced in `tests/test_agreement.py`.
+- **Visual ground truth** (`klode.lib.visual`) — renders sampled pages with `pdftoppm`, reads them
+  with `tesseract`, and compares against the candidate. The only signal here not downstream of
+  another extractor. Sampled, so the seed and page numbers are recorded; both binaries optional,
+  and absent they abstain loudly.
+- **Page coverage** (`klode.lib.coverage`) — declared (`pdfinfo`) vs control (form feeds) vs
+  candidate (structured `prov[].page_no`). Candidate coverage is direct or `None`, never inferred.
+- **Provenance bound to the bytes written.** Every row carries `output_sha256` of the exact file,
+  the verdict, its metrics, and the thresholds that judged them, so a later recalibration can be
+  applied to records already written. Changing one byte orphans the record.
+- **`~/.klode/settings.toml`** — argument → environment → file → default, with the winning source
+  recorded and printed by `klode settings`. Unknown keys, wrong types, and out-of-domain values are
+  rejected loudly rather than ignored. Credentials are never settings: `ANTHROPIC_API_KEY` stays
+  environment-only, and a test enforces the ban.
+- **Remote layout backends.** `[ingest].docling_url` and `[ingest].marker_url` (or
+  `$KLODE_DOCLING_URL` / `$KLODE_MARKER_URL`) point at a `docling-serve` or `marker_server`
+  endpoint — the GPU runs server-side, so klode keeps zero runtime dependencies. `--tier marker`
+  joins `--tier docling`. **Neither is in the `auto` escalation ladder**: a backend earns a ladder
+  slot by measuring better than the one it would displace, and `eval/extract_bakeoff.py` is what
+  decides that.
+- **`eval/extract_bakeoff.py`** — ranks backends by fidelity to the *rendered page*. Anchor
+  resolution is reported as a migration statistic and never ranked on: it is biased toward whichever
+  backend authored the anchors and blind to reading order, and `tests/test_bakeoff.py` demonstrates
+  the ranking reversing when the anchors change origin.
+- **A labeled PDF corpus** (`tests/fixtures/pdfs/`) — hand-built, so ground truth is true by
+  construction rather than by another extractor's say-so, byte-reproducible from its generator, and
+  `GROUND-TRUTH.json` names what it does **not** cover.
+
+### Fixed
+
+- **A confident `verified` on unmeasured evidence**, in every form found: NaN metrics (which make
+  every threshold comparison false), order measured on only a minority of windows, an unknown
+  declared page count, and coverage that could not speak for the candidate. All now abstain.
+- **`order_median` was not a median** — a nearest-rank quantile returned one of the two middle
+  observations, reporting 1.0 for `[-1.0, 1.0]`. Same defect in the bake-off's `median_visual`.
+- **A one-page-in-ten reversal passed a median-only gate.** The worst window is now gated too.
+- **Non-ASCII text was discarded by the tokenizer**, so two unrelated CJK or Cyrillic documents
+  scored identical and verified.
+- **Ingest was not transactional in either direction.** Promoting before recording left a shelf
+  artifact when the provenance log was unwritable; recording before promoting left a row for an
+  artifact that never landed. Every fallible step now runs before either side is mutated.
+- **A predictable `<dest>.tmp` name** was followed through a planted symlink, truncating the target.
+- **The control was normalized page-at-a-time**, a different pipeline from the candidate's: a
+  running head repeated on six pages is stripped from a whole document and kept on every page in
+  isolation, so a faithful extraction lost containment.
+
 ## 0.3.0 — 2026-08-09
 
 The supervising gate (`klode.gate`) gets a real rubric artifact and a real judge. The engine

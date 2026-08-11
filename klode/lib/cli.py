@@ -546,6 +546,12 @@ def cmd_review(args) -> int:
     return 0
 
 
+def _tier_choices() -> tuple[str, ...]:
+    """The PDF tier list, from the settings SPEC — the one place it is declared."""
+    from . import settings
+    return next(s for s in settings.SPEC if (s.section, s.key) == ("ingest", "tier")).choices
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="klode", description="klode — a grep-grounded, level-of-zoom "
                                                         "knowledge library with a citation-rot linter.")
@@ -592,9 +598,15 @@ def build_parser() -> argparse.ArgumentParser:
     # default=None, NOT "auto": with a value default, `ingest x` and `ingest x --tier auto`
     # produce identical namespaces and the settings precedence chain cannot tell a deliberate
     # choice from silence. The effective default comes from settings.resolve().
-    pg.add_argument("--tier", choices=["auto", "pdftotext", "xberg", "docling"], default=None,
-                    help="PDF only: auto picks by measured corruption; force a tier to override "
-                         "(default: auto, or [ingest].tier from ~/.klode/settings.toml)")
+    # Choices come from the settings SPEC, not a second hand-maintained list. They had already
+    # drifted: `marker` was a valid tier everywhere except here, so `--tier marker` was rejected
+    # while `[ingest].tier = "marker"` in settings.toml worked — the same capability reachable
+    # from one surface and not the other. `tests/test_settings.py` binds the SPEC to the actual
+    # extractor table so a third copy cannot appear.
+    pg.add_argument("--tier", choices=list(_tier_choices()), default=None,
+                    help="PDF only: auto picks by measured corruption; force a tier to override. "
+                         "`marker` and `docling` are remote backends — see [ingest].docling_url / "
+                         "marker_url (default: auto, or [ingest].tier from ~/.klode/settings.toml)")
     pg.add_argument("--lang", default="eng", help="OCR language (default eng)")
     pg.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None,
                     help="check extraction integrity against a control before promoting to the "
