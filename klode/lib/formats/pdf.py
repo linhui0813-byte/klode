@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import coverage
 from ._base import Extraction
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
@@ -27,6 +28,10 @@ MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a
 DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
 DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
+# Page provenance from the most recent structured extraction, keyed by source path. The tier
+# functions return plain text (the escalation loop compares text and nothing else), so provenance
+# is carried beside them rather than by widening every extractor's signature.
+_LAST_PAGES: dict = {}
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
 
@@ -80,13 +85,18 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
     return b"\r\n".join(parts)
 
 
-def _docling_remote(pdf: Path, endpoint: str) -> str:
+def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | None]:
     """Convert via a docling-serve endpoint (the GPU lives on the server; klode stays zero-dep).
-    Returns the document's markdown. Network/HTTP failure raises OSError and a malformed/oversized
-    response raises RuntimeError, so the escalation loop degrades to the best local tier instead of
-    crashing."""
+    Returns `(markdown, pages)` where `pages` is the page numbers the structured result claims to
+    cover, or None when it carries no provenance. Network/HTTP failure raises OSError and a
+    malformed/oversized response raises RuntimeError, so the escalation loop degrades to the best
+    local tier instead of crashing.
+
+    `json` is requested alongside `md` so candidate page coverage can be read DIRECTLY from
+    `prov[].page_no` rather than inferred from the control — the control cannot answer for the
+    candidate, and inferring it was a defect in an earlier design."""
     boundary = uuid.uuid4().hex
-    body = _multipart({"to_formats": "md", "do_table_structure": "true"},
+    body = _multipart({"to_formats": "md,json", "do_table_structure": "true"},
                       "files", pdf.name, pdf.read_bytes(), boundary)
     req = urllib.request.Request(
         f"{endpoint}/v1/convert/file", data=body, method="POST",
@@ -99,19 +109,29 @@ def _docling_remote(pdf: Path, endpoint: str) -> str:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:         # JSONDecodeError is a ValueError
         raise RuntimeError(f"docling-serve returned an unparseable response ({e})") from e
-    md = (data.get("document") or {}).get("md_content") or ""
+    doc = data.get("document") or {}
+    md = doc.get("md_content") or ""
     if not md.strip():
         raise RuntimeError("docling-serve returned no markdown")
-    return md
+    structured = doc.get("json_content")
+    if isinstance(structured, str):                       # some builds return it as a JSON string
+        try:
+            structured = json.loads(structured)
+        except ValueError:
+            structured = None
+    return md, coverage.pages_from_docling(structured)
 
 
 def _docling(pdf: Path, lang: str = "eng") -> str:
+    """Markdown only — the escalation loop compares text. `_docling_pages` carries the provenance."""
     endpoint = os.environ.get(DOCLING_ENV)
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
         endpoint = endpoint.rstrip("/")
         if not endpoint.startswith(("http://", "https://")):
             raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-        return _docling_remote(pdf, endpoint)
+        md, pages = _docling_remote(pdf, endpoint)
+        _LAST_PAGES[pdf] = pages          # provenance rides alongside; see PdfHandler.extract
+        return md
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
@@ -196,5 +216,8 @@ class PdfHandler:
         return head.startswith(b"%PDF")
 
     def extract(self, path: Path, *, lang: str = "eng", tier: str = "auto") -> Extraction:
+        _LAST_PAGES.pop(path, None)
         c = choose_and_extract(path, tier, lang)
-        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note)
+        # only the tier that actually produced the winning text may claim its provenance
+        pages = _LAST_PAGES.pop(path, None) if c.tier == "docling" else None
+        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note, pages=pages)

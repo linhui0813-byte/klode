@@ -73,6 +73,16 @@ pages — with page-level ground truth from rendered pages, not from another ext
 validated until this exists. Licensing matters: prefer public-domain or synthetic-but-real PDFs that
 can be committed.
 
+**Status:** DONE — 2026-08-11
+**Changed:** tests/fixtures/pdfs/make_fixtures.py, tests/fixtures/pdfs/*.pdf (5),
+tests/fixtures/pdfs/GROUND-TRUTH.json, tests/test_pdf_corpus.py
+**Verified:** python3 -m pytest tests/test_pdf_corpus.py -q (8 passed, 12 subtests)
+**Note:** ground truth is true *by construction* — the generator places known text at known
+coordinates, so no extractor labels the corpus. Covers page counting, a blank page, two-column
+reading order, running heads, and the trailing-form-feed off-by-one. `not_covered` in
+GROUND-TRUTH.json records the four gaps that still need real files (scans, a broken text layer,
+non-Latin scripts, real table/footnote complexity) so this is not mistaken for a complete set.
+
 **WI-1 · Agreement primitives, scoped honestly.** `containment` and `inflation` survive the audit
 unchanged — they are algebra and they behaved correctly on both synthetic and real prose. Order
 scoring becomes **page/window-local displacement** (per-window rank agreement, or matched-shingle
@@ -81,6 +91,17 @@ order), reported per window with a distribution, never a single book-level scala
 not dominate. Both permutation tests, on real prose, with a stated tokenizer (case, punctuation,
 hyphenation, Unicode normalization all fixed and tested — they change anchor counts materially).
 
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/agreement.py, tests/test_agreement.py
+**Verified:** python3 -m pytest tests/test_agreement.py -q (20 passed)
+**Note:** both v1 failure numbers are pinned as regression tests against the OLD metric
+(per-page reversal ρ=0.999978, relocated block ρ=0.9406). Window-local order inverts that
+sensitivity: page reversal drives 10 of 10 windows to −1.0; a relocated block disturbs 1 of 10 and
+leaves the median at 1.000. One clarification the tests forced: *"must not dominate"* is not *"must
+not show"* — a moved block SHOULD register in the straddling window, and suppressing it would be a
+blind spot. Tokenizer is stated and tested (NFKC, de-hyphenation matching `common._dehyphenate`,
+casefold, non-alphanumeric split).
+
 **WI-2 · Candidate page provenance.** Before rerunning a known-bad control, ask whether the layout
 backend's structured result already carries page numbers / bounding boxes. If it does, candidate
 coverage becomes direct rather than inferred.
@@ -88,11 +109,37 @@ coverage becomes direct rather than inferred.
 page assignments, and runtime cost. If the structured output cannot supply it, fall back to sampled
 rendered-page OCR and compare cost against a second full extraction.
 
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/coverage.py, klode/lib/formats/pdf.py, klode/lib/formats/_base.py,
+tests/test_coverage.py
+**Verified:** python3 -m pytest tests/test_coverage.py -q (16 passed, 10 subtests)
+**Note:** the structured result DOES carry it — docling-serve is now asked for `md,json` and
+`prov[].page_no` is read directly, so candidate coverage no longer depends on the control.
+`Extraction.pages` is `None` (= *cannot say*) for every text-only backend, and the tests pin that
+`None` never reads as "nothing missing". The defect is pinned directly: control coverage is
+byte-identical whether the candidate kept every page or dropped half.
+**Partial:** the plan's *"for 20 PDFs, measure ... runtime cost"* is **not run** — docling is not
+installed and there is no endpoint here, so the parsing is proven against mocked structured
+responses and the real-world measurement is carried to Outstanding work.
+
 **WI-3 · Sampled visual ground truth.** The only thing that actually establishes fidelity: render N
 random pages, OCR them, compare against the candidate's text for those pages. Record the seed and
 the page numbers so the sample is reproducible and auditable.
 *Check:* report per-failure recall and clean-document false-positive rate with intervals — not four
 point values.
+
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/visual.py, tests/test_visual.py
+**Verified:** python3 -m pytest tests/test_visual.py -q (15 passed, real pdftoppm + tesseract)
+**Note:** this is the one signal that breaks the circularity — the rendered page is downstream of
+no extractor. Runs for real here: faithful candidate scores recall 1.0 on the corpus, wrong text
+scores <0.3, a dropped page is recorded as an *error* rather than a 0.0 (those are different
+findings), and the worst page is surfaced rather than averaged away. Seed and sampled page numbers
+are recorded on every report. Recall, not F1, deliberately: extra candidate text (running heads,
+hyphenation artefacts) is not evidence of damage.
+**Partial:** *"false-positive rate with intervals"* is **not** produced — that is a statistic over
+a labeled corpus with real-world failures, and WI-0 covers structural cases only (its `not_covered`
+list names the gaps). Carried to Outstanding work.
 
 **WI-4 · Verification states and transactional semantics.** Replacing v1's incoherent
 "non-zero but still write":
@@ -104,6 +151,20 @@ point values.
 shelf mutation. Never both. (v1 failed this: the retry would hit an existing file and demand
 `--force`.)
 
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/integrity.py, klode/lib/ingest.py, klode/lib/cli.py,
+tests/test_ingest_integrity.py
+**Verified:** python3 -m pytest tests/test_ingest_integrity.py -q (17 passed)
+**Note:** all four states implemented, with `abstained` explicitly NOT ok (`Integrity.ok` is true
+only for `verified`) and explicitly NOT blocking — refusing every PDF we cannot measure would break
+the tool on exactly the documents it is for. A measured failure raises before the write, so the
+retry test passes with no `--force`: the first attempt left nothing behind. `--accept-unverified`
+downgrades the state but **keeps the reasons and metrics**; an override that erases its own
+evidence is worse than no check. CLI uses `BooleanOptionalAction` for `--verify/--no-verify`.
+**Provisional:** thresholds (containment 0.80, inflation 0.67–1.50, median order 0.0) are loose on
+purpose and are recorded in every verdict so records already written can be recalibrated. Tuning
+them needs real-world failures the corpus does not yet have.
+
 **WI-5 · Provenance bound to the persisted bytes.** Verification must describe **what was written**,
 not what was extracted — v1 verified pre-normalization, but `normalize.process()` produces the shelf
 artifact and can strip a legitimate repeated refrain as a running head. Record the final output
@@ -112,6 +173,15 @@ and status.
 *Check:* changing one byte of the shelf source must invalidate the matching verification record; a
 forced re-ingest must not inherit the previous verification. A card front-matter field is the wrong
 home — `build.py` rewrites machine-managed front matter and would drop it.
+
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/ingest.py (provenance row), tests/test_ingest_integrity.py
+**Verified:** python3 -m pytest tests/test_ingest_integrity.py -q (17 passed)
+**Note:** verification runs on the NORMALIZED text — the bytes actually written — with the control
+put through the same `process()` pipeline, or it would not be a comparison. The row records
+`output_sha256` of the shelf artifact plus schema, status, reasons, metrics, thresholds, and both
+tiers. Changing one byte orphans the record; a forced re-ingest appends a NEW row rather than
+amending. Front-matter was avoided exactly as the plan says: `build.py` would drop the field.
 
 **WI-6 · Settings (Track B), split out entirely.** Independent of the extraction hole; ship it
 separately. Two concrete defects the audit found in v1's version:
@@ -125,11 +195,38 @@ separately. Two concrete defects the audit found in v1's version:
 - Add `klode settings show --effective --sources`, or the split surface is not auditable.
   *Check:* a table-driven precedence matrix that names both the winning value and its origin.
 
+**Status:** DONE — 2026-08-11
+**Changed:** klode/lib/settings.py, klode/lib/cli.py, klode/lib/ingest.py, klode/lib/opspec.py,
+dev-docs/SPEC-operations.md, tests/test_settings.py
+**Verified:** python3 -m pytest tests/test_settings.py -q (12 passed, 8 subtests); full suite 688
+**Note:** all three defects closed. `--tier` and `--verify` now default to `None`, so an omitted
+flag is distinguishable from an explicit one — pinned by a test that parses both forms. `klode
+settings [--sources]` prints every effective value with its origin. The scope claim is narrowed in
+the module docstring: this configures a judge *model* and ingest defaults, not "providers", because
+there is exactly one transport. A test asserts no credential, endpoint, or URL can ever become a
+settings key, and that `ANTHROPIC_API_KEY`/`KLODE_DOCLING_URL` stay environment-only.
+**Also:** adding a CLI verb tripped the repo's own anti-drift guard (`test_parity`), which is the
+guard working — `settings` is now registered in `opspec.py` and `SPEC-operations.md` as a CLI-only,
+registry-scoped op with `mcp=()`: an agent has no business reading the operator's configuration.
+
 **WI-7 · marker bake-off.** Unchanged in intent, corrected in metric: ranked by WI-1/WI-2/WI-3
 against WI-0's ground truth. Anchor-resolution rate is reported as *compatibility*, never as the
 decider.
 *Check:* backend ranking must not reverse when anchors are chosen from a different backend's output.
 If it does, the metric measured authoring compatibility, not fidelity.
+
+**Status:** DONE — 2026-08-11
+**Changed:** eval/extract_bakeoff.py, tests/test_bakeoff.py
+**Verified:** python3 -m pytest tests/test_bakeoff.py -q (9 passed); harness runs against the real
+corpus (5 PDFs, pdftotext visual fidelity 0.975–1.000)
+**Note:** the plan's check was RUN, and the ranking does reverse — with anchors authored against
+A, A wins; with anchors from B, B wins. A second test shows anchor resolution scoring 1.0 on fully
+reversed text. Both are pinned, so the metric is reported as `compat` (a migration statistic) and
+ranking is by `visual` — the only column not derived from another extractor. Absent backends are
+named with a reason rather than silently omitted.
+**Blocked:** the actual marker-vs-docling comparison cannot be run — neither is installed here and
+docling additionally needs an endpoint or a heavy torch install. The harness is the deliverable;
+the verdict on marker is carried to Outstanding work.
 
 ## Known blind spot, accepted and recorded
 

@@ -506,6 +506,28 @@ def cmd_cards(args) -> int:
     return 0
 
 
+def cmd_settings(args) -> int:
+    """Print the effective settings and which source won each one. Without this, configuration
+    split across argument / environment / file / default is not auditable — a user cannot tell why
+    a value is what it is."""
+    from . import settings as _settings
+    try:
+        resolved = _settings.resolve(args)
+    except ValueError as e:
+        print(f"settings error: {e}", file=sys.stderr)
+        return 1
+    show_sources = args.sources or not args.effective
+    print(f"settings file: {_settings.settings_path()}"
+          f"{'' if _settings.settings_path().is_file() else '  (absent — not an error)'}")
+    print(f"{'setting':<24} {'value':<24}" + ("  source" if show_sources else ""))
+    print("-" * (50 + (10 if show_sources else 0)))
+    for name in sorted(resolved):
+        st = resolved[name]
+        shown = "(unset)" if st.value is None else repr(st.value)
+        print(f"{name:<24} {shown:<24}" + (f"  {st.source}" if show_sources else ""))
+    return 0
+
+
 def cmd_review(args) -> int:
     draft = sys.stdin.read() if args.draft == "-" else args.draft
     try:
@@ -567,9 +589,19 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--id", help="card/source id (default: slug of the filename)")
     pg.add_argument("--format", choices=["auto", "pdf", "epub", "docx", "html", "txt"], default="auto",
                     help="force a format handler; auto (default) detects by content signature")
-    pg.add_argument("--tier", choices=["auto", "pdftotext", "xberg", "docling"], default="auto",
-                    help="PDF only: auto picks by measured corruption; force a tier to override")
+    # default=None, NOT "auto": with a value default, `ingest x` and `ingest x --tier auto`
+    # produce identical namespaces and the settings precedence chain cannot tell a deliberate
+    # choice from silence. The effective default comes from settings.resolve().
+    pg.add_argument("--tier", choices=["auto", "pdftotext", "xberg", "docling"], default=None,
+                    help="PDF only: auto picks by measured corruption; force a tier to override "
+                         "(default: auto, or [ingest].tier from ~/.klode/settings.toml)")
     pg.add_argument("--lang", default="eng", help="OCR language (default eng)")
+    pg.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None,
+                    help="check extraction integrity against a control before promoting to the "
+                         "shelf (default: on)")
+    pg.add_argument("--accept-unverified", action="store_true",
+                    help="write even when verification FAILS, recording status=unverified — the "
+                         "numbers are still persisted")
     pg.add_argument("--force", action="store_true", help="overwrite an existing shelf source")
     pg.set_defaults(func=cmd_ingest)
 
@@ -619,6 +651,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     pcd = sub.add_parser("cards", help="list the source cards")
     pcd.set_defaults(func=cmd_cards)
+
+    pset = sub.add_parser("settings", help="show effective settings and where each value came from")
+    pset.add_argument("--effective", action="store_true", help="print resolved values (default)")
+    pset.add_argument("--sources", action="store_true", help="also print each value's origin")
+    pset.set_defaults(func=cmd_settings)
 
     prv = sub.add_parser("review", help="[experimental] supervise a draft against a dimension (stub judge)")
     prv.add_argument("draft", help="the draft text, or - to read stdin")

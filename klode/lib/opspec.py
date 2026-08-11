@@ -47,6 +47,9 @@ OPS: tuple[OpSpec, ...] = (
     OpSpec("build",       "kb",       _S, "build",     ()),
     OpSpec("check",       "kb",       _S, "check",     ()),
     OpSpec("normalize",   "kb",       _S, "normalize", ()),
+    # CLI-only, registry-scoped: settings are user-level and KB-independent. Never MCP-projected —
+    # an agent has no business reading the operator's configuration surface.
+    OpSpec("settings",    "registry", _S, "settings",  ()),
     OpSpec("ingest",      "kb",       _S, "ingest",    ()),
 )
 

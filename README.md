@@ -8,6 +8,19 @@ That guarantee is **referential, not semantic** — it proves the quoted text is
 current source, in exactly one place. It does *not* prove the quote supports the claim built on it.
 Green `klode check` means "no citation rot," never "this is true."
 
+A second, narrower limit sits beside it. `klode ingest` verifies an extraction against a control and
+against the rendered page, which catches dropped pages, duplicated blocks, and scrambled reading
+order — but **no signal detects a value transposition** that preserves the words, the length, and
+the order. A table extractor that swaps two cells produces this, and every check passes:
+
+```
+control:   Alice status approved   Bob status rejected
+candidate: Alice status rejected   Bob status approved
+```
+
+Both claims are inverted; containment, inflation, order, and coverage are all perfect. **A
+table-derived claim needs human verification.** Recorded rather than hoped away.
+
 Zero runtime dependencies — Python 3.11+, standard library only.
 
 ## The two loops

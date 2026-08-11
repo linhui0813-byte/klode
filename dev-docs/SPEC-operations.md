@@ -74,6 +74,7 @@ means the op is not projected on that surface. This table is machine-parsed — 
 | build | kb | BuildReport | stable | build | — |
 | check | kb | CheckReport | stable | check | — |
 | normalize | kb | NormalizeReport | stable | normalize | — |
+| settings | registry | Settings | stable | settings | — |
 | ingest | kb | IngestReport | stable | ingest | — |
 
 Notes on projections that legitimately differ per adapter (documented, not drift):
