@@ -234,9 +234,23 @@ A, A wins; with anchors from B, B wins. A second test shows anchor resolution sc
 reversed text. Both are pinned, so the metric is reported as `compat` (a migration statistic) and
 ranking is by `visual` — the only column not derived from another extractor. Absent backends are
 named with a reason rather than silently omitted.
-**Blocked:** the actual marker-vs-docling comparison cannot be run — neither is installed here and
+~~**Blocked:** the actual marker-vs-docling comparison cannot be run — neither is installed here and
 docling additionally needs an endpoint or a heavy torch install. The harness is the deliverable;
-the verdict on marker is carried to Outstanding work.
+the verdict on marker is carried to Outstanding work.~~
+
+**Unblocked and RUN, 2026-08-11.** Both backends became reachable over HTTP. The comparison ran on
+20 born-digital academic PDFs; the result is committed at
+`eval/results/extract-bakeoff-2026-08-11.json` and summarised in `dev-docs/ingestion-toolchain.md`
+§2.2. **docling keeps its tier-3 slot, earned on reading order** (median 1.000 vs pdftotext's 0.697
+on two-column papers; recall is a tie). **marker does not earn one** — it failed 16 of 20 documents
+on this deployment, so no paired basis to rank it exists.
+
+**The run also caught the harness lying.** Its first aggregation ranked marker FIRST, reporting
+`scored 4/4 pdfs` — because failed (document, tier) pairs were dropped from the report, so the
+denominator counted only successes and 4-of-20 coverage read as complete. An audit found it, two
+independent jobs reproduced it, and the ranking was re-derived only after the fix. The plan's own
+premise — *a backend earns its slot by measuring better* — would have been satisfied by a number
+that meant nothing.
 
 ## Known blind spot, accepted and recorded
 

@@ -76,6 +76,36 @@ exists to establish. This repo already declined to adopt BM25 on intuition and b
 first; an extraction backend is governed by the same rule. Adding marker to the ladder because it
 is installed would be exactly the guess §3 was written to eliminate.
 
+### 2.2 The measurement that decided it (2026-08-11)
+
+20 born-digital academic PDFs, mostly two-column journal articles. Full report:
+`eval/results/extract-bakeoff-2026-08-11.json` (metrics only — the PDFs are copyrighted and are
+not in this repo).
+
+| backend | documents scored | median recall | median reading order |
+|---|---:|---:|---:|
+| `pdftotext` | 20/20 | **0.945** | 0.697 |
+| `docling` | 20/20 | 0.931 | **1.000** |
+| `marker` | **4/20** | (0.962) | (1.000) |
+
+**docling keeps its tier-3 slot, earned on reading order.** Recall is a tie — pdftotext is
+marginally *higher*, which is inside the noise. The separation is order: on the worst two-column
+papers pdftotext scores 0.52–0.66 where docling scores 0.96–1.00, clearly better on 10 of 17 and
+worse on 1. That is exactly what tier 3 is for. Two papers where pdftotext scored **0.000** recall
+and docling 0.978 and 0.945 are the escalation case doing its job.
+
+**marker does not earn a slot.** It failed 16 of 20 documents on this deployment — the vLLM
+inference server would not start — so there is no paired basis to rank it, and the parenthesised
+numbers above are over the 4 it completed, where it is indistinguishable from docling. The failure
+is deployment-specific rather than intrinsic to marker; the ladder must nonetheless work on the
+machine it runs on, so that does not rescue it.
+
+⚠️ **Read the order column with its caveat.** It is measured against tesseract's own reading order,
+which is unreliable on complex layouts (see `eval/extract_bakeoff.py`). It is reported here because
+this gap is *gross* (0.52–0.70 vs 0.96–1.00) and consistent in direction, and because both backends
+are scored against the **same** reference on each page — a scrambled reference would penalise both.
+A small gap between two positive scores would be noise and is not a result.
+
 Two operational notes, both learned the hard way:
 
 - **`marker_mode` defaults to `fast`, and `fast` is not "no VLM".** `balanced` runs the VLM layout

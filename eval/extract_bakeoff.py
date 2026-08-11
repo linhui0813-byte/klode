@@ -118,17 +118,27 @@ def _extract(pdf: Path, tier: str) -> tuple[str, str]:
         return "", f"failed ({e})"
 
 
-def _structured_pages(pdf: Path, tier: str) -> "dict[int, str] | None":
+def _structured_pages(pdf: Path, tier: str, cache: dict) -> "dict[int, str] | None":
     """Per-page text from a backend that carries structure instead of form feeds. None when the
     backend cannot say — never inferred from the markdown, which is the guess this whole harness
-    exists to avoid."""
+    exists to avoid.
+
+    CACHED per (document, tier). Without it the remote backends were converted TWICE per document:
+    once by `_extract` for the text, once here for the page text. That doubles the most expensive
+    work in the harness — marker is minutes per document — and worse, the two calls are separate
+    nondeterministic executions, so `words`/`containment` could describe a different conversion
+    than `visual`. A metric and its explanation must come from the same run.
+    """
     fn = {"docling": pdfmod.docling_page_text, "marker": pdfmod.marker_page_text}.get(tier)
     if fn is None:
         return None
-    try:
-        return fn(pdf)
-    except (RuntimeError, OSError, ImportError):
-        return None                       # unavailable is `visual=None` with a note, not a crash
+    key = (_doc_id(pdf), tier)
+    if key not in cache:
+        try:
+            cache[key] = fn(pdf)
+        except (RuntimeError, OSError, ImportError):
+            cache[key] = None             # unavailable is `visual=None` with a note, not a crash
+    return cache[key]
 
 
 def _load_anchors(path: Path) -> dict:
@@ -262,6 +272,7 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
         report = _load_checkpoint(out, manifest)          # exits non-zero rather than restarting
         done = set(report["pdfs"])
         print(f"resuming: {len(done)} document(s) already measured", file=sys.stderr)
+    structured_cache: dict = {}
     for pdf in pdfs:
         if _doc_id(pdf) in done:
             continue
@@ -287,7 +298,7 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
                 # A markdown-only backend has no form feeds, so docling — the backend this harness
                 # exists to evaluate — scored `visual=None` on every document and could never be
                 # ranked. Its STRUCTURED result does carry the boundary; ask for it.
-                pages = _structured_pages(pdf, tier) or {}
+                pages = _structured_pages(pdf, tier, structured_cache) or {}
             if not pages and control_raw:
                 # a backend with no page separators cannot be page-matched; say so rather than
                 # silently score it against the wrong text

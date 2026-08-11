@@ -212,6 +212,17 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
         # never was before its structured page text was read
         self.assertEqual(rep["aggregate"]["docling"]["measured"], 1)
 
+    def test_the_backend_is_converted_once_per_document_not_twice(self):
+        """Both audits found this: `_extract` converts for the text, `_structured_pages` converted
+        AGAIN for the page text. That doubles the most expensive work — marker is minutes per
+        document — and the two runs are separate nondeterministic executions, so `words` could
+        describe a different conversion than `visual`."""
+        calls = []
+        bake.pdfmod.docling_page_text = lambda pdf: (calls.append(pdf.name), {1: "alpha beta gamma"})[1]
+        bake.bake_off([PDFS / "single-page.pdf", PDFS / "three-pages.pdf"], ["docling"], sample=1)
+        self.assertEqual(len(calls), len(set(calls)),
+                         f"a document was converted more than once: {calls}")
+
     def test_a_backend_that_cannot_supply_pages_is_still_reported_not_guessed_at(self):
         bake.pdfmod.docling_page_text = lambda pdf: None
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
