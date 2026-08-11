@@ -70,12 +70,19 @@ def _gitignore_with_managed_block(existing: str, lines: str) -> str:
         head, rest = existing.split(_GI_BEGIN, 1)
         _managed, tail = rest.split(_GI_END, 1)
         return head + block.rstrip("\n") + tail
-    # a pre-2026-08 unterminated block: drop its header line, keep the user's other lines, re-add
+    # A pre-2026-08 unterminated block. Remove ONLY the contiguous run of `library/...` lines that
+    # follows its header — that run is what klode wrote. Filtering every `library/...` line in the
+    # whole file deleted user-authored rules that happened to start the same way, including ones
+    # written before the marker; an independent verification caught exactly that.
     legacy = "# klode: the corpus is copyrighted"
-    if legacy in existing:
-        kept = [ln for ln in existing.splitlines()
-                if legacy not in ln and not ln.startswith("library/")]
-        existing = "\n".join(kept)
+    lines = existing.splitlines()
+    for i, ln in enumerate(lines):
+        if legacy in ln:
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("library/"):
+                j += 1
+            existing = "\n".join(lines[:i] + lines[j:])
+            break
     return (existing.rstrip() + "\n\n" + block) if existing.strip() else block
 
 

@@ -381,13 +381,40 @@ def _aggregate(report: dict, tiers: list[str]) -> dict:
             "median_visual_all": _median(list(scored.values())),
             "_scored_by_doc": scored,
         }
-    # the paired set: documents where EVERY tier produced a score
-    paired = set(docs)
-    for tier in tiers:
-        paired &= set(agg[tier]["_scored_by_doc"])
+    # The paired set: documents scored by every tier that is a CANDIDATE for ranking — not by every
+    # tier that was requested. Intersecting over all requested tiers meant one unavailable backend
+    # (`--tiers a,b,marker` with marker not installed) emptied the set and suppressed the perfectly
+    # good a-vs-b comparison. An independent verification caught that: the fix for a fail-OPEN had
+    # become a fail-CLOSED, which is a different way of returning the wrong answer.
+    #
+    # A candidate is a tier that measured at least one document. A tier that measured nothing is
+    # reported as unrankable with its reason and does not constrain anyone else's pairing.
+    # A backend with too little shared coverage is DROPPED from the ranking and named, rather than
+    # shrinking everyone else's basis. Intersecting over all candidates meant one half-measured
+    # backend reduced the paired set below the threshold and suppressed a comparison between two
+    # backends that had each measured everything — the same over-correction as intersecting over
+    # unavailable tiers, one step subtler.
+    #
+    # Greedy and explainable: keep dropping the least-covered candidate until the survivors share
+    # enough documents. Each exclusion is reported with its coverage, so "why isn't X ranked" always
+    # has an answer in the report.
+    candidates = [t for t in tiers if agg[t]["_scored_by_doc"]]
+    excluded: dict[str, str] = {}
+    while candidates:
+        paired = set(docs)
+        for tier in candidates:
+            paired &= set(agg[tier]["_scored_by_doc"])
+        if len(paired) >= MIN_PAIRED_DOCUMENTS or len(candidates) < 2:
+            break
+        worst = min(candidates, key=lambda t: (len(agg[t]["_scored_by_doc"]), t))
+        excluded[worst] = (f"measured {agg[worst]['measured']}/{agg[worst]['attempted']} documents "
+                           "— too few shared with the other backends to compare fairly")
+        candidates.remove(worst)
+    else:
+        paired = set()
     for tier in tiers:
         a = agg[tier]
-        vals = [a["_scored_by_doc"][k] for k in paired]
+        vals = [a["_scored_by_doc"][k] for k in paired if k in a["_scored_by_doc"]]
         orders = [docs[k]["tiers"][tier].get("visual_order") for k in paired
                   if docs[k]["tiers"].get(tier, {}).get("visual_order") is not None]
         a["median_visual"] = _median(vals)
@@ -397,25 +424,26 @@ def _aggregate(report: dict, tiers: list[str]) -> dict:
         # backend that is not, whatever its recall. Same line the integrity gate draws
         # (`Thresholds.min_median_order`).
         a["order_inverted"] = a["median_order"] is not None and a["median_order"] < 0.0
-        a["rankable"] = a["median_visual"] is not None
+        a["rankable"] = a["median_visual"] is not None and tier in candidates
         a.pop("_scored_by_doc")
     # A single shared document cannot order two backends, and more than one tier must exist for
     # "ranking" to mean anything. Below that bar `ranking` is EMPTY — not an order plus a caveat in
     # a neighbouring field. A caller reading `report["ranking"]` gets the refusal itself, because a
     # warning that only appears in the printed output is a warning the programmatic consumer never
     # sees. Same rule as `Integrity.abstained`: the unknown answer must not be shaped like a result.
-    enough = len(paired) >= MIN_PAIRED_DOCUMENTS and len(tiers) >= 2
+    enough = len(paired) >= MIN_PAIRED_DOCUMENTS and len(candidates) >= 2
     rankable = [t for t in tiers if agg[t]["rankable"]] if enough else []
     if enough:
         note = ""
-        unrankable = {t: (f"measured {agg[t]['measured']}/{agg[t]['attempted']} documents; none in "
-                          f"the {len(paired)}-document set every backend measured")
-                      for t in tiers if not agg[t]["rankable"]}
+        unrankable = {t: excluded.get(
+            t, f"measured {agg[t]['measured']}/{agg[t]['attempted']} documents; none in the "
+               f"{len(paired)}-document set the ranked backends share")
+            for t in tiers if not agg[t]["rankable"]}
     else:
-        note = (f"NOT RANKED — {len(paired)} document(s) were measured by every one of the "
-                f"{len(tiers)} backend(s); a comparison needs at least "
-                f"{MIN_PAIRED_DOCUMENTS} shared documents and 2 backends.")
-        unrankable = {t: note for t in tiers}
+        note = (f"NOT RANKED — {len(candidates)} backend(s) measured anything, sharing "
+                f"{len(paired)} document(s); a comparison needs at least "
+                f"{MIN_PAIRED_DOCUMENTS} shared documents and 2 measuring backends.")
+        unrankable = {t: excluded.get(t, note) for t in tiers}
     ranking = sorted(rankable, key=lambda t: (agg[t]["order_inverted"],
                                               -(agg[t]["median_visual"] or 0.0), t))
     return {"aggregate": agg, "ranking": ranking, "unrankable": unrankable,

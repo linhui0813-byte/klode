@@ -190,6 +190,24 @@ class InitManagesItsGitignoreBlock(unittest.TestCase):
         text = self._init("books")
         self.assertNotIn("library/papers/", text)
 
+    def test_migration_does_not_delete_user_rules_that_start_with_library(self):
+        """A REGRESSION my own migration introduced, caught by an independent verification.
+
+        Filtering every `library/...` line in the whole file removed user-authored rules that
+        merely began the same way — including ones written BEFORE the old marker. Only the
+        contiguous run following klode's own header is klode's to remove.
+        """
+        from klode.lib.cli import _gitignore_with_managed_block
+        legacy = ("library/my-own-vendored-thing/\n"
+                  "# klode: the corpus is copyrighted — sources stay local, cards are tracked\n"
+                  "library/books/*.txt\nlibrary/books/*.pdf\n\n# mine\n*.log\nlibrary/scratch/\n")
+        out = _gitignore_with_managed_block(legacy, "library/books/*.txt\nlibrary/papers/*.txt")
+        self.assertIn("library/my-own-vendored-thing/", out, "a rule before the marker was deleted")
+        self.assertIn("library/scratch/", out, "a rule after the block was deleted")
+        self.assertIn("*.log", out)
+        self.assertNotIn("# klode: the corpus", out)
+        self.assertEqual(out.count("library/books/*.txt"), 1)
+
     def test_a_pre_existing_unterminated_block_is_migrated_not_duplicated(self):
         from klode.lib.cli import _gitignore_with_managed_block
         legacy = ("# klode: the corpus is copyrighted — sources stay local, cards are tracked\n"

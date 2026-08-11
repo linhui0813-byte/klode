@@ -358,7 +358,13 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
         words, cur_words = len(text.split()), len(cur.text.split())
         if not words:
             return cur
-        if cur_words and words < max(MIN_WORDS, cur_words * RETENTION_FLOOR):
+        # RELATIVE to the incumbent, not an absolute floor. Gating on MIN_WORDS as well rejected a
+        # clean 120-word OCR that preserved 100% of a corrupted 120-word document — the corruption
+        # stayed at 10000 because the recovery was "too short", which is only true of documents,
+        # not of extractions. An independent verification caught it: MIN_WORDS answers "is this
+        # extraction substantial enough to trust on its own" (its job in the tier-1 fast path) and
+        # cannot answer "did this candidate lose material", which is what this guard needs.
+        if cur_words and words < cur_words * RETENTION_FLOOR:
             return cur                                    # a fragment, not an improvement
         score = corruption_score(text)
         # strictly lower, as the contract says. `<=` let an equally-scored backend displace the

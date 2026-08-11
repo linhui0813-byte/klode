@@ -165,6 +165,33 @@ class Ranking(unittest.TestCase):
         self.assertEqual(len(rows), 2, "the failed document has no row at all")
         self.assertTrue(any(r.get("extraction_error") for r in rows))
 
+    def test_an_unavailable_third_backend_does_not_suppress_the_others(self):
+        """A REGRESSION my own fix introduced, caught by an independent verification.
+
+        Intersecting the paired set over every REQUESTED tier meant `--tiers a,b,marker` with
+        marker not installed emptied the set and refused a perfectly good a-vs-b comparison. The
+        fix for a fail-open had become a fail-closed — a different way of returning the wrong
+        answer, and one my own tests did not cover because they never used three backends.
+        """
+        bake.pdfmod._EXTRACTORS["absent"] = lambda p, l: (_ for _ in ()).throw(
+            ImportError("not installed"))
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["poor", "good", "absent"], sample=1)
+        self.assertEqual(rep["ranking"], ["good", "poor"])
+        self.assertIn("absent", rep["unrankable"])
+
+    def test_a_half_measured_backend_is_dropped_not_allowed_to_shrink_the_basis(self):
+        # the subtler form of the same over-correction: a partially-measured third backend
+        # reduced the shared set below the threshold and suppressed the comparison
+        bake.pdfmod._EXTRACTORS["half"] = lambda p, l: (
+            self.GOOD if p.name == "single-page.pdf"
+            else (_ for _ in ()).throw(RuntimeError("boom")))
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["poor", "good", "half"], sample=1)
+        self.assertEqual(rep["ranking"], ["good", "poor"])
+        self.assertIn("half", rep["unrankable"])
+        self.assertIn("too few shared", rep["unrankable"]["half"])
+
     def test_full_coverage_is_still_ranked_normally(self):
         # the fix must not refuse a legitimate comparison — that would be a different fail-closed
         bake.visual.check_pages = self._fake

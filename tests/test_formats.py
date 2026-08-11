@@ -418,6 +418,24 @@ class Pdf(FormatsTest):
                 e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
             self.assertEqual(e.handler, "pdftotext", f"a {label} fragment displaced the document")
 
+    def test_a_short_document_can_still_be_recovered_by_ocr(self):
+        """A REGRESSION my own fragment guard introduced, caught by an independent verification.
+
+        Gating on absolute MIN_WORDS as well as the retention ratio rejected a clean 120-word OCR
+        that preserved 100% of a corrupted 120-word document: the corruption stayed at 10000
+        because the recovery was "too short". MIN_WORDS answers "is this extraction substantial
+        enough to trust on its own" — its job in the tier-1 fast path — and cannot answer "did this
+        candidate lose material", which is what the guard needs.
+        """
+        short_garbled = "the~ regulatIOn mfonnafion t~e " * 30       # 120 words, corruption 5000
+        short_clean = "the regulation of information here " * 24     # 120 words, corruption 0
+        with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+             mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=short_garbled)), \
+             mock.patch.object(pdf, "_xberg", return_value=short_clean), \
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
+            e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        self.assertEqual(e.handler, "xberg", "a full recovery of a short document was refused")
+
     def test_an_equally_scored_backend_does_not_displace_the_incumbent(self):
         # `<=` let a tie walk the ladder to its last rung for no measured reason, while the
         # contract next to it said "strictly-lower corruption"
