@@ -25,8 +25,8 @@ from ._base import Extraction
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
-DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
-DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
+DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001
+DOCLING_HTTP_TIMEOUT = 300
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
@@ -84,6 +84,22 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
     return b"\r\n".join(parts)
 
 
+def docling_endpoint() -> str | None:
+    """The docling-serve endpoint, resolved through the normal settings chain: `KLODE_DOCLING_URL`
+    first, then `~/.klode/settings.toml`'s `[ingest].docling_url`, then absent.
+
+    ONE resolver, because three call sites each reading `os.environ` and each re-checking the
+    scheme is three places for the rule to drift — and one of them had already lost the
+    `rstrip("/")` the others had, so a trailing slash produced `…//v1/convert/file`. Scheme
+    validation lives in `settings._validate`, which applies it to every source rather than only to
+    the environment.
+
+    Returns None — not "" — when unconfigured, so callers can distinguish absent from empty.
+    """
+    from .. import settings
+    return (settings.resolve(None).value("ingest.docling_url") or "").rstrip("/") or None
+
+
 def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | None]:
     """`(markdown, pages)` — the escalation path's view. See `_docling_structured`."""
     md, pages, _text = _docling_structured(pdf, endpoint)
@@ -137,11 +153,9 @@ def _docling_structured(pdf: Path,
 
 def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
     """Markdown plus page provenance. `_docling` wraps this for the text-only extractor table."""
-    endpoint = os.environ.get(DOCLING_ENV)
+    endpoint = docling_endpoint()
     if endpoint:
-        if not str(endpoint).lower().startswith(("http://", "https://")):
-            raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-        return _docling_remote(pdf, endpoint.rstrip("/"))   # or the URL becomes `…//v1/convert`
+        return _docling_remote(pdf, endpoint)
     md = _docling(pdf, lang)
     return md, None          # the local path has a DoclingDocument but no export wired yet
 
@@ -154,21 +168,16 @@ def docling_page_text(pdf: Path) -> "dict[int, str] | None":
     `DoclingDocument` in hand but no export wired, and inventing page text from markdown would be
     exactly the inference this module refuses to make.
     """
-    endpoint = os.environ.get(DOCLING_ENV)
+    endpoint = docling_endpoint()
     if not endpoint:
         return None
-    if not str(endpoint).lower().startswith(("http://", "https://")):
-        raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-    return _docling_structured(pdf, endpoint.rstrip("/"))[2]
+    return _docling_structured(pdf, endpoint)[2]
 
 
 def _docling(pdf: Path, lang: str = "eng") -> str:
     """Markdown only — the escalation loop compares text and nothing else."""
-    endpoint = os.environ.get(DOCLING_ENV)
+    endpoint = docling_endpoint()
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
-        endpoint = endpoint.rstrip("/")
-        if not endpoint.startswith(("http://", "https://")):
-            raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
         md, _pages = _docling_remote(pdf, endpoint)
         return md
     try:

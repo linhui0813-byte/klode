@@ -13,8 +13,20 @@ for exactly this reason: a split configuration surface nobody can audit is worse
 **What stays out, and why:**
 
 - **API keys** — environment only (`ANTHROPIC_API_KEY`). A key in a file is a key in a backup.
-- **`KLODE_DOCLING_URL`** — environment only. It names an internal host; the reasoning is recorded
-  in `formats/pdf.py` and this file does not override it.
+
+**What was moved IN, and why the earlier reasoning was wrong.** `ingest.docling_url` was env-only
+on the grounds that it names an internal host. That conflated *topology* with a *credential*. A
+docling-serve URL is not a secret: anyone who can route to the address can use the service, so URL
+obscurity protects nothing — the real control is where the service binds (bind it to a private
+interface, not to `0.0.0.0`). Meanwhile the env-only rule imposed a genuine cost: the one backend
+that fixes multi-column reading order was unreachable unless you remembered to export a variable,
+which is how a capability goes unused. So it is configurable here, and the *credential* line is
+drawn harder rather than more vaguely — `tests/test_settings.py::SecretsStayOut` asserts no
+key/token/secret/password may ever become a setting.
+
+A URL in this file is still topology in a backup. That is a real cost, accepted knowingly: it is
+not a credential, it grants nothing on its own, and `KLODE_DOCLING_URL` still overrides it for
+anyone who prefers to keep it ephemeral.
 
 **Scope, stated honestly:** this configures a judge *model* and ingest defaults. It is not a
 "provider" abstraction — there is exactly one judge transport (Anthropic). Calling it provider
@@ -49,6 +61,7 @@ class Spec:
     choices: tuple = ()          # allowed values, when the domain is closed
     lo: object = None            # inclusive numeric bounds
     hi: object = None
+    prefixes: tuple = ()         # allowed string prefixes, when the shape is constrained
 
 
 SPEC: tuple[Spec, ...] = (
@@ -64,6 +77,10 @@ SPEC: tuple[Spec, ...] = (
          choices=("auto", "pdftotext", "xberg", "docling")),
     Spec("ingest", "verify", "KLODE_INGEST_VERIFY", True, bool,
          "check extraction integrity before promoting to the shelf"),
+    Spec("ingest", "docling_url", "KLODE_DOCLING_URL", None, str,
+         "docling-serve endpoint, e.g. http://<host>:15001 — the remote layout backend. Bind the "
+         "service to a private interface; this URL is not a secret and must not be treated as one",
+         prefixes=("http://", "https://")),
 )
 
 DEFAULTS = {f"{s.section}.{s.key}": s.default for s in SPEC}
@@ -161,6 +178,11 @@ def _validate(spec: Spec, value, where: str):
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must be <= {spec.hi}, got {value}")
     if spec.kind is str and not spec.choices and not str(value).strip():
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must not be empty")
+    if spec.prefixes and not str(value).lower().startswith(spec.prefixes):
+        # caught HERE rather than at the first HTTP call: a typo'd scheme otherwise surfaces as a
+        # backend failure during an ingest, blamed on the backend
+        raise ValueError(f"{where}: [{spec.section}].{spec.key} must start with one of "
+                         f"{spec.prefixes}, got {value!r}")
     return value
 
 

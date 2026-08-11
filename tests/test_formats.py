@@ -467,9 +467,36 @@ class Pdf(FormatsTest):
                 pdf._docling(self._pdf())
 
     def test_docling_endpoint_scheme_validated(self):          # audit r1: no file:// etc.
+        # Now rejected at the SETTINGS boundary (ValueError), not at first use. That is the louder
+        # placement: `klode ingest` resolves settings before it extracts anything, so a typo'd
+        # scheme is a "settings error" up front rather than a mid-run "docling absent" note that
+        # reads like the backend was simply unavailable.
         with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "file:///etc/passwd"}):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 pdf._docling(self._pdf())
+            with self.assertRaises(ValueError):
+                pdf.docling_endpoint()
+
+    def test_a_misconfigured_endpoint_does_not_silently_degrade_to_no_docling(self):
+        # the failure mode this replaces: `auto` caught RuntimeError, noted "docling absent", and
+        # produced a pdftotext result — so a one-character typo looked like a missing backend
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "htp://typo:15001"}):
+            with self.assertRaises(ValueError):
+                pdf.choose_and_extract(self._pdf(), tier="auto")
+
+    def test_a_trailing_slash_does_not_double_the_path(self):
+        # one call site had lost the rstrip the others had, producing `…//v1/convert/file`
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001/"}):
+            self.assertEqual(pdf.docling_endpoint(), "http://docling.test:15001")
+
+    def test_an_unconfigured_endpoint_is_None_not_an_empty_string(self):
+        # "" is falsy but not absent; a caller checking `is None` would take the wrong branch
+        from klode.lib import settings as _settings
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(_settings, "settings_path",
+                               lambda *a, **k: Path(self.tmp) / "no-such-settings.toml"):
+            os.environ.pop(pdf.DOCLING_ENV, None)
+            self.assertIsNone(pdf.docling_endpoint())
 
     def test_multipart_filename_cannot_inject_headers(self):   # audit r1: header injection
         body = pdf._multipart({"to_formats": "md"}, "files", 'x".pdf\r\nEvil: 1', b"PDFDATA", "BND")

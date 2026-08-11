@@ -72,9 +72,28 @@ Add `--json` to any read verb for machine-readable output (the same structured r
 
 `klode ingest` detects the format by content signature (not the extension) and converges every source
 on one clean-text pipeline: **PDF, EPUB, DOCX, HTML/XHTML, TXT**. EPUB/DOCX/HTML/TXT are pure stdlib;
-only PDF's OCR tiers are optional. For table-heavy or scanned PDFs, point `$KLODE_DOCLING_URL` at a
-[docling-serve](https://github.com/docling-project/docling-serve) endpoint (the GPU runs server-side —
-klode stays dependency-free) and pass `--tier docling`.
+only PDF's OCR tiers are optional.
+
+For table-heavy or multi-column PDFs, point klode at a
+[docling-serve](https://github.com/docling-project/docling-serve) endpoint — the GPU runs
+server-side, so klode stays dependency-free — and pass `--tier docling`:
+
+```toml
+# ~/.klode/settings.toml
+[ingest]
+docling_url = "http://<host>:15001"
+tier = "docling"          # or leave at "auto" and escalate only when the text layer is bad
+```
+
+`KLODE_DOCLING_URL` overrides the file, and `klode settings` prints every value with the source
+that won. The URL is topology, not a credential: **bind docling-serve to a private interface**, and
+do not rely on the URL being unguessable.
+
+Backends are chosen by measurement, never by intuition — `eval/extract_bakeoff.py` ranks them
+against the *rendered page* (`pdftoppm` + `tesseract`), the one signal not downstream of another
+extractor. On the fixture corpus, docling and `pdftotext` tie on recall while docling is the only
+one that reads a two-column page in the right order; that gap is what the reading-order column
+exists to show.
 
 ## Architecture
 

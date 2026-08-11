@@ -154,6 +154,26 @@ class InvalidInputFailsLoud(unittest.TestCase):
             settings.resolve(None, home=self.tmp)
         self.assertIn("not a boolean", str(e.exception))
 
+    def test_a_docling_url_without_a_scheme_is_rejected_at_the_boundary(self):
+        # a typo'd scheme otherwise surfaces as a backend failure mid-ingest, blamed on the backend
+        self.file.write_text('[ingest]\ndocling_url = "example.invalid:15001"\n', encoding="utf-8")
+        with self.assertRaises(ValueError) as e:
+            settings.resolve(None, home=self.tmp)
+        self.assertIn("must start with", str(e.exception))
+
+    def test_the_same_check_applies_to_the_environment_override(self):
+        os.environ["KLODE_DOCLING_URL"] = "ftp://elsewhere"
+        self.addCleanup(os.environ.pop, "KLODE_DOCLING_URL", None)
+        with self.assertRaises(ValueError):
+            settings.resolve(None, home=self.tmp)
+
+    def test_a_valid_docling_url_resolves_from_the_file(self):
+        self.file.write_text('[ingest]\ndocling_url = "http://example.invalid:15001"\n',
+                             encoding="utf-8")
+        r = settings.resolve(None, home=self.tmp)
+        self.assertEqual(r.value("ingest.docling_url"), "http://example.invalid:15001")
+        self.assertEqual(r.source("ingest.docling_url"), settings.FILE)
+
     def test_boolean_environment_values_parse_both_ways(self):
         for raw, want in (("true", True), ("1", True), ("on", True),
                           ("false", False), ("0", False), ("off", False)):
@@ -166,15 +186,36 @@ class InvalidInputFailsLoud(unittest.TestCase):
 
 
 class SecretsStayOut(unittest.TestCase):
-    def test_no_credential_or_endpoint_is_a_settings_key(self):
-        # keys in a file are keys in a backup; KLODE_DOCLING_URL names a private host and its
-        # env-only placement is deliberate (recorded in formats/pdf.py)
+    """The line is CREDENTIALS, not 'anything that looks infrastructural'.
+
+    The earlier version banned `url`, `endpoint` and `docling` alongside `api_key` and `token`.
+    That conflated topology with a secret: a docling-serve URL grants nothing on its own — the
+    control is where the service binds — while an API key grants everything. Banning both by the
+    same rule made the rule easy to relax for the wrong one. So the credential ban is now absolute
+    and independently checked, and topology is allowed."""
+
+    CREDENTIALS = ("api_key", "apikey", "token", "secret", "password", "passwd",
+                   "credential", "private_key")
+
+    def test_no_credential_is_a_settings_key(self):
+        # a key in a file is a key in a backup — this one must never soften
         names = {f"{s.section}.{s.key}" for s in settings.SPEC}
+        for forbidden in self.CREDENTIALS:
+            self.assertFalse(any(forbidden in n for n in names),
+                             f"{forbidden} must never be settable from a file")
+
+    def test_no_credential_is_read_from_the_environment_by_this_module_either(self):
         envs = {s.env for s in settings.SPEC if s.env}
-        for forbidden in ("api_key", "key", "token", "secret", "docling", "endpoint", "url"):
-            self.assertFalse(any(forbidden in n for n in names), f"{forbidden} must not be settable")
         self.assertNotIn("ANTHROPIC_API_KEY", envs)
-        self.assertNotIn("KLODE_DOCLING_URL", envs)
+        for env in envs:
+            self.assertFalse(any(c in env.lower() for c in self.CREDENTIALS), env)
+
+    def test_the_docling_endpoint_is_configurable_and_scheme_checked(self):
+        # topology, deliberately allowed — and validated at the boundary rather than at first use
+        self.assertIn("ingest.docling_url", {f"{s.section}.{s.key}" for s in settings.SPEC})
+        spec = next(s for s in settings.SPEC if s.key == "docling_url")
+        self.assertEqual(spec.env, "KLODE_DOCLING_URL")     # the env override still wins
+        self.assertIsNone(spec.default)                     # absent, never a guessed localhost
 
 
 if __name__ == "__main__":
