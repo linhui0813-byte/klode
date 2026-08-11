@@ -53,7 +53,29 @@ backup_keep = 3
 dict_path = "/usr/share/dict/words"
 """
 
-_GITIGNORE_BLOCK = "# klode: the corpus is copyrighted — sources stay local, cards are tracked\n{lines}\n"
+# Delimited so the managed rules can be REPLACED, not just appended once. Without an end marker,
+# `init --force` with a new shelf left that shelf's copyrighted .txt/.pdf untracked-but-unignored —
+# one `git add -A` from committing the corpus this project exists to keep local.
+_GI_BEGIN = "# >>> klode managed: the corpus is copyrighted — sources stay local, cards are tracked"
+_GI_END = "# <<< klode managed"
+_GITIGNORE_BLOCK = "{begin}\n{lines}\n{end}\n"
+
+
+def _gitignore_with_managed_block(existing: str, lines: str) -> str:
+    """Replace klode's managed block in place, or append it. Everything outside the markers is the
+    user's and is preserved byte for byte."""
+    block = _GITIGNORE_BLOCK.format(begin=_GI_BEGIN, lines=lines, end=_GI_END)
+    if _GI_BEGIN in existing and _GI_END in existing:
+        head, rest = existing.split(_GI_BEGIN, 1)
+        _managed, tail = rest.split(_GI_END, 1)
+        return head + block.rstrip("\n") + tail
+    # a pre-2026-08 unterminated block: drop its header line, keep the user's other lines, re-add
+    legacy = "# klode: the corpus is copyrighted"
+    if legacy in existing:
+        kept = [ln for ln in existing.splitlines()
+                if legacy not in ln and not ln.startswith("library/")]
+        existing = "\n".join(kept)
+    return (existing.rstrip() + "\n\n" + block) if existing.strip() else block
 
 
 def cmd_init(args) -> int:
@@ -84,12 +106,8 @@ def cmd_init(args) -> int:
     # .gitignore: keep the corpus local, track the cards
     ignore_lines = "\n".join(f"library/{s}/*.txt\nlibrary/{s}/*.pdf" for s in shelves)
     gi = root / ".gitignore"
-    block = _GITIGNORE_BLOCK.format(lines=ignore_lines)
-    if gi.exists():
-        if "klode: the corpus is copyrighted" not in gi.read_text(encoding="utf-8"):
-            gi.write_text(gi.read_text(encoding="utf-8").rstrip() + "\n\n" + block, encoding="utf-8")
-    else:
-        gi.write_text(block, encoding="utf-8")
+    existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    gi.write_text(_gitignore_with_managed_block(existing, ignore_lines), encoding="utf-8")
 
     print(f"scaffolded library at {root}")
     print(f"  config : {cfg_path.relative_to(root)}")

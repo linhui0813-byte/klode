@@ -83,6 +83,41 @@ class AuditHardening(unittest.TestCase):
         self.assertTrue(newer.is_dir())                      # the freshest run survives
         self.assertIn(str(older), pruned)
 
+class BackupStampCannotEscapeTheBackupRoot(unittest.TestCase):
+    """`--stamp` is user input and lands directly in a path.
+
+    `os.path.join(root, f"normalize-backup-{stamp}")` with `../../../../tmp/x` normalises straight
+    out of the backup root, so the copies of a copyrighted corpus this function exists to protect
+    could be written anywhere the process can write.
+    """
+
+    def setUp(self):
+        import shutil, tempfile
+        from klode.lib.config import Config
+        REPO = Path(__file__).resolve().parent.parent
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-stamp-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        kb = self.tmp / "kb"
+        shutil.copytree(REPO / "tests/fixtures/kb-fixture", kb)
+        self.cfg = Config.load(kb / "library.toml")
+
+    def test_a_traversing_stamp_is_refused(self):
+        for bad in ("../../../../../../tmp/klode-escape", "..", ".", "a/b",
+                    "/absolute", "x" * 65, "with space", "nul\x00byte"):
+            with self.subTest(stamp=bad):
+                with self.assertRaises(ValueError):
+                    normalize.normalize(self.cfg, apply=False, stamp=bad)
+
+    def test_an_empty_stamp_falls_back_to_the_generated_one(self):
+        # "" is falsy, so it means "unspecified" rather than "invalid" — asserted so the
+        # distinction is deliberate rather than incidental
+        normalize.normalize(self.cfg, apply=False, stamp="")
+
+    def test_an_ordinary_stamp_is_accepted(self):
+        # the guard must not refuse the documented use
+        for good in ("20260811-204500", "run_1", "a.b-c"):
+            with self.subTest(stamp=good):
+                normalize.normalize(self.cfg, apply=False, stamp=good)
 
 if __name__ == "__main__":
     unittest.main()

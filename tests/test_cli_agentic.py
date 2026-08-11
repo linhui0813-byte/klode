@@ -136,6 +136,69 @@ class CliAgentic(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("{", out)                        # prose, not json
 
+class InitManagesItsGitignoreBlock(unittest.TestCase):
+    """A new shelf's copyrighted sources must become ignored on re-init.
+
+    The marker was open-ended, so once ANY klode block existed the rules were never refreshed:
+    `init --force` with a new shelf left that shelf's .txt/.pdf untracked-but-unignored, one
+    `git add -A` away from committing the corpus this project exists to keep local. The [E]
+    leak guard checks what is tracked; it cannot help with what was never ignored.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-init-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.gi = self.tmp / ".gitignore"
+
+    def _init(self, *shelves):
+        from klode.lib.cli import build_parser, cmd_init
+        argv = ["init", str(self.tmp), "--force"]
+        for s in shelves:
+            argv += ["--shelf", s]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_init(build_parser().parse_args(argv))
+        self.assertEqual(rc, 0, buf.getvalue())
+        return self.gi.read_text(encoding="utf-8")
+
+    def test_a_new_shelf_becomes_ignored_on_reinit(self):
+        self._init("books")
+        text = self._init("books", "papers")
+        for pat in ("library/books/*.txt", "library/books/*.pdf",
+                    "library/papers/*.txt", "library/papers/*.pdf"):
+            self.assertIn(pat, text, f"{pat} would not be ignored")
+
+    def test_the_users_own_rules_are_preserved_verbatim(self):
+        self._init("books")
+        self.gi.write_text(self.gi.read_text() + "\n# mine\n*.log\nbuild/\n", encoding="utf-8")
+        text = self._init("books", "papers")
+        self.assertIn("# mine", text)
+        self.assertIn("*.log", text)
+        self.assertIn("build/", text)
+
+    def test_reinit_does_not_accumulate_duplicate_blocks(self):
+        self._init("books")
+        for _ in range(3):
+            text = self._init("books", "papers")
+        self.assertEqual(text.count("klode managed:"), 1)
+        self.assertEqual(text.count("library/papers/*.txt"), 1)
+
+    def test_a_removed_shelf_stops_being_ignored(self):
+        # the block is REPLACED, so it tracks the current config rather than growing forever
+        self._init("books", "papers")
+        text = self._init("books")
+        self.assertNotIn("library/papers/", text)
+
+    def test_a_pre_existing_unterminated_block_is_migrated_not_duplicated(self):
+        from klode.lib.cli import _gitignore_with_managed_block
+        legacy = ("# klode: the corpus is copyrighted — sources stay local, cards are tracked\n"
+                  "library/books/*.txt\nlibrary/books/*.pdf\n\n# mine\n*.log\n")
+        out = _gitignore_with_managed_block(legacy, "library/books/*.txt\nlibrary/papers/*.txt")
+        self.assertEqual(out.count("library/books/*.txt"), 1)
+        self.assertIn("library/papers/*.txt", out)
+        self.assertIn("*.log", out)
+        self.assertNotIn("# klode: the corpus", out)
 
 if __name__ == "__main__":
     unittest.main()

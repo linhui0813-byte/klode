@@ -348,7 +348,15 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
     # and `prune_backups` (keep-newest-N) has distinct runs to prune. Was a constant `run` — a
     # second apply clobbered the original backup, making the change irreversible.
     run_stamp = stamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    # `--stamp` is user input and lands in a path. `../../../tmp/x` normalised straight out of the
+    # backup root, so the copies of a copyrighted corpus this function exists to protect could be
+    # written anywhere the process can write. One safe component only.
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_stamp) or run_stamp in (".", ".."):
+        raise ValueError(f"invalid stamp {run_stamp!r}: use letters, digits, '.', '_', '-' "
+                         "(one path component, max 64 chars)")
     backup_dir = os.path.join(backup_root, f"normalize-backup-{run_stamp}")
+    if not os.path.normpath(backup_dir).startswith(os.path.normpath(backup_root) + os.sep):
+        raise ValueError(f"refusing to write backups outside {backup_root}")
 
     for path in files:
         # Decode STRICTLY: errors='replace' would persist U+FFFD on apply — irreversible loss.
