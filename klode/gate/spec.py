@@ -220,6 +220,42 @@ def _freeze(v):
     return v
 
 
+def canonical_digest(obj) -> str:
+    """sha256 over canonical JSON. Concatenating free prose with separators collides — statement
+    `a:b` + guidance `c` serializes identically to statement `a` + guidance `b:c`, and `None`
+    collides with the literal string "None". JSON quotes and escapes, so it cannot."""
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def rubric_identity(spec: "CriterionSpec") -> str:
+    """Everything that makes two rubrics different to whoever applies them — human rater or model
+    judge: not just ids and scales, but the words they are asked to apply and the evidence behind
+    them, INCLUDING selectors.
+
+    This is what a calibration is calibrated AGAINST. Reword a level descriptor and you have a
+    different instrument, so an agreement number measured on the old one no longer transfers."""
+    def marker(m, card):
+        return {"card": card, "phrase": m.phrase, "before": m.before, "after": m.after, "nth": m.nth}
+
+    def fld(f):
+        return {"value": f.value, "kind": f.kind, "warrant": f.warrant,
+                "evidence": [marker(m, c) for m, c in zip(f.evidence, f.cards)]}
+
+    return canonical_digest({
+        "dimension": spec.dimension,
+        "panel": list(spec.panel),
+        "criteria": [{
+            "id": c.id, "max_score": c.max_score,
+            "statement": fld(c.statement), "guidance": fld(c.guidance),
+            "fields": {k: fld(v) for k, v in sorted(c.fields.items())},
+            "levels": [{"score": l.score, "descriptor": fld(l.descriptor)} for l in c.levels],
+            "evidence": [marker(m, c2) for m, c2 in zip(c.evidence, c.cards)],
+        } for c in spec.criteria],
+    })
+
+
 def content_digest(doc: dict) -> str:
     """sha256 over the rubric body — everything that defines what was approved, with the approval
     fields themselves excluded. Canonical (sorted keys, no insignificant whitespace) so formatting

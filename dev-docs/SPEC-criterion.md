@@ -150,6 +150,9 @@ A spec frozen before anyone rates against it is a guess with a version number.
 - **Agreement is necessary, not sufficient.** Two raters can consistently apply a criterion that
   measures the wrong thing.
 - **It says nothing about the judge.** Judge calibration comes after, against the rubric this
-  certifies — and it needs its own gold set.
+  certifies, and it needs its own gold set. The *mechanism* now exists: `rubric_identity(spec)` is
+  the digest a `Calibration` is measured against, `LLMJudge.calibrated_for()` answers for that one
+  rubric, and `Verdict.calibrated` drives `non_production`. Rewording any level descriptor changes
+  the digest and invalidates the calibration — deliberately, because it is a different instrument.
 - **Grounding remains referential.** `explicit` proves the words are the source's; it does not prove
   a `derived` field's warrant is sound. That is what human approval is for, and why it is a gate.

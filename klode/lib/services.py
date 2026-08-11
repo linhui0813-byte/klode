@@ -405,7 +405,10 @@ def _svc_review(cfg, params: dict) -> core.ReviewResult:
     return core.ReviewResult(
         capability=CapabilityStatus.EXPERIMENTAL,
         judge_identity=identity,
-        non_production=True,                                   # the stub verdict is never authoritative
+        # A verdict is production-grade only when the JUDGE has measured agreement against humans on
+        # this exact rubric. Hardcoding True was right for the stub but would have quietly stayed
+        # true for a real judge; hardcoding False for a calibrated one would be equally dishonest.
+        non_production=not v.calibrated,
         decision=v.decision, score=v.score,
         # carry the source-verified grounding (card, line) to the public surface — not just the note
         defects=tuple((ln.criterion.statement, ln.score, ln.note, ln.grounding.card, ln.grounding.line)

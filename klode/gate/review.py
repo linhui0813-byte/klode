@@ -74,6 +74,10 @@ class Verdict:
     hurdle: int
     lines: tuple[Line, ...]             # grounded criteria, scored (empty when Unavailable)
     unavailable: tuple[tuple[str, str], ...] = ()   # (criterion_id, reason) that blocked a verdict
+    calibrated: bool = False            # did the JUDGE clear a measured agreement bar on THIS rubric?
+    #                                     Grounding makes the citations un-fakeable; it says nothing
+    #                                     about whether the scorer agrees with a human. Only a judge
+    #                                     carrying a Calibration for this exact rubric digest sets it.
 
     @property
     def defects(self) -> tuple[Line, ...]:
@@ -186,9 +190,13 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
         raise ValueError(f"judge did not score grounded criteria: {sorted(missing)}")
     lines = tuple(Line(c, by_id[c.id].score, by_id[c.id].note, g, sc.max_score)
                   for c, g, sc in grounded)
+    # ask the judge whether it has been measured against humans on THIS rubric; a judge with no
+    # such method cannot claim it, which is the correct answer for the stub
+    calibrated_for = getattr(judge, "calibrated_for", None)
+    calibrated = bool(calibrated_for and calibrated_for(_spec.rubric_identity(spec)))
     # Weight each criterion equally by normalizing to its own scale first: summing raw scores would
     # silently let a 0-10 criterion outvote a 0-5 one purely by having more room. Average the EXACT
     # ratios and round once — rounding each criterion's percentage first accumulated error that
     # flipped verdicts at the hurdle (maxima (2,3), scores (0,2): 34 rounded-then-averaged vs 33).
     total = round(100 * sum(Fraction(l.score, l.max_score) for l in lines) / len(lines))
-    return Verdict("Go" if total >= hurdle else "Recycle", total, hurdle, lines, ())
+    return Verdict("Go" if total >= hurdle else "Recycle", total, hurdle, lines, (), calibrated)

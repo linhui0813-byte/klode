@@ -5,16 +5,18 @@ through `lib.verify`. See README.md.
 """
 from .criteria import Criterion, Grounding, ground, ground_bindings, load_criteria
 from .judge import FixtureJudge, Judge, Score
+from .llm_judge import Calibration, JudgeError, LLMJudge
 from .review import GradingItem, Line, Verdict, review_draft
 from .spec import CriterionSpec, Field, Level, SpecCriterion, SpecError
 from .spec import load as load_spec, parse as parse_spec, validate as validate_spec
+from .spec import canonical_digest, rubric_identity
 
 __all__ = [
     # the rubric — the gate's sole input
     "CriterionSpec", "SpecCriterion", "Field", "Level", "SpecError",
-    "load_spec", "parse_spec", "validate_spec",
+    "load_spec", "parse_spec", "validate_spec", "rubric_identity", "canonical_digest",
     # the grounding engine (also the seed for authoring a rubric from the Craft layer)
     "Criterion", "Grounding", "ground", "ground_bindings", "load_criteria",
-    "Judge", "FixtureJudge", "Score",
+    "Judge", "FixtureJudge", "Score", "LLMJudge", "Calibration", "JudgeError",
     "Verdict", "Line", "GradingItem", "review_draft",
 ]

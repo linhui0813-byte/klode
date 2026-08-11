@@ -72,15 +72,18 @@ machine-readable operation table.
 
 ## Status
 
-`0.2.2` — beta. The engine (`klode.lib`) is solid: **574 tests**, a stable public-API facade, an AST
+`0.2.2` — beta. The engine (`klode.lib`) is solid: **600 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed
 verified-context bundle (`build_context_bundle`), a shared structured anchor contract
 (`parse_markers`/`Marker`, regex/context/`#n`), and **CriterionSpec v1** as its sole rubric input
 (field-level epistemics, behaviorally anchored levels, a computed corpus fingerprint, and a
-human-approval admission gate) are in place — but the rubric **judge is still a stub**
-(`FixtureJudge`); a real LLM judge plugs into the `Judge` protocol. The optional entailment check
+human-approval admission gate) are in place, and the rubric judge is **real** (`LLMJudge`:
+G-Eval two-step form-filling, position-bias-debiased by balanced permutation, transport-injectable,
+stdlib-only). What is **not** done is *calibration*: no rubric has yet been measured against human
+scores, so `Verdict.calibrated` is False and every verdict is marked non-production — by mechanism,
+not by convention. The optional entailment check
 (`klode check --entail`) pulls a small NLI model behind `klode[entail]` and is advisory, warn-only.
 
 ## License

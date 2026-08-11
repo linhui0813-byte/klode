@@ -41,7 +41,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from klode import lib          # noqa: E402
-from klode.gate import load_spec, spec as _spec   # noqa: E402
+from klode.gate import load_spec, rubric_identity   # noqa: E402
+from klode.gate.spec import canonical_digest as _canonical_digest   # noqa: E402
 
 SHEET_SCHEMA = "klode.rating-sheet/v1"
 
@@ -73,40 +74,6 @@ def _digest(*parts: str) -> str:
         h.update(b"\x00")
     return h.hexdigest()
 
-
-def _canonical_digest(obj) -> str:
-    """sha256 over canonical JSON. Concatenating free prose with `:`/`|` separators collides —
-    statement `a:b` + guidance `c` serializes identically to statement `a` + guidance `b:c`, and
-    `None` collides with the literal string "None". JSON quotes and escapes, so it cannot."""
-    return hashlib.sha256(
-        json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    ).hexdigest()
-
-
-def rubric_identity(spec) -> str:
-    """Everything that makes two rubrics different to a rater: not just ids and scales, but the
-    words they are asked to apply and the evidence behind them, INCLUDING selectors."""
-    def marker(m, card):
-        return {"card": card, "phrase": m.phrase, "before": m.before,
-                "after": m.after, "nth": m.nth}
-
-    def field(f):
-        return {"value": f.value, "kind": f.kind, "warrant": f.warrant,
-                "evidence": [marker(m, c) for m, c in zip(f.evidence, f.cards)]}
-
-    return _canonical_digest({
-        "dimension": spec.dimension,
-        "panel": list(spec.panel),
-        "criteria": [{
-            "id": c.id,
-            "max_score": c.max_score,
-            "statement": field(c.statement),
-            "guidance": field(c.guidance),
-            "fields": {k: field(v) for k, v in sorted(c.fields.items())},
-            "levels": [{"score": l.score, "descriptor": field(l.descriptor)} for l in c.levels],
-            "evidence": [marker(m, c2) for m, c2 in zip(c.evidence, c.cards)],
-        } for c in spec.criteria],
-    })
 
 
 def cmd_sheet(args) -> int:
