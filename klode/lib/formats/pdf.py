@@ -198,7 +198,120 @@ def _docling(pdf: Path, lang: str = "eng") -> str:
     return conv.convert(str(pdf)).document.export_to_markdown()
 
 
-_EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling}
+# --------------------------------------------------------------------------- marker
+#
+# marker is REMOTE-ONLY here, and deliberately NOT in the `auto` escalation ladder. A backend earns
+# a ladder slot by measuring better than the one it would displace (`eval/extract_bakeoff.py`) —
+# the same rule that kept BM25 out of retrieval until an eval set existed. Until that measurement
+# says otherwise, `--tier marker` runs it on request and the bake-off ranks it; nothing escalates
+# to it on its own.
+
+MARKER_ENV = "KLODE_MARKER_URL"          # a `marker_server` endpoint, e.g. http://<host>:15002
+MARKER_HTTP_TIMEOUT = 900                # marker is minutes-per-document on a large PDF, not seconds
+MAX_MARKER_RESPONSE = 64 * 1024 * 1024
+# `{N}` then a rule, emitted by `paginate_output=true`. 0-INDEXED, and it precedes each page.
+_MARKER_PAGE_RE = re.compile(r"^\{(\d+)\}-{8,}$", re.M)
+
+
+def marker_endpoint() -> str | None:
+    """The marker_server endpoint, resolved through the settings chain. See `docling_endpoint`."""
+    from .. import settings
+    return (settings.resolve(None).value("ingest.marker_url") or "").rstrip("/") or None
+
+
+def _marker_mode() -> str:
+    from .. import settings
+    return settings.resolve(None).value("ingest.marker_mode")
+
+
+def split_marker_pages(md: str, page_ids: "list[int] | None" = None) -> "dict[int, str] | None":
+    """Per-page text from marker's paginated markdown, 1-indexed, or None when it cannot say.
+
+    marker emits `{N}` + a rule BEFORE each page, with N **0-indexed**; klode counts pages from 1
+    everywhere else, so the offset is corrected here rather than at each call site.
+
+    `page_ids` is marker's own `metadata.page_stats[].page_id` — an INDEPENDENT statement of which
+    pages it produced. When the two disagree, this returns None. Reconciling them would mean
+    picking a winner between two sources that just contradicted each other, which is a guess; the
+    caller's honest answer is "cannot say" and coverage already distinguishes that from "complete".
+    """
+    hits = list(_MARKER_PAGE_RE.finditer(md))
+    if not hits:
+        return None                       # not paginated — never infer boundaries from headings
+    out: dict[int, str] = {}
+    for i, m in enumerate(hits):
+        stop = hits[i + 1].start() if i + 1 < len(hits) else len(md)
+        out[int(m.group(1)) + 1] = md[m.end():stop].strip()
+    if page_ids is not None and sorted(out) != sorted(n + 1 for n in page_ids):
+        return None                       # marker's two accounts of its own output disagree
+    return out or None
+
+
+def _marker_structured(pdf: Path,
+                       endpoint: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
+    """`(markdown, pages, page_text)` from a `marker_server` endpoint.
+
+    `paginate_output` is always requested: without it marker returns one undivided markdown blob,
+    the visual check cannot align a page, and the backend becomes unrankable — the exact hole that
+    made docling unscorable on every document until its structured result was read.
+    """
+    boundary = uuid.uuid4().hex
+    body = _multipart({"paginate_output": "true", "output_format": "markdown",
+                       "mode": _marker_mode()},
+                      "file", pdf.name, pdf.read_bytes(), boundary)
+    req = urllib.request.Request(
+        f"{endpoint}/marker/upload", data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=MARKER_HTTP_TIMEOUT) as resp:
+        raw = resp.read(MAX_MARKER_RESPONSE + 1)
+    if len(raw) > MAX_MARKER_RESPONSE:
+        raise RuntimeError("marker_server response exceeds the size cap")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise RuntimeError(f"marker_server returned an unparseable response ({e})") from e
+    if not isinstance(data, dict):
+        raise RuntimeError("marker_server returned a non-object JSON response")
+    if not data.get("success"):
+        # marker reports failure with HTTP 200 and `success: false`. Reading only the status code
+        # would take an error payload for a document.
+        raise RuntimeError(f"marker_server failed: {str(data.get('error'))[:200]}")
+    md = data.get("output") or ""
+    if not md.strip():
+        raise RuntimeError("marker_server returned no text")
+    stats = ((data.get("metadata") or {}).get("page_stats") or [])
+    ids = [s["page_id"] for s in stats
+           if isinstance(s, dict) and isinstance(s.get("page_id"), int)] or None
+    text = split_marker_pages(md, ids)
+    return md, (tuple(sorted(text)) if text else None), text
+
+
+def marker_page_text(pdf: Path) -> "dict[int, str] | None":
+    endpoint = marker_endpoint()
+    return _marker_structured(pdf, endpoint)[2] if endpoint else None
+
+
+def _marker(pdf: Path, lang: str = "eng") -> str:
+    endpoint = marker_endpoint()
+    if not endpoint:
+        raise ImportError(
+            f"marker not configured — set ${MARKER_ENV} (or [ingest].marker_url in "
+            "~/.klode/settings.toml) to a `marker_server` endpoint. There is no local path: "
+            "marker pulls torch + layout models, which klode does not depend on.")
+    return _marker_structured(pdf, endpoint)[0]
+
+
+def _marker_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
+    endpoint = marker_endpoint()
+    if not endpoint:
+        return _marker(pdf, lang), None          # raises the configuration error above
+    md, pages, _text = _marker_structured(pdf, endpoint)
+    return md, pages
+
+
+_EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling,
+               "marker": _marker}
+# `marker` is selectable and rankable but NOT in the `auto` ladder — see the marker section above.
 
 
 @dataclass
@@ -222,8 +335,9 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
         fn = _EXTRACTORS.get(tier)
         if fn is None:
             raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
-        if tier == "docling":
-            text, pages = _docling_with_pages(pdf, lang)
+        if tier in ("docling", "marker"):
+            # both carry page provenance; taking the text-only extractor would discard it
+            text, pages = (_docling_with_pages if tier == "docling" else _marker_with_pages)(pdf, lang)
             return Choice(tier, text, corruption_score(text), pages=pages)
         text = fn(pdf, lang)
         return Choice(tier, text, corruption_score(text))

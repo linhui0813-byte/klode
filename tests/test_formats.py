@@ -516,6 +516,134 @@ class Pdf(FormatsTest):
 
 
 # =========================================================== WI-7 router
+class MarkerPagination(unittest.TestCase):
+    """marker's page boundary, parsed rather than guessed at.
+
+    `paginate_output=true` emits `{N}` plus a rule BEFORE each page, with N **0-indexed**. Getting
+    that offset wrong silently shifts every page-level claim by one, which is the kind of error a
+    coverage check would then report as a missing page.
+    """
+
+    def _md(self, *pages):
+        return "".join(f"\n\n{{{i}}}{'-' * 48}\n\n{p}" for i, p in enumerate(pages))
+
+    def test_pages_are_returned_one_indexed(self):
+        got = pdf.split_marker_pages(self._md("alpha", "beta", "gamma"))
+        self.assertEqual(got, {1: "alpha", 2: "beta", 3: "gamma"})
+
+    def test_unpaginated_output_says_it_cannot_say(self):
+        # never infer boundaries from headings — that is the guess the whole module refuses
+        self.assertIsNone(pdf.split_marker_pages("# Heading\n\nbody text with no separators"))
+        self.assertIsNone(pdf.split_marker_pages(""))
+
+    def test_markers_own_two_accounts_must_agree(self):
+        md = self._md("alpha", "beta")
+        self.assertEqual(pdf.split_marker_pages(md, [0, 1]), {1: "alpha", 2: "beta"})
+        # page_stats claims a third page the markdown does not contain -> cannot say, not a guess
+        self.assertIsNone(pdf.split_marker_pages(md, [0, 1, 2]))
+        self.assertIsNone(pdf.split_marker_pages(md, [0]))
+
+    def test_a_blank_page_is_still_a_page(self):
+        got = pdf.split_marker_pages(self._md("alpha", "", "gamma"))
+        self.assertEqual(sorted(got), [1, 2, 3])
+        self.assertEqual(got[2], "")
+
+    def test_a_rule_inside_the_body_is_not_a_page_break(self):
+        # a markdown horizontal rule or a table separator must not split a page
+        md = self._md("alpha\n\n---\n\nstill page one\n\n|---|---|")
+        self.assertEqual(sorted(pdf.split_marker_pages(md)), [1])
+
+    def test_non_contiguous_page_ids_are_preserved_not_renumbered(self):
+        # a --page-range run yields a gap; renumbering would forge coverage for a page never seen
+        md = f"\n\n{{4}}{'-' * 48}\n\nfifth\n\n{{9}}{'-' * 48}\n\ntenth"
+        self.assertEqual(pdf.split_marker_pages(md), {5: "fifth", 10: "tenth"})
+
+
+class MarkerTransport(FormatsTest):
+    ENDPOINT = {pdf.MARKER_ENV: "http://marker.test:15002"}
+
+    def _pdf(self):
+        return _write(self.tmp, "m.pdf", b"%PDF-1.7\n%%EOF\n")
+
+    def _ok(self, pages=("alpha", "beta")):
+        md = "".join(f"\n\n{{{i}}}{'-' * 48}\n\n{p}" for i, p in enumerate(pages))
+        return {"success": True, "output": md, "format": "markdown", "images": {},
+                "metadata": {"page_stats": [{"page_id": i} for i in range(len(pages))]}}
+
+    def test_a_successful_conversion_carries_pages_and_page_text(self):
+        with mock.patch.dict(os.environ, self.ENDPOINT), \
+             mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(self._ok())):
+            md, pages, text = pdf._marker_structured(self._pdf(), pdf.marker_endpoint())
+        self.assertIn("alpha", md)
+        self.assertEqual(pages, (1, 2))
+        self.assertEqual(text, {1: "alpha", 2: "beta"})
+
+    def test_success_false_is_a_failure_even_though_http_said_200(self):
+        # marker reports errors with HTTP 200 and `success: false`; reading only the status code
+        # would take an error payload for a document and ingest it
+        payload = {"success": False, "error": "torch OOM on page 3"}
+        with mock.patch.dict(os.environ, self.ENDPOINT), \
+             mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(payload)):
+            with self.assertRaises(RuntimeError) as e:
+                pdf._marker_structured(self._pdf(), pdf.marker_endpoint())
+        self.assertIn("torch OOM", str(e.exception))
+
+    def test_pagination_is_always_requested(self):
+        # without it marker returns one blob, no page can be aligned, and the backend becomes
+        # unrankable — the exact hole that made docling unscorable on every document
+        with mock.patch.dict(os.environ, self.ENDPOINT), \
+             mock.patch.object(pdf.urllib.request, "urlopen",
+                               return_value=_FakeResp(self._ok())) as uo:
+            pdf._marker_structured(self._pdf(), pdf.marker_endpoint())
+        body = uo.call_args[0][0].data
+        self.assertIn(b'name="paginate_output"', body)
+        self.assertIn(b"true", body)
+
+    def test_an_empty_or_malformed_response_degrades_loudly(self):
+        for payload, raw in (({"success": True, "output": "   "}, None),
+                             ([], None),
+                             (None, b"<html>502</html>")):
+            with self.subTest(payload=payload):
+                with mock.patch.dict(os.environ, self.ENDPOINT), \
+                     mock.patch.object(pdf.urllib.request, "urlopen",
+                                       return_value=_FakeResp(payload, raw)):
+                    with self.assertRaises(RuntimeError):
+                        pdf._marker_structured(self._pdf(), pdf.marker_endpoint())
+
+    def test_an_oversized_response_is_refused(self):
+        with mock.patch.dict(os.environ, self.ENDPOINT), \
+             mock.patch.object(pdf, "MAX_MARKER_RESPONSE", 16), \
+             mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(raw=b"x" * 64)):
+            with self.assertRaises(RuntimeError):
+                pdf._marker_structured(self._pdf(), pdf.marker_endpoint())
+
+    def test_unconfigured_marker_is_an_ImportError_naming_the_setting(self):
+        from klode.lib import settings as _settings
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(_settings, "settings_path",
+                               lambda *a, **k: self.tmp / "none.toml"):
+            os.environ.pop(pdf.MARKER_ENV, None)
+            self.assertIsNone(pdf.marker_endpoint())
+            with self.assertRaises(ImportError) as e:
+                pdf._marker(self._pdf())
+        self.assertIn("marker_url", str(e.exception))
+
+    def test_marker_is_selectable_but_not_in_the_auto_ladder(self):
+        # a backend earns a ladder slot by measuring better, not by being installed
+        self.assertIn("marker", pdf._EXTRACTORS)
+        import inspect
+        ladder = inspect.getsource(pdf.choose_and_extract).split('if tier != "auto"')[1]
+        ladder = ladder.split("# Tier 1")[1]
+        self.assertNotIn("_marker", ladder, "marker must not be reachable from `auto`")
+
+    def test_a_forced_marker_tier_carries_its_pages_onto_the_choice(self):
+        with mock.patch.dict(os.environ, self.ENDPOINT), \
+             mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(self._ok())):
+            c = pdf.choose_and_extract(self._pdf(), tier="marker")
+        self.assertEqual(c.tier, "marker")
+        self.assertEqual(c.pages, (1, 2))
+
+
 class Router(FormatsTest):
     def test_content_beats_extension(self):
         p = _write(self.tmp, "foo.txt", b"%PDF-1.7\n<dummy>")

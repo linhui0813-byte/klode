@@ -89,6 +89,11 @@ tier = "docling"          # or leave at "auto" and escalate only when the text l
 that won. The URL is topology, not a credential: **bind docling-serve to a private interface**, and
 do not rely on the URL being unguessable.
 
+[marker](https://github.com/datalab-to/marker) is supported the same way (`marker_url`, `--tier
+marker`) and is **remote-only** — it pulls torch and layout models, which klode does not depend on.
+It is deliberately *not* in the `auto` escalation ladder: a backend earns a ladder slot by
+measuring better than the one it would displace, not by being installed.
+
 Backends are chosen by measurement, never by intuition — `eval/extract_bakeoff.py` ranks them
 against the *rendered page* (`pdftoppm` + `tesseract`), the one signal not downstream of another
 extractor. On the fixture corpus, docling and `pdftotext` tie on recall while docling is the only

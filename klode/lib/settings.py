@@ -73,14 +73,25 @@ SPEC: tuple[Spec, ...] = (
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
          "Go/Recycle threshold, 0..100", lo=0, hi=100),
     Spec("ingest", "tier", "KLODE_INGEST_TIER", "auto", str,
-         "default PDF extraction tier",
-         choices=("auto", "pdftotext", "xberg", "docling")),
+         "default PDF extraction tier. `marker` is selectable but is NOT in the `auto` ladder — a "
+         "backend earns a ladder slot by measuring better (eval/extract_bakeoff.py), not by being "
+         "available",
+         choices=("auto", "pdftotext", "xberg", "docling", "marker")),
     Spec("ingest", "verify", "KLODE_INGEST_VERIFY", True, bool,
          "check extraction integrity before promoting to the shelf"),
     Spec("ingest", "docling_url", "KLODE_DOCLING_URL", None, str,
          "docling-serve endpoint, e.g. http://<host>:15001 — the remote layout backend. Bind the "
          "service to a private interface; this URL is not a secret and must not be treated as one",
          prefixes=("http://", "https://")),
+    Spec("ingest", "marker_url", "KLODE_MARKER_URL", None, str,
+         "marker_server endpoint, e.g. http://<host>:15002 — remote-only, there is no local marker",
+         prefixes=("http://", "https://")),
+    Spec("ingest", "marker_mode", "KLODE_MARKER_MODE", "fast", str,
+         "marker conversion mode. `fast` is the default ON PURPOSE: `balanced` spins up a vLLM "
+         "engine sized as a fraction of GPU memory, which on a unified-memory host is a race "
+         "against every other process — it hung for >10 minutes and then failed. Set `balanced` "
+         "where the VLM engine is known good",
+         choices=("fast", "balanced")),
 )
 
 DEFAULTS = {f"{s.section}.{s.key}": s.default for s in SPEC}

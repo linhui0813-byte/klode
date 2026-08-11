@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from klode.lib import agreement, coverage, visual                          # noqa: E402
 from klode.lib.formats import pdf as pdfmod                                # noqa: E402
 
-TIERS = ("pdftotext", "xberg", "docling")
+TIERS = ("pdftotext", "xberg", "docling", "marker")
 
 
 def _declared(pdf: Path) -> int:
@@ -89,10 +89,11 @@ def _structured_pages(pdf: Path, tier: str) -> "dict[int, str] | None":
     """Per-page text from a backend that carries structure instead of form feeds. None when the
     backend cannot say — never inferred from the markdown, which is the guess this whole harness
     exists to avoid."""
-    if tier != "docling":
+    fn = {"docling": pdfmod.docling_page_text, "marker": pdfmod.marker_page_text}.get(tier)
+    if fn is None:
         return None
     try:
-        return pdfmod.docling_page_text(pdf)
+        return fn(pdf)
     except (RuntimeError, OSError, ImportError):
         return None                       # unavailable is `visual=None` with a note, not a crash
 
