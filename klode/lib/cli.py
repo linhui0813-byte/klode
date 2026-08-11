@@ -138,9 +138,22 @@ def cmd_check(args) -> int:
         print(f"  WARN  {w}")
     for e in r.errors:
         print(f"  ERROR {e}")
+    for u in r.unmeasured:
+        print(f"  UNMEASURED  {u}")
     if r.errors:
         print(f"\nFAIL: {len(r.errors)} error(s), {len(r.warns)} warning(s)")
         return 1
+    if r.unmeasured and not getattr(args, "allow_unmeasured", False):
+        # The word OK must not appear, and the exit code must not say success. CI reads the exit
+        # code, never the notes — so `OK: 0 errors` on a run where citation-rot never executed was
+        # a green build certifying nothing.
+        print(f"\nABSTAINED: {len(r.unmeasured)} check(s) could not run — this is NOT a pass. "
+              f"({len(r.warns)} warning(s))")
+        return 2
+    if r.unmeasured:
+        print(f"\nOK (with {len(r.unmeasured)} check(s) knowingly skipped via --allow-unmeasured), "
+              f"{len(r.warns)} warning(s)")
+        return 0
     print(f"\nOK: 0 errors, {len(r.warns)} warning(s)")
     return 0
 
@@ -585,6 +598,22 @@ def cmd_review(args) -> int:
     return 0
 
 
+def _unit_interval(raw: str) -> float:
+    """A probability threshold, validated at PARSE time. `--entail-threshold nan` made every
+    `support < threshold` comparison False, so a backend returning 0.0 for every claim scored
+    "0 below threshold" and the linter printed OK — a NaN threshold turns the check off while
+    leaving it looking on."""
+    import math
+    try:
+        v = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number")
+    if not math.isfinite(v) or not 0.0 <= v <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite number in [0, 1], got {raw!r}")
+    return v
+
+
 def _tier_choices() -> tuple[str, ...]:
     """The PDF tier list, from the settings SPEC — the one place it is declared."""
     from . import settings
@@ -624,8 +653,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "does the source window actually support each claim?")
     pc.add_argument("--entail-model", default=None,
                     help="override the pinned NLI/fact-check model (default: MiniCheck-Flan-T5-Large)")
-    pc.add_argument("--entail-threshold", type=float, default=0.5,
+    pc.add_argument("--entail-threshold", type=_unit_interval, default=0.5,
                     help="WARN when model support for a claim falls below this (default 0.5)")
+    pc.add_argument("--allow-unmeasured", action="store_true",
+                    help="exit 0 even when a check could not run (e.g. the corpus is not "
+                         "installed). Without this, an unmeasured check exits 2 as ABSTAINED — "
+                         "it is not a pass, and CI reads the exit code, not the notes")
     pc.set_defaults(func=cmd_check)
 
     pg = sub.add_parser("ingest", help="any source (PDF/EPUB/DOCX/HTML/TXT) -> clean, grep-ready shelf source")

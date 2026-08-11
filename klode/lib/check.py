@@ -43,10 +43,25 @@ class Report:
     notes: list[str] = field(default_factory=list)
     n_cards: int = 0
     n_txts: int = 0
+    unmeasured: list[str] = field(default_factory=list)
+    """Checks that could NOT run. Not warnings and not errors — a third fact.
+
+    Without this, `check` printed `OK: 0 errors` and exited 0 on a library whose corpus was
+    absent, meaning citation-rot (the guard this whole tool exists to provide) never executed.
+    Every citation could have rotted and CI, which reads the exit code and not the notes, would
+    have recorded a pass. That is the same `abstained`-read-as-`verified` defect the extraction
+    integrity work exists to refuse, sitting in the primary gate.
+    """
 
     @property
     def ok(self) -> bool:
-        return not self.errors
+        """No errors AND nothing silently skipped. `abstained` is not `ok` — see `klode.lib.integrity`,
+        which draws the identical line for extraction."""
+        return not self.errors and not self.unmeasured
+
+    @property
+    def abstained(self) -> bool:
+        return bool(self.unmeasured) and not self.errors
 
 
 def check(cfg: Config, *, strict: bool = False, entail=None, entail_threshold: float = 0.5,
@@ -137,6 +152,14 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
     if not txts:
         r.notes.append("corpus not installed (0 shelf sources present) — skipped card→source (A/B) "
                        "and citation-rot (F) checks; tracked-file checks (D/E) still enforced")
+        if cards:
+            # Only UNMEASURED when there was something to measure. A library with no cards and no
+            # sources has nothing to check and legitimately passes; a library with cards whose
+            # anchors were never resolved has not been checked at all.
+            r.unmeasured.append(
+                f"citation-rot and card→source were NOT checked for {len(cards)} card(s): the "
+                "corpus is not installed. Anchors may have rotted without this run being able to "
+                "tell. Install the corpus, or pass --allow-unmeasured to accept the gap knowingly.")
 
     # B. source -> card
     for t in txts:
