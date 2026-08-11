@@ -25,6 +25,8 @@ from ._base import Extraction
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
+RETENTION_FLOOR = 0.5          # a candidate keeping <50% of the incumbent's words is a
+                               # fragment; corruption_score is a ratio and cannot see loss
 DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001
 DOCLING_HTTP_TIMEOUT = 300
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
@@ -343,12 +345,25 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
         return Choice(tier, text, corruption_score(text))
 
     def _better(cur: Choice, name: str, text: str, note: str, pages=None) -> Choice:
-        # never replace usable text with an EMPTY/short OCR result (an empty result scores 0 and
-        # would otherwise look "clean"); otherwise prefer strictly-lower corruption.
-        if not text.split():
+        """Replace the incumbent only on evidence.
+
+        The guard said "EMPTY/short" and only tested EMPTY, so a one-word OCR result — which scores
+        corruption 0.0 because it contains no corruption markers to find — displaced hundreds of
+        words of usable text and suppressed further escalation. Reproduced by an audit.
+
+        `RETENTION_FLOOR` is the missing half: a candidate must also keep a plausible share of the
+        incumbent's words. A backend that returns a fragment is not cleaner, it is emptier, and
+        `corruption_score` cannot tell those apart — it is a ratio over words that are present.
+        """
+        words, cur_words = len(text.split()), len(cur.text.split())
+        if not words:
             return cur
+        if cur_words and words < max(MIN_WORDS, cur_words * RETENTION_FLOOR):
+            return cur                                    # a fragment, not an improvement
         score = corruption_score(text)
-        if not cur.text.split() or score <= cur.score:
+        # strictly lower, as the contract says. `<=` let an equally-scored backend displace the
+        # incumbent for no measured reason, and repeated ties walked the ladder to its last rung.
+        if not cur_words or score < cur.score:
             return Choice(name, text, score, note, pages=pages)
         return cur
 

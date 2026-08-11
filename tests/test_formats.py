@@ -363,7 +363,7 @@ class Pdf(FormatsTest):
     def test_auto_escalates_to_xberg(self):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
-             mock.patch.object(pdf, "_xberg", return_value="clean words here " * 40):
+             mock.patch.object(pdf, "_xberg", return_value="clean words here " * 120):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "xberg")
         self.assertTrue(e.note.startswith("escalated:"))
@@ -386,18 +386,48 @@ class Pdf(FormatsTest):
     def test_auto_escalates_to_docling(self):                  # WI-12: Tier 3 now reachable
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
-             mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 10), \
-             mock.patch.object(pdf, "_docling", return_value="the regulation of information " * 30):
+             mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 160), \
+             mock.patch.object(pdf, "_docling", return_value="the regulation of information " * 120):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "docling")
 
     def test_auto_degrades_when_docling_absent(self):          # WI-12: no crash at Tier 3 gap
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
-             mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 10), \
+             mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 160), \
              mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
-        self.assertIn(e.handler, ("pdftotext", "xberg"))       # best available, no crash
+        # the EXACT winner, not "either": `assertIn(..., ("pdftotext", "xberg"))` still passed
+        # with the score comparison in `_better` deleted, which is the whole behaviour here.
+        # xberg's output is as garbled as pdftotext's, so it must NOT displace it.
+        self.assertEqual(e.handler, "pdftotext")
+
+    def test_a_fragment_never_replaces_a_whole_document(self):
+        """A one-word OCR result scores corruption 0.0 — there are no corruption markers in one
+        word to find — so it looked cleaner than 320 garbled words and displaced them, suppressing
+        further escalation. Reproduced by an audit; `corruption_score` is a RATIO and structurally
+        cannot see loss."""
+        for label, fragment in (("one word", "solitary"),
+                                ("under MIN_WORDS", "clean words here " * 20),
+                                ("under half the incumbent", "clean words here " * 45)):
+            with self.subTest(label), \
+                 mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+                 mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
+                 mock.patch.object(pdf, "_xberg", return_value=fragment), \
+                 mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
+                e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
+            self.assertEqual(e.handler, "pdftotext", f"a {label} fragment displaced the document")
+
+    def test_an_equally_scored_backend_does_not_displace_the_incumbent(self):
+        # `<=` let a tie walk the ladder to its last rung for no measured reason, while the
+        # contract next to it said "strictly-lower corruption"
+        same = self.GARBLED
+        with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+             mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=same)), \
+             mock.patch.object(pdf, "_xberg", return_value=same), \
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
+            e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        self.assertEqual(e.handler, "pdftotext")
 
     def test_empty_ocr_never_replaces_text(self):          # audit: empty result must not win on score 0
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
@@ -411,7 +441,7 @@ class Pdf(FormatsTest):
     def test_auto_tolerates_pdftotext_failure(self):       # audit: Tier-1 failure escalates, not aborts
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(returncode=1, stderr="boom")), \
-             mock.patch.object(pdf, "_xberg", return_value="clean recovered text " * 40):
+             mock.patch.object(pdf, "_xberg", return_value="clean recovered text " * 120):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "xberg")
 
