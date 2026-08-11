@@ -72,7 +72,7 @@ machine-readable operation table.
 
 ## Status
 
-`0.2.2` — beta. The engine (`klode.lib`) is solid: **600 tests**, a stable public-API facade, an AST
+`0.3.0` — beta. The engine (`klode.lib`) is solid: **600 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed

@@ -1,0 +1,114 @@
+name: tests
+
+# The repo's premise is a fail-closed linter and a fail-closed gate. Until now nothing ran either
+# in CI — the only workflow was `publish`, on tags. A test suite that never executes is a test
+# suite that rots, so this runs on every push and PR.
+#
+# Deliberately installs NOTHING to run the tests. Every test is a `unittest.TestCase`, and the
+# package has zero runtime dependencies, so `python -m unittest` is the honest harness: if CI
+# needed pip, CI would no longer be testing the zero-dependency claim.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: unittest · py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor declared by requires-python; 3.14 is what the project is developed on.
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the suite (no pip install — stdlib only)
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  corpus:
+    name: fixtures lint clean + gate runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # --strict, because the committed fixtures are the examples every other card is written
+      # against: an ambiguous anchor there is a defect in the reference, not a nuisance warning.
+      - name: Citation-rot linter on both committed fixture KBs
+        run: |
+          for kb in tests/fixtures/kb-fixture tests/fixtures/kb-fixture-2; do
+            echo "== $kb"
+            python -m klode.lib -c "$kb/library.toml" check --strict
+          done
+
+      # The rubric is the gate's sole input; a fixture rubric that stopped validating would break
+      # the gate silently everywhere else.
+      - name: CriterionSpec validates
+        run: |
+          python -m klode.gate -c tests/fixtures/kb-fixture/library.toml check pacing
+          python -m klode.gate -c tests/fixtures/kb-fixture-2/library.toml check cadence --no-stamp
+
+      - name: Gate demo runs end to end
+        run: python examples/gate_demo.py
+
+      # The retrieval gold set targets a private corpus, so it MUST refuse rather than report
+      # 0.000. This asserts the refusal — a silent zero used to look like a broken ranker.
+      - name: Retrieval eval refuses a corpus it was not labelled for
+        run: |
+          if python eval/retrieval.py -c tests/fixtures/kb-fixture/library.toml; then
+            echo "::error::retrieval.py should have exited non-zero on a mismatched corpus"
+            exit 1
+          fi
+
+  zero_deps:
+    name: zero runtime dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      # Install with --no-deps into a clean venv and import the whole public surface. If any
+      # third-party import ever creeps into the runtime path, this is where it shows up — the
+      # README's headline claim, checked rather than asserted.
+      - name: Build and install with --no-deps
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+          python -m venv /tmp/probe
+          /tmp/probe/bin/pip install --no-deps dist/*.whl
+      - name: Import the public surface and prove nothing third-party loaded
+        run: |
+          /tmp/probe/bin/python - <<'PY'
+          import sys
+          before = set(sys.modules)
+          from klode import lib
+          from klode.gate import LLMJudge, review_draft, load_spec, rubric_identity   # noqa: F401
+          # `sys.stdlib_module_names` is the authoritative set. A path-prefix check against
+          # sysconfig's "stdlib" does NOT work inside a venv — that path is the venv's prefix, so
+          # every genuine stdlib module reads as foreign and the guard fails on a clean install.
+          tops = {n.split(".")[0] for n in set(sys.modules) - before}
+          foreign = sorted(t for t in tops if t != "klode" and t not in sys.stdlib_module_names)
+          if foreign:
+              raise SystemExit("third-party imports on the runtime path: " + ", ".join(foreign))
+          print("clean — zero third-party imports; klode", lib.__version__)
+          PY
+      - name: Entry points resolve
+        run: |
+          /tmp/probe/bin/klode --help > /dev/null
+          /tmp/probe/bin/klode-mcp --help > /dev/null
