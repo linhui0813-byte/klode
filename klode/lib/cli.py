@@ -56,6 +56,7 @@ dict_path = "/usr/share/dict/words"
 # Delimited so the managed rules can be REPLACED, not just appended once. Without an end marker,
 # `init --force` with a new shelf left that shelf's copyrighted .txt/.pdf untracked-but-unignored —
 # one `git add -A` from committing the corpus this project exists to keep local.
+EXIT_ABSTAINED = 2   # measured-and-failed is 1; could-not-measure is 2, never 0
 _GI_BEGIN = "# >>> klode managed: the corpus is copyrighted — sources stay local, cards are tracked"
 _GI_END = "# <<< klode managed"
 _GITIGNORE_BLOCK = "{begin}\n{lines}\n{end}\n"
@@ -124,8 +125,16 @@ def cmd_build(args) -> int:
     cfg = _load(args)
     st = build_mod.build(cfg, stamp=getattr(args, "stamp", False))
     if st.get("skipped"):
+        # Nothing was built. Exiting 0 let automation record a successful build for a run that
+        # refreshed no card and wrote no board — the same success-on-work-not-done shape as
+        # `check` printing OK without running citation-rot.
         print(st["skipped"])
-        return 0
+        if getattr(args, "allow_unmeasured", False):
+            print("(accepted via --allow-unmeasured)")
+            return 0
+        print("ABSTAINED: nothing was built — this is NOT a successful build "
+              "(pass --allow-unmeasured to accept it)", file=sys.stderr)
+        return EXIT_ABSTAINED
     print(f"cards: {st['created']} created, {st['updated']} refreshed, {st['total']} total")
     if st.get("stamped"):
         print(f"freshness: stamped {st['stamped']} source hash(es)")
@@ -167,7 +176,7 @@ def cmd_check(args) -> int:
         # a green build certifying nothing.
         print(f"\nABSTAINED: {len(r.unmeasured)} check(s) could not run — this is NOT a pass. "
               f"({len(r.warns)} warning(s))")
-        return 2
+        return EXIT_ABSTAINED
     if r.unmeasured:
         print(f"\nOK (with {len(r.unmeasured)} check(s) knowingly skipped via --allow-unmeasured), "
               f"{len(r.warns)} warning(s)")
@@ -203,6 +212,22 @@ def cmd_normalize(args) -> int:
     # `--check` makes a dry run a gate: nonzero when files are not normalized.
     if args.check and not args.apply and res.changed:
         return 1
+    if args.check and not args.apply:
+        # A gate that inspected NOTHING is not a passing gate. `0 file(s) would change` was
+        # printed identically whether every file was clean or no file was read at all, and
+        # skipped/unreadable inputs (invalid UTF-8 among them) were reported to stderr and then
+        # ignored by the exit code.
+        unmeasured = []
+        if not res.details and res.changed == 0 and not res.scanned:
+            unmeasured.append(f"no file matched {args.glob!r} — nothing was checked")
+        if res.skipped:
+            unmeasured.append(f"{len(res.skipped)} file(s) could not be read and were skipped")
+        if unmeasured and not getattr(args, "allow_unmeasured", False):
+            for u in unmeasured:
+                print(f"UNMEASURED  {u}", file=sys.stderr)
+            print("ABSTAINED: the normalize gate did not check what it claims to "
+                  "(pass --allow-unmeasured to accept it)", file=sys.stderr)
+            return EXIT_ABSTAINED
     return 0
 
 
@@ -256,9 +281,12 @@ def cmd_zoom(args) -> int:
     # content (L3): the source .txt itself
     src = query.source_of(cfg, args.id)
     if not src.installed:
+        # A missing card exits 1 and a missing section exits 1, but an uninstalled source exited 0
+        # — so a script asking "does this claim hold?" got success from a run that never opened a
+        # file. Unavailable is unavailable whichever layer is missing.
         print(f"source not installed locally: {src.rel}\n"
-              f"(the corpus is git-ignored — install it to grep L3)")
-        return 0
+              f"(the corpus is git-ignored — install it to grep L3)", file=sys.stderr)
+        return EXIT_ABSTAINED
     if not args.grep:
         print(f"{src.rel} — {src.size} bytes, grep-ready. "
               f"Pass --grep \"phrase\" to verify a claim against it.")
@@ -659,6 +687,8 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--stamp", action="store_true",
                     help="(re)compute each installed source's freshness hash — do this after "
                          "re-verifying claims against the current source")
+    pb.add_argument("--allow-unmeasured", action="store_true",
+                    help="exit 0 even when nothing could be built (e.g. no corpus installed)")
     pb.set_defaults(func=cmd_build)
 
     pc = sub.add_parser("check", help="integrity + citation-rot linter")
@@ -712,6 +742,8 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("--glob", default="*/*.txt", help="which library files to process")
     pn.add_argument("--stamp", default=None, help="backup dir name (default: derived)")
     pn.add_argument("--check", action="store_true", help="dry run that exits nonzero if anything would change")
+    pn.add_argument("--allow-unmeasured", action="store_true",
+                    help="exit 0 even when --check inspected no file")
     pn.set_defaults(func=cmd_normalize)
 
     ps = sub.add_parser("search", help="L0/L1 retrieval over the cards")

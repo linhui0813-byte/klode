@@ -200,5 +200,71 @@ class InitManagesItsGitignoreBlock(unittest.TestCase):
         self.assertIn("*.log", out)
         self.assertNotIn("# klode: the corpus", out)
 
+class WorkNotDoneIsNeverExitZero(unittest.TestCase):
+    """Success-on-work-not-done, the class the audit found four times.
+
+    `check` printed OK without running citation-rot; `build` reported a successful build having
+    refreshed nothing; `normalize --check` passed a gate that inspected no file; `zoom --level
+    content` returned 0 for a source it never opened, while a missing CARD returned 1. Automation
+    reads the exit code, so each of these certified something that had not happened.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-exit-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.kb = self.tmp / "kb"
+        shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "kb-fixture", self.kb)
+        self.cfg = str(self.kb / "library.toml")
+
+    def _run(self, *argv):
+        from klode.lib.cli import build_parser
+        args = build_parser().parse_args(["-c", self.cfg] + list(argv))
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = args.func(args)
+        return rc, buf.getvalue() + err.getvalue()
+
+    def _strip_corpus(self):
+        for p in (self.kb / "library").rglob("*.txt"):
+            p.unlink()
+
+    def test_with_a_corpus_these_all_still_succeed(self):
+        # the guard must not simply refuse everything
+        self.assertEqual(self._run("build")[0], 0)
+        self.assertEqual(self._run("zoom", "brevity", "--level", "content")[0], 0)
+
+    def test_build_that_built_nothing_does_not_report_success(self):
+        self._strip_corpus()
+        rc, out = self._run("build")
+        self.assertEqual(rc, 2)
+        self.assertIn("ABSTAINED", out)
+
+    def test_a_normalize_gate_that_inspected_nothing_does_not_pass(self):
+        self._strip_corpus()
+        rc, out = self._run("normalize", "--check")
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing was checked", out)
+
+    def test_zoom_content_for_an_uninstalled_source_matches_a_missing_card(self):
+        self._strip_corpus()
+        rc, _ = self._run("zoom", "brevity", "--level", "content")
+        self.assertNotEqual(rc, 0, "unavailable evidence reported as success")
+        missing, _ = self._run("zoom", "nosuchcard", "--level", "meta")
+        self.assertNotEqual(missing, 0)
+
+    def test_every_abstention_can_be_opted_out_of_explicitly(self):
+        self._strip_corpus()
+        self.assertEqual(self._run("build", "--allow-unmeasured")[0], 0)
+        self.assertEqual(self._run("normalize", "--check", "--allow-unmeasured")[0], 0)
+        self.assertEqual(self._run("check", "--allow-unmeasured")[0], 0)
+
+    def test_could_not_measure_is_distinguishable_from_measured_and_failed(self):
+        # 1 = measured, failed. 2 = could not measure. Collapsing them loses the distinction
+        # that makes an abstention actionable.
+        rc_unmeasured, _ = self._run("check")           # corpus present, nothing unmeasured
+        self.assertEqual(rc_unmeasured, 0)
+        self._strip_corpus()
+        self.assertEqual(self._run("check")[0], 2)
+
 if __name__ == "__main__":
     unittest.main()

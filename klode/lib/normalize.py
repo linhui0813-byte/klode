@@ -317,6 +317,9 @@ class NormResult:
     details: list[tuple[str, list[str]]] = field(default_factory=list)   # (relpath, flags)
     skipped: list[str] = field(default_factory=list)
     refused: str | None = None
+    scanned: int = 0
+    """How many files were actually read. `changed == 0` is printed identically whether every file
+    was clean or NO file was read at all, so the gate could pass having inspected nothing."""
 
 
 def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
@@ -358,6 +361,7 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
     if not os.path.normpath(backup_dir).startswith(os.path.normpath(backup_root) + os.sep):
         raise ValueError(f"refusing to write backups outside {backup_root}")
 
+    res.scanned = len(files)
     for path in files:
         # Decode STRICTLY: errors='replace' would persist U+FFFD on apply — irreversible loss.
         try:
