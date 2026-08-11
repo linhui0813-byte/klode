@@ -78,13 +78,27 @@ is installed would be exactly the guess §3 was written to eliminate.
 
 Two operational notes, both learned the hard way:
 
-- **`marker_mode` defaults to `fast`.** marker's `balanced` mode spins up a vLLM engine sized as a
-  *fraction of GPU memory*. On a unified-memory host (Grace Blackwell and similar), that fraction is
-  computed against system memory contested by every other process, so it is a race rather than a
-  setting. Measured: `balanced` hung for over ten minutes and then failed where `fast` returned the
-  same document in 6.4 s. Set `balanced` only where the VLM engine is known good.
-- **marker reports failure with HTTP 200 and `success: false`.** A status-code check alone ingests
-  an error payload as a document. klode raises on `success: false`.
+- **`marker_mode` defaults to `fast`, and `fast` is not "no VLM".** `balanced` runs the VLM layout
+  model over every page; `fast` uses the lightweight rf-detr detector and block-OCRs only garbled
+  or empty content. That block-OCR path **can still reach the VLM**, so `fast` reduces VLM use
+  rather than eliminating it.
+
+  Why that matters: the VLM runs on a vLLM inference server sized as a *fraction of GPU memory*
+  (`0.85`). On a unified-memory host — Grace Blackwell and similar — "GPU memory" is system memory
+  contested by page cache and every other process, so the fraction is a race rather than a setting.
+  Measured on such a host: the engine wanted 101.74 GiB of a 119.69 GiB pool with ~82 GiB actually
+  available, and failed.
+
+  🔴 **The failure is invisible in the response.** marker catches it, falls back, and returns HTTP
+  200 with `success: true` and usable text — after roughly **ten minutes of stall per affected
+  document**. The only symptom is latency, which is exactly the shape of problem a status check
+  will never find. On a first slow run, look at the *server* log for
+  `Engine core initialization failed` before suspecting the document.
+
+  `MARKER_HTTP_TIMEOUT` is 900 s so a stalled-then-recovered conversion still completes rather than
+  being cut off mid-fallback.
+- **marker reports genuine failures with HTTP 200 and `success: false`.** A status-code check alone
+  ingests an error payload as a document. klode raises on `success: false`.
 
 Neither URL is a credential. A service endpoint grants nothing on its own — anyone who can route to
 the address can use it — so URL obscurity protects nothing, and the control that does work is

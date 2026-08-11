@@ -214,6 +214,48 @@ class OneTierListNotThree(unittest.TestCase):
             ["ingest", "x.pdf", "--shelf", "s", "--tier", "marker"]).tier, "marker")
 
 
+class EverySettingIsDiscoverable(unittest.TestCase):
+    """A setting nobody can find is a setting that does not exist for them.
+
+    Every `Spec` carried `help`, `choices`, `env` and a default, and none of it was printed
+    anywhere — `marker_mode`'s whole reason for existing was reachable only by reading source."""
+
+    def _explain(self):
+        import io
+        from contextlib import redirect_stdout
+        from klode.lib.cli import build_parser, cmd_settings
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_settings(build_parser().parse_args(["settings", "--explain"]))
+        return buf.getvalue()
+
+    def test_every_spec_appears_with_its_help_and_env(self):
+        out = self._explain()
+        for spec in settings.SPEC:
+            with self.subTest(key=f"{spec.section}.{spec.key}"):
+                self.assertIn(f"{spec.section}.{spec.key}", out)
+                self.assertIn(spec.help.split(".")[0].split("—")[0].strip()[:40], out)
+                if spec.env:
+                    self.assertIn(spec.env, out)
+
+    def test_closed_domains_are_shown_so_a_valid_value_is_guessable(self):
+        out = self._explain()
+        self.assertIn("'fast', 'balanced'", out)
+        self.assertIn("'marker'", out)               # the tier list, from the SPEC
+
+    def test_a_deliberately_unset_default_says_so_rather_than_printing_None(self):
+        self.assertIn("unset on purpose", self._explain())
+
+    def test_the_terse_listing_points_at_the_explanation(self):
+        import io
+        from contextlib import redirect_stdout
+        from klode.lib.cli import build_parser, cmd_settings
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_settings(build_parser().parse_args(["settings"]))
+        self.assertIn("--explain", buf.getvalue())
+
+
 class SecretsStayOut(unittest.TestCase):
     """The line is CREDENTIALS, not 'anything that looks infrastructural'.
 

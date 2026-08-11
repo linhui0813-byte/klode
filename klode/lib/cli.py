@@ -506,6 +506,11 @@ def cmd_cards(args) -> int:
     return 0
 
 
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+    return textwrap.wrap(text, width) or [""]
+
+
 def cmd_settings(args) -> int:
     """Print the effective settings and which source won each one. Without this, configuration
     split across argument / environment / file / default is not auditable — a user cannot tell why
@@ -519,12 +524,37 @@ def cmd_settings(args) -> int:
     show_sources = not getattr(args, "values_only", False)
     print(f"settings file: {_settings.settings_path()}"
           f"{'' if _settings.settings_path().is_file() else '  (absent — not an error)'}")
+
+    if getattr(args, "explain", False):
+        # Every Spec carries `help`, `choices`, `env` and a default, and NONE of it was printed
+        # anywhere. A setting a user cannot discover is a setting that does not exist for them —
+        # `marker_mode` had a paragraph of reasoning reachable only by reading the source.
+        print()
+        for spec in sorted(_settings.SPEC, key=lambda s: (s.section, s.key)):
+            name = f"{spec.section}.{spec.key}"
+            st = resolved[name]
+            print(f"{name}")
+            print(f"  now      {'(unset)' if st.value is None else repr(st.value)}"
+                  f"  (from {st.source})")
+            print(f"  type     {spec.kind.__name__}"
+                  + (f", one of {list(spec.choices)}" if spec.choices else "")
+                  + (f", {spec.lo}..{spec.hi}" if spec.lo is not None or spec.hi is not None else "")
+                  + (f", starts with {list(spec.prefixes)}" if spec.prefixes else ""))
+            print(f"  default  {'(none — unset on purpose)' if spec.default is None else repr(spec.default)}")
+            print(f"  env      {spec.env or '(none)'}")
+            for line in _wrap(spec.help, 72):
+                print(f"  {line}")
+            print()
+        return 0
+
     print(f"{'setting':<24} {'value':<24}" + ("  source" if show_sources else ""))
     print("-" * (50 + (10 if show_sources else 0)))
     for name in sorted(resolved):
         st = resolved[name]
         shown = "(unset)" if st.value is None else repr(st.value)
         print(f"{name:<24} {shown:<24}" + (f"  {st.source}" if show_sources else ""))
+    if not getattr(args, "values_only", False):
+        print("\n`klode settings --explain` describes what each one does.")
     return 0
 
 
@@ -669,6 +699,9 @@ def build_parser() -> argparse.ArgumentParser:
     # saying effective values were the default, and `--sources` was a no-op unless it did.
     pset.add_argument("--values-only", action="store_true",
                       help="print only the effective values, omitting where each came from")
+    pset.add_argument("--explain", action="store_true",
+                      help="describe every setting: what it does, its allowed values, its "
+                           "environment variable, and its built-in default")
     pset.set_defaults(func=cmd_settings)
 
     prv = sub.add_parser("review", help="[experimental] supervise a draft against a dimension (stub judge)")

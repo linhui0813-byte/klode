@@ -87,10 +87,11 @@ SPEC: tuple[Spec, ...] = (
          "marker_server endpoint, e.g. http://<host>:15002 — remote-only, there is no local marker",
          prefixes=("http://", "https://")),
     Spec("ingest", "marker_mode", "KLODE_MARKER_MODE", "fast", str,
-         "marker conversion mode. `fast` is the default ON PURPOSE: `balanced` spins up a vLLM "
-         "engine sized as a fraction of GPU memory, which on a unified-memory host is a race "
-         "against every other process — it hung for >10 minutes and then failed. Set `balanced` "
-         "where the VLM engine is known good",
+         "marker conversion mode. `fast` uses a lightweight layout detector and block-OCRs only "
+         "garbled content; `balanced` runs the VLM layout model over every page. `fast` REDUCES "
+         "VLM use but does not eliminate it — where the VLM inference server cannot start, an "
+         "affected document stalls while it fails and then completes by fallback, so the symptom "
+         "is latency and not an error",
          choices=("fast", "balanced")),
 )
 
