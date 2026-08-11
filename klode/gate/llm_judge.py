@@ -159,6 +159,14 @@ class LLMJudge:
                  calibration: "Calibration | None" = None):
         if permutations < 1:
             raise ValueError(f"permutations must be >= 1, got {permutations}")
+        if not model or not model.strip():
+            # There is no default model ON PURPOSE (self-enhancement bias: the judge must differ
+            # from whatever produced the draft), but "no default" is only meaningful if the empty
+            # value is REFUSED. It was not: `LLMJudge(t)` constructed happily and would have sent
+            # `"model": ""` to the API, failing later and confusingly.
+            raise ValueError("LLMJudge requires an explicit `model` — pick one from a DIFFERENT "
+                             "family than whatever produced the draft (self-enhancement bias); "
+                             "there is deliberately no default")
         self._call = transport
         self.model = model
         self._permutations = permutations

@@ -227,11 +227,15 @@ class Transport(unittest.TestCase):
                 os.environ["KLODE_TEST_KEY"] = saved
 
     def test_the_judge_requires_an_explicit_model_choice(self):
-        # self-enhancement bias: the judge must be a different model than the author, which is a
-        # decision the operator makes rather than inherits from a default
-        import inspect
-        sig = inspect.signature(LLMJudge.__init__)
-        self.assertEqual(sig.parameters["model"].default, "")
+        # Self-enhancement bias: the judge must be a different model than the author, so the
+        # operator must choose. The previous version of this test asserted only that the DEFAULT
+        # was "" — which is not the same claim, and let `LLMJudge(t)` construct with no model at
+        # all while the docs said `model` was required. Assert the refusal, not the default.
+        for bad in ("", "   "):
+            with self.subTest(model=bad), self.assertRaises(ValueError) as e:
+                LLMJudge(Recorder([]), model=bad)
+            self.assertIn("requires an explicit `model`", str(e.exception))
+        LLMJudge(Recorder([]), model="some-model")          # an explicit choice is accepted
 
     def test_permutations_must_be_at_least_one(self):
         with self.assertRaises(ValueError):
