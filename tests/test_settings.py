@@ -6,6 +6,7 @@ the chain silently swallows environment, file, and default — there is no way t
 omitted. Every settings-backed flag therefore defaults to `None`.
 """
 import os
+import pathlib
 import shutil
 import sys
 import tempfile
@@ -335,6 +336,46 @@ class SecretsStayOut(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", envs)
         for env in envs:
             self.assertFalse(any(c in env.lower() for c in self.CREDENTIALS), env)
+
+    def test_a_url_carrying_credentials_is_refused_from_every_source(self):
+        """A prefix check called this validation and it was not.
+
+        `http://user:password@host` starts with `http://`, so it passed — putting a credential in
+        `settings.toml` and therefore in every backup, which is the ONE thing this module promises
+        cannot happen. The class name asserted a property the code did not have.
+        """
+        hostile = ["http://user:password@host:15001",     # userinfo
+                   "https://tok@host",                    # username alone is still a credential
+                   "https://host/?api_key=sekret",        # a query is another place a token hides
+                   "https://host/#token=sekret"]
+        for url in hostile:
+            for key in ("ingest.docling_url", "ingest.marker_url"):
+                with self.subTest(url=url, key=key):
+                    with self.assertRaises(ValueError):
+                        settings.resolve(None, file_values={key: url})
+        # ...and from the environment, which is the same validator or it is not one
+        for url in hostile:
+            with self.subTest(env=url):
+                os.environ["KLODE_DOCLING_URL"] = url
+                self.addCleanup(os.environ.pop, "KLODE_DOCLING_URL", None)
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, home=pathlib.Path(tempfile.mkdtemp()))
+
+    def test_a_structurally_broken_endpoint_is_refused_before_it_is_used(self):
+        # each of these only fails at the first HTTP call, where it gets blamed on the backend
+        for url in ("http://", "https://h#f", "http://host:99999", "http://ho st", "http://host\n"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={"ingest.docling_url": url})
+
+    def test_a_legitimate_endpoint_still_resolves(self):
+        # the guard must not refuse the documented deployment — plain http on a private
+        # interface is a deliberate allowance, recorded in _validate_url
+        for url in ("http://10.0.0.5:15001", "https://docling.example.com",
+                    "http://localhost:15002/", "http://[::1]:15001"):
+            with self.subTest(url=url):
+                r = settings.resolve(None, file_values={"ingest.docling_url": url})
+                self.assertEqual(r.value("ingest.docling_url"), url)
 
     def test_the_docling_endpoint_is_configurable_and_scheme_checked(self):
         # topology, deliberately allowed — and validated at the boundary rather than at first use

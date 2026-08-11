@@ -100,9 +100,13 @@ class Ranking(unittest.TestCase):
                 checks=(bake.visual.PageCheck(1, ocr, matched, order=order),))
         self._fake = fake
 
+    # TWO documents, because a ranking over one shared document is now correctly refused — an
+    # audit found the single-document version was the only case these tests ever exercised.
+    DOCS = [PDFS / "single-page.pdf", PDFS / "three-pages.pdf"]
+
     def test_the_better_backend_ranks_first(self):
         bake.visual.check_pages = self._fake
-        rep = bake.bake_off([PDFS / "single-page.pdf"], ["poor", "good"], sample=1)
+        rep = bake.bake_off(self.DOCS, ["poor", "good"], sample=1)
         self.assertEqual(rep["ranking"], ["good", "poor"])       # NOT insertion order
         self.assertGreater(rep["aggregate"]["good"]["median_visual"],
                            rep["aggregate"]["poor"]["median_visual"])
@@ -112,7 +116,7 @@ class Ranking(unittest.TestCase):
         # alone. Ranking must still put it last — the scrambling is the failure this harness exists
         # to catch, and it was measured and then discarded.
         bake.visual.check_pages = self._fake
-        rep = bake.bake_off([PDFS / "single-page.pdf"], ["reversed", "poor"], sample=1)
+        rep = bake.bake_off(self.DOCS, ["reversed", "poor"], sample=1)
         agg = rep["aggregate"]
         self.assertGreater(agg["reversed"]["median_visual"], agg["poor"]["median_visual"])
         self.assertTrue(agg["reversed"]["order_inverted"])
@@ -122,9 +126,52 @@ class Ranking(unittest.TestCase):
         # through the REAL bake_off. The previous version reimplemented the aggregation inline, so
         # deleting the production ranking left it green.
         bake.visual.check_pages = self._fake
-        rep = bake.bake_off([PDFS / "single-page.pdf"], ["unmeasurable", "poor"], sample=1)
+        rep = bake.bake_off(self.DOCS, ["unmeasurable", "poor"], sample=1)
         self.assertIsNone(rep["aggregate"]["unmeasurable"]["median_visual"])
-        self.assertEqual(rep["ranking"], ["poor", "unmeasurable"])
+        # it is NOT ranked at all now: it shares no measured document with `poor`, and ordering it
+        # against a backend it was never compared against was the Critical this replaces
+        self.assertEqual(rep["ranking"], [])
+        self.assertIn("unmeasurable", rep["unrankable"])
+
+    def test_a_backend_measured_on_half_the_corpus_cannot_win(self):
+        """The Critical two independent auditors reproduced.
+
+        `sparse` scored 1.0 on the one document it managed and FAILED on the other; `complete`
+        scored 0.9 on both. The old aggregation dropped failed pairs entirely, so `sparse` was
+        reported as `scored 1/1` — indistinguishable from full coverage — and ranked first. A
+        confident verdict on unmeasured evidence, in the instrument that decides the tier ladder.
+        """
+        bake.pdfmod._EXTRACTORS["sparse"] = lambda p, l: (
+            self.GOOD if p.name == "single-page.pdf"
+            else (_ for _ in ()).throw(RuntimeError("backend failed")))
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["sparse", "poor"], sample=1)
+
+        a = rep["aggregate"]["sparse"]
+        self.assertEqual((a["measured"], a["attempted"]), (1, 2), "coverage must be visible")
+        self.assertEqual(a["extraction_failures"], 1)
+        self.assertNotIn("sparse", rep["ranking"], "a half-measured backend was ranked")
+        self.assertEqual(rep["ranking"], [], "no paired basis exists, so nothing may be ranked")
+        self.assertIn("sparse", rep["unrankable"])
+
+    def test_a_failed_pair_is_recorded_rather_than_dropped(self):
+        # dropping it is what made the denominator count only successes
+        bake.pdfmod._EXTRACTORS["sparse"] = lambda p, l: (
+            self.GOOD if p.name == "single-page.pdf"
+            else (_ for _ in ()).throw(RuntimeError("backend failed")))
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["sparse"], sample=1)
+        rows = [d["tiers"]["sparse"] for d in rep["pdfs"].values()]
+        self.assertEqual(len(rows), 2, "the failed document has no row at all")
+        self.assertTrue(any(r.get("extraction_error") for r in rows))
+
+    def test_full_coverage_is_still_ranked_normally(self):
+        # the fix must not refuse a legitimate comparison — that would be a different fail-closed
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["poor", "good"], sample=1)
+        self.assertEqual(rep["ranking"], ["good", "poor"])
+        self.assertEqual(rep["ranking_note"], "")
+        self.assertEqual(len(rep["paired_documents"]), 2)
 
     def test_the_reported_median_is_a_median_not_the_upper_of_two(self):
         # `sorted(v)[len(v)//2]` reported 1.0 for [0.0, 1.0] — the better score presented as the
@@ -158,15 +205,17 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
     def test_structured_provenance_supplies_the_pages_markdown_lost(self):
         bake.pdfmod.docling_page_text = lambda pdf: {1: "alpha beta gamma"}
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
-        row = rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]
+        row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
         self.assertIsNotNone(row["visual"], "docling was scored, not skipped")
         self.assertEqual(self.seen, {1: "alpha beta gamma"})
-        self.assertEqual(rep["ranking"], ["docling"])
+        # one backend is not a ranking — what matters is that docling was SCORED at all, which it
+        # never was before its structured page text was read
+        self.assertEqual(rep["aggregate"]["docling"]["measured"], 1)
 
     def test_a_backend_that_cannot_supply_pages_is_still_reported_not_guessed_at(self):
         bake.pdfmod.docling_page_text = lambda pdf: None
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
-        row = rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]
+        row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
         self.assertIsNone(row["visual"])
         self.assertIn("no page separators", row["visual_note"])
 
@@ -175,7 +224,7 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
             raise OSError("connection refused")
         bake.pdfmod.docling_page_text = boom
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
-        self.assertIsNone(rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]["visual"])
+        self.assertIsNone(rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]["visual"])
 
 
 class SurvivesACrashOnTheLastDocument(unittest.TestCase):
@@ -218,17 +267,24 @@ class SurvivesACrashOnTheLastDocument(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
         saved = json.loads(self.out.read_text())
-        self.assertEqual(list(saved["pdfs"]), ["single-page.pdf"])   # the first survived
+        self.assertEqual([d["name"] for d in saved["pdfs"].values()], ["single-page.pdf"])   # the first survived
 
-    def test_resume_skips_what_was_already_measured(self):
-        bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1, out=self.out)
-        touched = []
+    def test_resume_continues_the_same_experiment_after_a_crash(self):
+        # the real use case: the SAME inputs, interrupted partway. (A different input list is a
+        # different experiment and is refused — see the test above.)
         real = bake._declared
         self.addCleanup(setattr, bake, "_declared", real)
+        bake._declared = lambda pdf: (_ for _ in ()).throw(RuntimeError("crash")) \
+            if pdf.name == "three-pages.pdf" else real(pdf)
+        with self.assertRaises(RuntimeError):
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
+
+        touched = []
         bake._declared = lambda pdf: (touched.append(pdf.name), real(pdf))[1]
         rep = bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out, resume=True)
         self.assertEqual(touched, ["three-pages.pdf"], "the finished document was re-measured")
-        self.assertEqual(sorted(rep["pdfs"]), ["single-page.pdf", "three-pages.pdf"])
+        self.assertEqual(sorted(d["name"] for d in rep["pdfs"].values()),
+                         ["single-page.pdf", "three-pages.pdf"])
 
     def test_resuming_across_a_different_seed_is_refused_not_merged(self):
         # merging two seeds silently blends two experiments into one table
@@ -238,10 +294,58 @@ class SurvivesACrashOnTheLastDocument(unittest.TestCase):
         with self.assertRaises(SystemExit):
             bake.bake_off(self.pdfs, ["pdftotext"], sample=2, seed=1, out=self.out, resume=True)
 
-    def test_a_corrupt_checkpoint_restarts_rather_than_half_loading(self):
+    def test_a_corrupt_checkpoint_stops_the_run_and_is_not_overwritten(self):
+        # The previous version BLESSED a silent restart. An audit called that what it is: `--resume`
+        # exists to preserve hours of measurement, and silently starting fresh then checkpointing
+        # over the damaged file destroys the only evidence of what had been measured.
         self.out.write_text("{not json", encoding="utf-8")
-        rep = bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1, out=self.out, resume=True)
-        self.assertEqual(list(rep["pdfs"]), ["single-page.pdf"])
+        with self.assertRaises(SystemExit) as e:
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out, resume=True)
+        self.assertIn("unreadable", str(e.exception))
+        self.assertEqual(self.out.read_text(), "{not json", "the damaged checkpoint was overwritten")
+
+    def test_resume_without_a_checkpoint_stops_rather_than_starting_over(self):
+        missing = self.tmp / "nope.json"
+        with self.assertRaises(SystemExit):
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=missing, resume=True)
+        self.assertFalse(missing.exists())
+
+    def test_resume_refuses_a_checkpoint_from_a_different_experiment(self):
+        # seed and sample were the only things compared; adding a tier, editing a PDF, or changing
+        # the anchors merged old measurements with new and reported a ranking for a tier that had
+        # never been run against those documents.
+        bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
+        for label, kw in (("an added tier", {"tiers": ["pdftotext", "good"]}),
+                          ("a different seed", {"seed": 99}),
+                          ("a different sample size", {"sample": 2}),
+                          ("a different document set", {"docs": self.pdfs[:1]}),
+                          ("changed anchors", {"anchors": {"single-page": ["x"]}})):
+            with self.subTest(label):
+                with self.assertRaises(SystemExit) as e:
+                    bake.bake_off(kw.pop("docs", self.pdfs), kw.pop("tiers", ["pdftotext"]),
+                                  sample=kw.pop("sample", 1), seed=kw.pop("seed", 1618),
+                                  out=self.out, resume=True, **kw)
+                self.assertIn("different experiment", str(e.exception))
+
+    def test_an_edited_input_pdf_invalidates_the_checkpoint(self):
+        # identity by CONTENT: a path can be replaced under the same name between runs
+        copy = self.tmp / "single-page.pdf"
+        copy.write_bytes((PDFS / "single-page.pdf").read_bytes())
+        bake.bake_off([copy], ["pdftotext"], sample=1, out=self.out)
+        copy.write_bytes((PDFS / "three-pages.pdf").read_bytes())
+        with self.assertRaises(SystemExit) as e:
+            bake.bake_off([copy], ["pdftotext"], sample=1, out=self.out, resume=True)
+        self.assertIn("different experiment", str(e.exception))
+
+    def test_two_pdfs_sharing_a_basename_are_not_collapsed(self):
+        # keyed by `pdf.name`, `a/report.pdf` and `b/report.pdf` overwrote each other, and on
+        # resume the second was skipped as already done
+        a, b = self.tmp / "a", self.tmp / "b"
+        for d in (a, b):
+            d.mkdir()
+            (d / "report.pdf").write_bytes((PDFS / "single-page.pdf").read_bytes())
+        rep = bake.bake_off([a / "report.pdf", b / "report.pdf"], ["pdftotext"], sample=1)
+        self.assertEqual(len(rep["pdfs"]), 2, "two distinct documents collapsed into one row")
 
     def test_no_partial_file_is_left_behind(self):
         bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
@@ -267,7 +371,7 @@ class HarnessBehaviour(unittest.TestCase):
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["fakegood", "fakebad"], sample=1)
         self.assertIn("fakebad", rep["skipped"])
         self.assertIn("not installed", rep["skipped"]["fakebad"])
-        self.assertIn("fakegood", rep["pdfs"]["single-page.pdf"]["tiers"])
+        self.assertIn("fakegood", rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"])
 
     def test_an_unknown_tier_is_reported(self):
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["nonesuch"], sample=1)
@@ -285,7 +389,7 @@ class HarnessBehaviour(unittest.TestCase):
         self.addCleanup(setattr, bake.visual, "check_pages", real)
         rep = bake.bake_off([PDFS / "three-pages.pdf"], ["pdftotext"], sample=2, seed=99)
         self.assertEqual(rep["seed"], 99)
-        row = rep["pdfs"]["three-pages.pdf"]["tiers"]["pdftotext"]
+        row = rep["pdfs"][bake._doc_id(PDFS / "three-pages.pdf")]["tiers"]["pdftotext"]
         self.assertEqual(len(row["visual_sampled"]), 2)
         self.assertIsNotNone(row["visual"])
 

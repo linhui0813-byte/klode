@@ -9,7 +9,7 @@ which one invited the reading that this harness scores against those labels; it 
 works on any PDF, labeled or not.
 
 
-    python3 eval/extract_bakeoff.py --pdfs tests/fixtures/pdfs [--tiers pdftotext,docling] [-v]
+    python3 eval/extract_bakeoff.py --pdfs tests/fixtures/pdfs [--tiers pdftotext,docling]
 
 This is what decides whether `marker` (or any new backend) earns a place in the tier ladder. It is
 deliberately a measurement rather than a recommendation: the project already refused to adopt BM25
@@ -51,10 +51,12 @@ Recording this because the alternative is a number that looks decisive and is no
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -63,20 +65,31 @@ from klode.lib import agreement, coverage, visual                          # noq
 from klode.lib.formats import pdf as pdfmod                                # noqa: E402
 
 TIERS = ("pdftotext", "xberg", "docling", "marker")
+REPORT_SCHEMA = "klode.extract-bakeoff/v2"
+MIN_PAIRED_DOCUMENTS = 2   # one shared document cannot order two backends; it is an anecdote
 
 
-def _declared(pdf: Path) -> int:
+def _declared(pdf: Path) -> tuple[int, str]:
+    """(page_count, error). Every failure used to collapse to a bare `0`, which then selected no
+    pages, abstained every visual measurement, and still let an alphabetical "ranking" print. The
+    reason travels with the number so an unmeasurable document is visible as one."""
     try:
         out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=60)
-    except (subprocess.SubprocessError, OSError):
-        return 0
+    except FileNotFoundError:
+        return 0, "pdfinfo not installed (poppler)"
+    except subprocess.TimeoutExpired:
+        return 0, "pdfinfo timed out after 60s"
+    except (subprocess.SubprocessError, OSError) as e:
+        return 0, f"pdfinfo failed ({e})"
+    if out.returncode != 0:
+        return 0, f"pdfinfo exited {out.returncode}: {out.stderr.strip()[:120]}"
     for line in out.stdout.splitlines():
         if line.startswith("Pages:"):
             try:
-                return int(line.split()[1])
-            except (IndexError, ValueError):     # `Pages: unknown` must not crash the harness
-                return 0
-    return 0
+                return int(line.split()[1]), ""
+            except (IndexError, ValueError):
+                return 0, f"pdfinfo reported an unparseable page count: {line.strip()[:60]}"
+    return 0, "pdfinfo reported no page count"
 
 
 def _median(vals) -> float | None:
@@ -118,6 +131,23 @@ def _structured_pages(pdf: Path, tier: str) -> "dict[int, str] | None":
         return None                       # unavailable is `visual=None` with a note, not a crash
 
 
+def _load_anchors(path: Path) -> dict:
+    """`{pdf_stem: [phrase, ...]}`, validated. An unvalidated string value was iterated
+    CHARACTER BY CHARACTER as if each letter were an anchor, producing a confident compatibility
+    number from nonsense."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"--anchors {path}: {e}")
+    if not isinstance(raw, dict):
+        raise SystemExit(f"--anchors {path}: expected an object of pdf_stem -> [phrase, ...]")
+    for stem, phrases in raw.items():
+        if not isinstance(phrases, list) or not all(isinstance(x, str) and x.strip()
+                                                    for x in phrases):
+            raise SystemExit(f"--anchors {path}: [{stem!r}] must be a list of non-empty strings")
+    return raw
+
+
 def anchor_compatibility(text: str, anchors: list[str]) -> float | None:
     """Share of pre-existing anchors that still resolve. COMPATIBILITY ONLY — see the module
     docstring for why this must never rank backends."""
@@ -140,44 +170,113 @@ def _checkpoint(report: dict, out: Path | None) -> None:
     """
     if out is None:
         return
-    tmp = out.with_suffix(out.suffix + ".part")
-    tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    os.replace(tmp, out)
+    # mkstemp, not a predictable `<out>.part`: the fixed name follows a pre-planted symlink and is
+    # shared by concurrent runs, which then clobber each other's temp file. Same defect class
+    # already fixed in klode/lib/ingest.py and klode/gate/__main__.py.
+    fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".part")
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, out)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
-def _resume(out: Path | None) -> dict | None:
-    """A previous run's checkpoint, if it is readable and looks like one."""
-    if out is None or not out.is_file():
-        return None
+def _manifest(pdfs: list[Path], tiers: list[str], sample: int, seed: int, anchors) -> dict:
+    """What must match for a checkpoint to be resumable.
+
+    Seed and sample size alone are not the experiment. Adding a tier, editing a PDF, or changing
+    the anchor set and then resuming merged old measurements with new ones and returned a ranking
+    for a tier that was never run. Documents are identified by CONTENT, because a path can be
+    replaced under the same name — and keyed by resolved path, because two directories can each
+    hold a `report.pdf` and basenames silently collapsed them into one row.
+    """
+    docs = {}
+    for p in pdfs:
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        docs[_doc_id(p)] = h.hexdigest()
+    blob = json.dumps(anchors, sort_keys=True) if anchors else ""
+    return {"tiers": list(tiers), "sample": sample, "seed": seed, "documents": docs,
+            "anchors_sha256": hashlib.sha256(blob.encode()).hexdigest(),
+            "schema": REPORT_SCHEMA}
+
+
+def _doc_id(p: Path) -> str:
+    """A stable per-document key. `pdf.name` collapsed `a/report.pdf` and `b/report.pdf` into one
+    report row, and on resume skipped the second as already done."""
+    try:
+        return p.resolve().as_posix()
+    except OSError:
+        return str(p)
+
+
+def _load_checkpoint(out: Path | None, manifest: dict) -> dict:
+    """The prior report, or a hard stop. Never a silent fresh start.
+
+    `--resume` on a missing, unreadable, or incompatible checkpoint used to begin a new experiment
+    and then OVERWRITE the damaged evidence with it — hours of measurement destroyed by the flag
+    meant to preserve them. Resuming is now all-or-nothing: it either continues a compatible
+    experiment or exits non-zero and leaves the file alone.
+    """
+    if out is None:
+        raise SystemExit("--resume needs --out: there is nothing to resume from")
+    if not out.is_file():
+        raise SystemExit(f"--resume: no checkpoint at {out}. Run without --resume to start one.")
     try:
         prior = json.loads(out.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None                          # a corrupt checkpoint restarts; it never half-loads
-    return prior if isinstance(prior, dict) and isinstance(prior.get("pdfs"), dict) else None
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"--resume: {out} is unreadable ({e}). It is NOT being overwritten — "
+                         "move it aside and rerun without --resume if you mean to discard it.")
+    if not isinstance(prior, dict) or not isinstance(prior.get("pdfs"), dict):
+        raise SystemExit(f"--resume: {out} is not a bake-off report. Refusing to overwrite it.")
+    old = prior.get("manifest")
+    if old != manifest:
+        diff = [k for k in set(manifest) | set(old or {}) if (old or {}).get(k) != manifest.get(k)]
+        raise SystemExit(f"--resume: {out} describes a different experiment (differs in: "
+                         f"{', '.join(sorted(diff)) or 'unknown'}). Merging them would report a "
+                         "ranking for measurements that were never taken together.")
+    return prior
 
 
 def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int = 1618,
              anchors: dict | None = None, out: Path | None = None, resume: bool = False) -> dict:
-    report: dict = {"seed": seed, "sample_pages_per_pdf": sample, "pdfs": {}, "skipped": {}}
+    if out is not None:
+        # `--out` naming an input would have `_checkpoint` overwrite that PDF — in a multi-file run,
+        # destroying a document before it is measured.
+        clash = {_doc_id(p) for p in pdfs} & {_doc_id(out)}
+        if clash:
+            raise SystemExit(f"--out {out} is one of the input PDFs; refusing to overwrite it")
+    manifest = _manifest(pdfs, tiers, sample, seed, anchors)
+    report: dict = {"schema": REPORT_SCHEMA, "seed": seed, "sample_pages_per_pdf": sample,
+                    "manifest": manifest, "pdfs": {}, "skipped": {}}
     done: set[str] = set()
-    if resume and (prior := _resume(out)) is not None:
-        if prior.get("seed") != seed or prior.get("sample_pages_per_pdf") != sample:
-            # resuming across a different seed or sample size would silently mix two experiments
-            raise SystemExit(f"{out} was produced with seed={prior.get('seed')} "
-                             f"sample={prior.get('sample_pages_per_pdf')}; refusing to merge")
-        report = prior
-        done = set(prior["pdfs"])
-        print(f"resuming: {len(done)} PDF(s) already measured", file=sys.stderr)
+    if resume:
+        report = _load_checkpoint(out, manifest)          # exits non-zero rather than restarting
+        done = set(report["pdfs"])
+        print(f"resuming: {len(done)} document(s) already measured", file=sys.stderr)
     for pdf in pdfs:
-        if pdf.name in done:
+        if _doc_id(pdf) in done:
             continue
-        declared = _declared(pdf)
+        declared, declared_err = _declared(pdf)
         control_raw, control_err = _extract(pdf, "pdftotext")
         per_tier: dict = {}
         for tier in tiers:
             text, err = _extract(pdf, tier)
             if err:
                 report["skipped"].setdefault(tier, err)
+                # Record the FAILED pair too. Dropping it made `pdfs` count only successes, so a
+                # backend that failed on half the corpus was reported as "scored 1/1" — full
+                # coverage — and outranked one measured on every document. That is a confident
+                # verdict on unmeasured evidence, the exact class this repo exists to refuse.
+                per_tier[tier] = {"visual": None, "visual_order": None, "extraction_error": err}
                 continue
             row: dict = {"words": len(text.split())}
 
@@ -197,59 +296,119 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
             else:
                 sel = visual.sample_pages(declared, sample, seed)
                 vr = visual.check_pages(pdf, pages, pages=sel, seed=seed)
-                row["visual"] = None if not vr.ran else vr.quantile(0.5)
+                # `vr.measured`, not `vr.ran`: rendering can run while every sampled page errors,
+                # which produced `visual: None` with no note and threw the per-page errors away.
+                row["visual"] = vr.quantile(0.5) if vr.measured else None
                 # Recall is order-blind: a fully reversed page contains every OCR token and scores
                 # 1.0. Ranking on recall alone therefore could not distinguish the scrambling this
                 # harness exists to catch, even though `visual.py` had already measured it.
-                row["visual_order"] = None if not vr.ran else _median(
-                    [c.order for c in vr.checks if c.order is not None])
+                row["visual_order"] = _median([c.order for c in vr.checks if c.order is not None])
+                row["visual_worst"] = None if not vr.measured else min(vr.recalls)
+                row["visual_worst_order"] = vr.worst_order
                 row["visual_sampled"] = list(vr.sampled)
-                if not vr.ran:
-                    row["visual_note"] = vr.skipped
+                row["visual_pages_measured"] = len(vr.recalls)
+                if not vr.measured:
+                    # an abstention ALWAYS carries its reason; a bare None reads as "fine"
+                    row["visual_note"] = vr.skipped or "; ".join(
+                        f"p{c.page}: {c.error}" for c in vr.checks if c.error) or "no page scored"
 
             # telemetry — reported, not ranked on
             if control_raw and tier != "pdftotext":
-                agr = agreement.compare(control_raw, text)
+                # real page boundaries, not fixed windows: without them a book with short pages can
+                # have every page internally reversed while each straddling window scores ~0.98
+                agr = agreement.compare(control_raw, text,
+                                        control_pages=coverage.split_pages(control_raw))
                 row["containment"] = round(agr.containment, 4)
                 row["inflation"] = round(agr.inflation, 4)
-                row["order_median"] = (None if agr.quantile(0.5) is None
-                                       else round(agr.quantile(0.5), 4))
+                # `Agreement.median` is the true median; `quantile(0.5)` is a nearest-rank pick and
+                # calling that "order_median" was the same mislabel already fixed in integrity.py
+                row["order_median"] = None if agr.median is None else round(agr.median, 4)
             row["declared_pages"] = declared
             if anchors and pdf.stem in anchors:
                 row["anchor_compatibility"] = anchor_compatibility(text, anchors[pdf.stem])
             per_tier[tier] = row
-        report["pdfs"][pdf.name] = {"declared_pages": declared, "control_error": control_err,
-                                    "tiers": per_tier}
+        report["pdfs"][_doc_id(pdf)] = {"name": pdf.name, "declared_pages": declared,
+                                        "declared_error": declared_err,
+                                        "control_error": control_err, "tiers": per_tier}
         _checkpoint(report, out)             # after EVERY document, not at the end
-    # Rank. Previously the harness printed tiers in insertion order and computed no aggregate —
-    # deleting "the ranking logic" would have changed nothing, because there was none.
+    report.update(_aggregate(report, tiers))
+    _checkpoint(report, out)                 # the final write carries the ranking too
+    return report
+
+
+def _aggregate(report: dict, tiers: list[str]) -> dict:
+    """Rank by a PAIRED comparison, and refuse to rank when the pairing is empty.
+
+    The defect this replaces, reproduced: a backend that scored 1.0 on one document and failed on
+    the other outranked a backend that scored 0.9 on BOTH — and was printed as `scored 1/1`, which
+    reads as complete coverage. Two independent auditors found it. Its cause was that failures were
+    dropped from the report entirely, so the denominator counted only successes.
+
+    Two changes make that unrepresentable:
+
+    1. **Every requested (document, tier) pair is a row**, extraction failures included, so
+       `attempted` is the corpus size and `measured/attempted` is visible.
+    2. **The ranking runs over the documents EVERY ranked backend measured** — the paired set. A
+       backend compared on a different subset is not being compared; that is the whole finding.
+       Backends that measured nothing in the paired set are reported, unranked, with a reason.
+
+    Per-tier medians over the *full* corpus are still reported as `median_visual_all`, clearly
+    separated from the paired number the ranking uses, because they answer a different question
+    ("how did it do on what it could do") and confusing the two is what caused this.
+    """
+    docs = report["pdfs"]
     agg: dict = {}
-    for doc in report["pdfs"].values():
-        for tier, row in doc["tiers"].items():
-            a = agg.setdefault(tier, {"scored": [], "orders": [], "pdfs": 0, "unscored": 0})
-            a["pdfs"] += 1
-            if row.get("visual") is None:
-                a["unscored"] += 1
-            else:
-                a["scored"].append(row["visual"])
-            if row.get("visual_order") is not None:
-                a["orders"].append(row["visual_order"])
-    for tier, a in agg.items():
-        a["median_visual"] = _median(a["scored"])
-        a["median_order"] = _median(a["orders"])
+    for tier in tiers:
+        rows = [d["tiers"].get(tier) for d in docs.values()]
+        scored = {k: d["tiers"][tier]["visual"] for k, d in docs.items()
+                  if tier in d["tiers"] and d["tiers"][tier].get("visual") is not None}
+        agg[tier] = {
+            "attempted": len(docs),
+            "measured": len(scored),
+            "extraction_failures": sum(1 for r in rows if r and r.get("extraction_error")),
+            "unscored": len(docs) - len(scored),
+            "median_visual_all": _median(list(scored.values())),
+            "_scored_by_doc": scored,
+        }
+    # the paired set: documents where EVERY tier produced a score
+    paired = set(docs)
+    for tier in tiers:
+        paired &= set(agg[tier]["_scored_by_doc"])
+    for tier in tiers:
+        a = agg[tier]
+        vals = [a["_scored_by_doc"][k] for k in paired]
+        orders = [docs[k]["tiers"][tier].get("visual_order") for k in paired
+                  if docs[k]["tiers"].get(tier, {}).get("visual_order") is not None]
+        a["median_visual"] = _median(vals)
+        a["median_order"] = _median(orders)
         # Actively inverted reading order is not a lower score on the same axis — it is a different
         # failure, and recall cannot see it. A backend measured as inverted sorts below every
         # backend that is not, whatever its recall. Same line the integrity gate draws
         # (`Thresholds.min_median_order`).
         a["order_inverted"] = a["median_order"] is not None and a["median_order"] < 0.0
-    # A backend with no measurable score cannot be ranked above one that was measured; it sorts
-    # last and its reason is reported rather than being silently treated as zero.
-    report["ranking"] = sorted(
-        agg, key=lambda t: (agg[t]["median_visual"] is None, agg[t]["order_inverted"],
-                            -(agg[t]["median_visual"] or 0.0), t))
-    report["aggregate"] = agg
-    _checkpoint(report, out)                 # the final write carries the ranking too
-    return report
+        a["rankable"] = a["median_visual"] is not None
+        a.pop("_scored_by_doc")
+    # A single shared document cannot order two backends, and more than one tier must exist for
+    # "ranking" to mean anything. Below that bar `ranking` is EMPTY — not an order plus a caveat in
+    # a neighbouring field. A caller reading `report["ranking"]` gets the refusal itself, because a
+    # warning that only appears in the printed output is a warning the programmatic consumer never
+    # sees. Same rule as `Integrity.abstained`: the unknown answer must not be shaped like a result.
+    enough = len(paired) >= MIN_PAIRED_DOCUMENTS and len(tiers) >= 2
+    rankable = [t for t in tiers if agg[t]["rankable"]] if enough else []
+    if enough:
+        note = ""
+        unrankable = {t: (f"measured {agg[t]['measured']}/{agg[t]['attempted']} documents; none in "
+                          f"the {len(paired)}-document set every backend measured")
+                      for t in tiers if not agg[t]["rankable"]}
+    else:
+        note = (f"NOT RANKED — {len(paired)} document(s) were measured by every one of the "
+                f"{len(tiers)} backend(s); a comparison needs at least "
+                f"{MIN_PAIRED_DOCUMENTS} shared documents and 2 backends.")
+        unrankable = {t: note for t in tiers}
+    ranking = sorted(rankable, key=lambda t: (agg[t]["order_inverted"],
+                                              -(agg[t]["median_visual"] or 0.0), t))
+    return {"aggregate": agg, "ranking": ranking, "unrankable": unrankable,
+            "paired_documents": sorted(paired), "ranking_note": note}
 
 
 def main(argv=None) -> int:
@@ -259,23 +418,36 @@ def main(argv=None) -> int:
     ap.add_argument("--tiers", default=",".join(TIERS))
     ap.add_argument("--sample", type=int, default=3, help="pages per PDF for the visual check")
     ap.add_argument("--seed", type=int, default=1618)
-    ap.add_argument("--anchors", help="JSON: {card_stem: [phrase, ...]} for the compatibility stat")
+    ap.add_argument("--anchors", help="JSON: {pdf_stem: [phrase, ...]} for the compatibility stat")
     ap.add_argument("--json", action="store_true", help="emit the raw report")
     ap.add_argument("--out", help="checkpoint the report here after EVERY pdf — a multi-hour run "
                                   "must survive a crash on its last document")
     ap.add_argument("--resume", action="store_true",
-                    help="skip PDFs already measured in --out (refuses a different seed/sample)")
+                    help="continue --out's experiment; exits non-zero if it is missing, corrupt, "
+                         "or describes a different experiment (never silently restarts)")
     args = ap.parse_args(argv)
     if args.resume and not args.out:
         raise SystemExit("--resume needs --out: there is nothing to resume from")
+    # Every one of these produced an empty-but-exit-0 report, which reads as "measured, nothing to
+    # report" instead of "never ran".
+    if args.sample < 1:
+        raise SystemExit(f"--sample must be >= 1, got {args.sample}")
+    tiers = [t.strip() for t in args.tiers.split(",") if t.strip()]
+    if not tiers:
+        raise SystemExit("--tiers is empty")
+    if len(set(tiers)) != len(tiers):
+        raise SystemExit(f"--tiers repeats a backend: {args.tiers}")
 
     root = Path(args.pdfs).expanduser()
+    if not root.exists():
+        raise SystemExit(f"--pdfs {root} does not exist")
     pdfs = sorted(root.glob("*.pdf")) if root.is_dir() else [root]
+    pdfs = [p for p in pdfs if p.is_file()]
     if not pdfs:
-        raise SystemExit(f"no PDFs found in {root}")
-    anchors = json.loads(Path(args.anchors).read_text()) if args.anchors else None
+        raise SystemExit(f"no PDF files found in {root}")
+    anchors = _load_anchors(Path(args.anchors)) if args.anchors else None
 
-    rep = bake_off(pdfs, args.tiers.split(","), sample=args.sample, seed=args.seed, anchors=anchors,
+    rep = bake_off(pdfs, tiers, sample=args.sample, seed=args.seed, anchors=anchors,
                    out=Path(args.out).expanduser() if args.out else None, resume=args.resume)
     if args.json:
         print(json.dumps(rep, indent=2))
@@ -285,23 +457,38 @@ def main(argv=None) -> int:
     print(f"{'pdf':<22}{'tier':<12}{'visual':>8}{'v.order':>8}"
           f"{'contain':>9}{'inflate':>9}{'order':>8}{'compat':>8}")
     print("-" * 84)
-    for name, doc in rep["pdfs"].items():
+    for doc in rep["pdfs"].values():
         for tier, row in doc["tiers"].items():
             fmt = lambda v: "  n/a" if v is None else f"{v:.3f}"       # noqa: E731
-            print(f"{name[:21]:<22}{tier:<12}{fmt(row.get('visual')):>8}"
+            print(f"{doc['name'][:21]:<22}{tier:<12}{fmt(row.get('visual')):>8}"
                   f"{fmt(row.get('visual_order')):>8}"
                   f"{fmt(row.get('containment')):>9}{fmt(row.get('inflation')):>9}"
                   f"{fmt(row.get('order_median')):>8}{fmt(row.get('anchor_compatibility')):>8}")
-    print("\nRANKING (by median visual fidelity; inverted reading order demoted; "
-          "unmeasurable backends last):")
-    for i, tier in enumerate(rep["ranking"], 1):
-        a = rep["aggregate"][tier]
-        mv = "n/a" if a["median_visual"] is None else f"{a['median_visual']:.3f}"
-        mo = "n/a" if a["median_order"] is None else f"{a['median_order']:.3f}"
-        print(f"  {i}. {tier:<12} median_visual={mv:<7} order={mo:<7} "
-              f"scored {len(a['scored'])}/{a['pdfs']} pdfs"
-              + (f"  ({a['unscored']} unscorable)" if a["unscored"] else "")
-              + ("  [READING ORDER INVERTED]" if a["order_inverted"] else ""))
+    paired = len(rep["paired_documents"])
+    if rep["ranking"]:
+        print(f"\nRANKING — paired over the {paired} document(s) EVERY backend measured "
+              f"(of {len(rep['pdfs'])}).")
+        print("A backend compared on a different subset is not being compared.")
+        for i, tier in enumerate(rep["ranking"], 1):
+            a = rep["aggregate"][tier]
+            mv = "n/a" if a["median_visual"] is None else f"{a['median_visual']:.3f}"
+            mo = "n/a" if a["median_order"] is None else f"{a['median_order']:.3f}"
+            print(f"  {i}. {tier:<12} paired_visual={mv:<7} order={mo:<7} "
+                  f"measured {a['measured']}/{a['attempted']} docs"
+                  + (f"  ({a['extraction_failures']} extraction failures)"
+                     if a["extraction_failures"] else "")
+                  + ("  [READING ORDER INVERTED]" if a["order_inverted"] else ""))
+        for tier, why in rep["unrankable"].items():
+            print(f"  --  {tier:<12} NOT RANKED: {why}")
+    else:
+        print(f"\n{rep['ranking_note'] or 'NOT RANKED.'}")
+    print("\nPER-BACKEND COVERAGE (what it managed, separate from what it scored):")
+    for tier, a in rep["aggregate"].items():
+        mv = "n/a" if a["median_visual_all"] is None else f"{a['median_visual_all']:.3f}"
+        print(f"  {tier:<12} measured {a['measured']}/{a['attempted']} docs  "
+              f"median_visual_over_those={mv}"
+              + (f"  ({a['extraction_failures']} extraction failures)"
+                 if a["extraction_failures"] else ""))
     if rep["skipped"]:
         print("\nnot tested:")
         for tier, why in rep["skipped"].items():

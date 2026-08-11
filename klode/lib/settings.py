@@ -68,6 +68,7 @@ class Spec:
     lo: object = None            # inclusive numeric bounds
     hi: object = None
     prefixes: tuple = ()         # allowed string prefixes, when the shape is constrained
+    is_url: bool = False         # validate structurally as a service endpoint
 
 
 SPEC: tuple[Spec, ...] = (
@@ -91,10 +92,10 @@ SPEC: tuple[Spec, ...] = (
     Spec("ingest", "docling_url", "KLODE_DOCLING_URL", None, str,
          "docling-serve endpoint, e.g. http://<host>:15001 — the remote layout backend. Bind the "
          "service to a private interface; this URL is not a secret and must not be treated as one",
-         prefixes=("http://", "https://")),
+         prefixes=("http://", "https://"), is_url=True),
     Spec("ingest", "marker_url", "KLODE_MARKER_URL", None, str,
          "marker_server endpoint, e.g. http://<host>:15002 — remote-only, there is no local marker",
-         prefixes=("http://", "https://")),
+         prefixes=("http://", "https://"), is_url=True),
     Spec("ingest", "marker_mode", "KLODE_MARKER_MODE", "fast", str,
          "marker conversion mode. `fast` uses a lightweight layout detector and block-OCRs only "
          "garbled content; `balanced` runs the VLM layout model over every page. `fast` REDUCES "
@@ -199,12 +200,46 @@ def _validate(spec: Spec, value, where: str):
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must be <= {spec.hi}, got {value}")
     if spec.kind is str and not spec.choices and not str(value).strip():
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must not be empty")
-    if spec.prefixes and not str(value).lower().startswith(spec.prefixes):
-        # caught HERE rather than at the first HTTP call: a typo'd scheme otherwise surfaces as a
-        # backend failure during an ingest, blamed on the backend
-        raise ValueError(f"{where}: [{spec.section}].{spec.key} must start with one of "
-                         f"{spec.prefixes}, got {value!r}")
+    if spec.is_url:
+        _validate_url(spec, str(value), where)
     return value
+
+
+def _validate_url(spec: Spec, value: str, where: str) -> None:
+    """A service endpoint, structurally checked — not a prefix match.
+
+    A prefix check accepted `http://user:password@host`, which puts a CREDENTIAL in
+    `settings.toml` and straight into every backup, breaking the one rule this module is strictest
+    about. It also accepted `http://` (no host at all) and `https://h#f`, values that can only fail
+    later and be blamed on the backend.
+
+    Note what is NOT rejected: plain `http://`. These endpoints are meant to be reached over a
+    private interface where TLS is not the control, and refusing http would make the documented
+    deployment impossible. That is a deliberate trade, recorded rather than assumed.
+    """
+    from urllib.parse import urlsplit
+    label = f"{where}: [{spec.section}].{spec.key}"
+    if not value.lower().startswith(spec.prefixes):
+        raise ValueError(f"{label} must start with one of {spec.prefixes}, got {value!r}")
+    try:
+        u = urlsplit(value)
+    except ValueError as e:
+        raise ValueError(f"{label} is not a valid URL ({e})") from e
+    if u.username or u.password:
+        raise ValueError(
+            f"{label} must not carry credentials. A URL with userinfo puts a secret in a settings "
+            "file and therefore in every backup — credentials are environment-only, never settings.")
+    if u.query or u.fragment:
+        raise ValueError(f"{label} must be a bare endpoint: no query string or fragment "
+                         "(a query is another place a token hides), got {value!r}".format(value=value))
+    if not u.hostname:
+        raise ValueError(f"{label} has no host, got {value!r}")
+    try:
+        u.port                      # raises ValueError on a malformed or out-of-range port
+    except ValueError as e:
+        raise ValueError(f"{label} has an invalid port ({e})") from e
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in value):
+        raise ValueError(f"{label} contains whitespace or control characters, got {value!r}")
 
 
 def _coerce(spec: Spec, value, where: str):
