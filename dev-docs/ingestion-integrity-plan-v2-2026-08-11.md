@@ -118,9 +118,19 @@ tests/test_coverage.py
 `Extraction.pages` is `None` (= *cannot say*) for every text-only backend, and the tests pin that
 `None` never reads as "nothing missing". The defect is pinned directly: control coverage is
 byte-identical whether the candidate kept every page or dropped half.
-**Partial:** the plan's *"for 20 PDFs, measure ... runtime cost"* is **not run** — docling is not
+~~**Partial:** the plan's *"for 20 PDFs, measure ... runtime cost"* is **not run** — docling is not
 installed and there is no endpoint here, so the parsing is proven against mocked structured
-responses and the real-world measurement is carried to Outstanding work.
+responses and the real-world measurement is carried to Outstanding work.~~
+**Unblocked 2026-08-11 (later the same day):** a `docling-serve` endpoint became available, and the
+structured path is now proven against a real server rather than a mock — a two-column PDF returned
+`pages (1, 2)` with per-page text, resolved from `~/.klode/settings.toml` with no environment
+variable set. The 20-PDF run is in `eval/extract_bakeoff.py` against a real corpus; its result is
+recorded below under *Corpus measurement*.
+
+**Also fixed while here:** the `auto` escalation path called the text-only `_docling`, so an
+auto-escalated docling win arrived with `pages=None` even when the backend had supplied provenance
+— coverage abstained on evidence it already had. Forced tiers had carried pages since round 1;
+`auto` had not.
 
 **WI-3 · Sampled visual ground truth.** The only thing that actually establishes fidelity: render N
 random pages, OCR them, compare against the candidate's text for those pages. Record the seed and

@@ -28,6 +28,25 @@ exact failure this whole effort exists to catch. It is a **migration/compatibili
 "how much of my existing corpus keeps working", not "which backend is better".
 
 Backends that are not installed are reported as skipped, never silently omitted.
+
+**The limit of the instrument, stated plainly.** The rendered-page truth is itself an OCR reading,
+so the two columns of `visual` are not equally trustworthy:
+
+- `visual` (recall) — *what* is on the page. Robust: it is a multiset comparison, and OCR losing a
+  word costs every backend the same.
+- `visual_order` — *in what sequence*. This compares the OCR's token order against the candidate's,
+  and **tesseract's own reading order is not guaranteed on a complex layout.** On a two-column page
+  where tesseract itself interleaves the columns, a backend that read the columns correctly is
+  scored down for disagreeing with a scrambled reference. The error is not symmetric or random: it
+  penalises exactly the backends this harness exists to reward.
+
+So `visual_order` is trustworthy as a *detector of gross inversion* (a reversed page scores ≈ −1,
+which no reference confusion produces) and NOT as a fine-grained ranking between two backends that
+both score high. Do not read 0.95 vs 0.98 as a result. A tie on recall with one backend near −1 on
+order is a result; a small order gap between two positive scores is noise until a human has looked
+at the pages.
+
+Recording this because the alternative is a number that looks decisive and is not.
 """
 from __future__ import annotations
 
@@ -240,7 +259,10 @@ def main(argv=None) -> int:
             print(f"  {tier}: {why}")
     print("\nRanking is by `visual` (fidelity to the rendered page) — the only column not derived\n"
           "from another extractor. `compat` is anchor-resolution: a MIGRATION statistic, biased\n"
-          "toward whichever backend authored the anchors and blind to reading order. Never rank on it.")
+          "toward whichever backend authored the anchors and blind to reading order. Never rank on it.\n"
+          "`v.order` detects GROSS inversion (a reversed page scores about -1). It is not a fine\n"
+          "ranking: the reference is tesseract's own reading order, which is itself unreliable on a\n"
+          "complex layout, so a small gap between two positive scores is noise. Read the pages.")
     return 0
 
 
