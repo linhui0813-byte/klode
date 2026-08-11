@@ -154,6 +154,7 @@ def cmd_build(args) -> int:
 
 def cmd_check(args) -> int:
     from . import check as check_mod
+    entail_unavailable = ""
     cfg = _load(args)
     backend = None
     if getattr(args, "entail", False):
@@ -161,9 +162,15 @@ def cmd_check(args) -> int:
         try:
             backend = entail_mod.load_backend(args.entail_model or entail_mod.DEFAULT_MODEL)
         except entail_mod.EntailUnavailable as e:
+            # `--entail` was asked for EXPLICITLY. Printing a note and carrying on to `OK` reports
+            # a check that never ran as a check that passed.
             print(f"  NOTE  entail skipped — {e}")
+            entail_unavailable = str(e)
     r = check_mod.check(cfg, strict=getattr(args, "strict", False), entail=backend,
                         entail_threshold=getattr(args, "entail_threshold", 0.5))
+    if entail_unavailable:
+        r.unmeasured.append(f"--entail was requested but its backend could not load "
+                            f"({entail_unavailable}) — no claim was scored")
     if not args.quiet:
         print(f"library check — {r.n_cards} cards, {r.n_txts} shelf sources")
     for nt in r.notes:

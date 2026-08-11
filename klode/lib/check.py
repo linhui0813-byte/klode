@@ -117,6 +117,7 @@ def _check_entailment(cfg: Config, r: Report, backend, threshold: float) -> None
     is a second opinion to review — never a failure; grep resolution remains the only gate."""
     from . import entail as entail_mod
     SRC_RE = src_path_re(cfg)
+    failed_cards: list[str] = []
     scored = low = 0
     for p in card_files(cfg):
         text = read(p)
@@ -132,6 +133,7 @@ def _check_entailment(cfg: Config, r: Report, backend, threshold: float) -> None
             scores = entail_mod.score_card(text, read_lenient(abspath), backend, cid)
         except Exception as e:      # a per-anchor model failure must not crash the whole check
             r.warns.append(f"[entail] scoring failed for {cid} ({e}) — skipped")
+            failed_cards.append(cid)
             continue
         for es in scores:
             scored += 1
@@ -141,10 +143,14 @@ def _check_entailment(cfg: Config, r: Report, backend, threshold: float) -> None
                                f"support claim — “{es.claim[:90]}” (anchor `{es.phrase}`)")
     r.notes.append(f"[entail] scored {scored} anchor(s) with {backend.name}; {low} below support "
                    f"threshold {threshold:g} (advisory — grep remains the gate)")
+    if failed_cards:
+        r.unmeasured.append(f"--entail could not score {len(failed_cards)} card(s): "
+                            f"{', '.join(sorted(failed_cards)[:5])}")
 
 
 def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None:
     SRC_RE = src_path_re(cfg)
+    skipped_cards: list[str] = []
     cards = card_files(cfg)
     card_stems = {os.path.basename(p)[:-3] for p in cards}
     txts = shelf_txts(cfg)
@@ -160,6 +166,9 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
                 f"citation-rot and card→source were NOT checked for {len(cards)} card(s): the "
                 "corpus is not installed. Anchors may have rotted without this run being able to "
                 "tell. Install the corpus, or pass --allow-unmeasured to accept the gap knowingly.")
+        _blanket = True
+    else:
+        _blanket = False
 
     # B. source -> card
     for t in txts:
@@ -187,7 +196,11 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
         if not os.path.exists(abspath):
             # git-ignored corpus: an absent source almost always means 'not installed here',
             # not 'deleted' — skip this card individually rather than false-fail a partial corpus.
+            # But skipping it means its anchors were NOT checked, and a PARTIAL corpus reported
+            # `OK: 0 errors` exit 0 while some cards went unverified. The blanket "0 sources" case
+            # was fixed first and this one survived it: half-measured is still not measured.
             r.notes.append(f"[A] source not installed, card skipped: {rel}")
+            skipped_cards.append(rel)
             continue
         # F. citation rot — this card's grep markers against its own source
         markers = parse_markers(text)
@@ -205,6 +218,16 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
 
     if cfg.fw_enabled:
         _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, bool(txts))
+
+    if skipped_cards and not _blanket:
+        # PARTIAL corpus: the blanket case above only fires when NOTHING is installed. Half the
+        # sources present still means these cards' anchors were never resolved, and the run
+        # previously ended in `OK: 0 errors` exit 0.
+        r.unmeasured.append(
+            f"citation-rot was NOT checked for {len(skipped_cards)} card(s) whose source is not "
+            f"installed: {', '.join(sorted(skipped_cards)[:5])}"
+            + (" …" if len(skipped_cards) > 5 else "")
+            + ". Install them, or pass --allow-unmeasured to accept the gap knowingly.")
 
 
 def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):

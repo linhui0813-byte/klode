@@ -66,6 +66,7 @@ from klode.lib.formats import pdf as pdfmod                                # noq
 
 TIERS = ("pdftotext", "xberg", "docling", "marker")
 REPORT_SCHEMA = "klode.extract-bakeoff/v2"
+EXIT_NOT_RANKED = 2        # could-not-compare is not success; CI reads the exit code
 MIN_PAIRED_DOCUMENTS = 2   # one shared document cannot order two backends; it is an anecdote
 
 
@@ -488,9 +489,13 @@ def main(argv=None) -> int:
 
     rep = bake_off(pdfs, tiers, sample=args.sample, seed=args.seed, anchors=anchors,
                    out=Path(args.out).expanduser() if args.out else None, resume=args.resume)
+    # A run that ranked nothing exited 0 in both modes, so a caller could not tell "these backends
+    # are ordered" from "nothing could be compared". Same rule the rest of klode now follows:
+    # 1 measured-and-failed, 2 could-not-measure, 0 the work happened.
+    rc = 0 if rep["ranking"] else EXIT_NOT_RANKED
     if args.json:
         print(json.dumps(rep, indent=2))
-        return 0
+        return rc
 
     print(f"extraction bake-off — {len(pdfs)} PDF(s), seed {rep['seed']}\n")
     print(f"{'pdf':<22}{'tier':<12}{'visual':>8}{'v.order':>8}"
@@ -538,7 +543,7 @@ def main(argv=None) -> int:
           "`v.order` detects GROSS inversion (a reversed page scores about -1). It is not a fine\n"
           "ranking: the reference is tesseract's own reading order, which is itself unreliable on a\n"
           "complex layout, so a small gap between two positive scores is noise. Read the pages.")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

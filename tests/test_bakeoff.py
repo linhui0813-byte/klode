@@ -431,6 +431,19 @@ class HarnessBehaviour(unittest.TestCase):
         self.assertEqual(len(row["visual_sampled"]), 2)
         self.assertIsNotNone(row["visual"])
 
+    def test_a_run_that_could_not_rank_exits_nonzero(self):
+        # both modes returned 0 even when `ranking` was empty, so a caller could not tell
+        # "these are ordered" from "nothing could be compared"
+        import io as _io
+        from contextlib import redirect_stdout as _rs
+        for extra in ([], ["--json"]):
+            with self.subTest(json=bool(extra)):
+                buf = _io.StringIO()
+                with _rs(buf):
+                    rc = bake.main(["--pdfs", str(PDFS / "single-page.pdf"),
+                                    "--tiers", "pdftotext", "--sample", "1"] + extra)
+                self.assertEqual(rc, bake.EXIT_NOT_RANKED)
+
     def test_the_report_is_json_serialisable(self):
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["pdftotext"], sample=1)
         json.dumps(rep)          # a report nobody can persist is not a measurement
