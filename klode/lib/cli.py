@@ -560,8 +560,17 @@ def cmd_settings(args) -> int:
 
 def cmd_review(args) -> int:
     draft = sys.stdin.read() if args.draft == "-" else args.draft
+    from . import settings as _settings
     try:
-        r = _run(args, "review", {"draft": draft, "dimension": args.dimension})
+        # `judge.hurdle` was declared, printed by `klode settings`, and read by nothing — the
+        # service hardcoded 60. A setting that cannot change behaviour is worse than no setting:
+        # it invites a change and then silently ignores it.
+        hurdle = _settings.resolve(args).value("judge.hurdle")
+    except ValueError as e:
+        print(f"settings error: {e}", file=sys.stderr)
+        return 1
+    try:
+        r = _run(args, "review", {"draft": draft, "dimension": args.dimension, "hurdle": hurdle})
     except ValueError as e:      # the stub gate raises ValueError when nothing grounds (corpus absent)
         print(f"review unavailable: {e}", file=sys.stderr)
         return 1

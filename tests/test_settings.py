@@ -246,6 +246,24 @@ class EverySettingIsDiscoverable(unittest.TestCase):
     def test_a_deliberately_unset_default_says_so_rather_than_printing_None(self):
         self.assertIn("unset on purpose", self._explain())
 
+    def test_an_unconsumed_setting_says_so_where_a_user_will_read_it(self):
+        # `judge.model` had its "changes nothing today" caveat in a module docstring only, so
+        # `--explain` described it as if it worked. A caveat only the source states is not a caveat.
+        out = self._explain()
+        for key in ("judge.model", "judge.permutations"):
+            with self.subTest(key=key):
+                spec = next(s for s in settings.SPEC if f"{s.section}.{s.key}" == key)
+                self.assertIn("NOT YET CONSUMED", spec.help,
+                              "wiring this up? remove the marker in the same change")
+        self.assertIn("NOT YET CONSUMED", out)
+
+    def test_a_consumed_setting_does_not_carry_the_warning(self):
+        for key in ("judge.hurdle", "ingest.tier", "ingest.verify",
+                    "ingest.docling_url", "ingest.marker_url", "ingest.marker_mode"):
+            with self.subTest(key=key):
+                spec = next(s for s in settings.SPEC if f"{s.section}.{s.key}" == key)
+                self.assertNotIn("NOT YET CONSUMED", spec.help)
+
     def test_the_terse_listing_points_at_the_explanation(self):
         import io
         from contextlib import redirect_stdout
@@ -254,6 +272,43 @@ class EverySettingIsDiscoverable(unittest.TestCase):
         with redirect_stdout(buf):
             cmd_settings(build_parser().parse_args(["settings"]))
         self.assertIn("--explain", buf.getvalue())
+
+
+class JudgeHurdleActuallyReachesTheVerdict(unittest.TestCase):
+    """It was declared, printed by `klode settings`, and read by nothing — `_svc_review` hardcoded
+    60. Asserting the value RESOLVES would have proved nothing; this asserts it ARRIVES."""
+
+    def setUp(self):
+        self._saved = os.environ.get("KLODE_JUDGE_HURDLE")
+        self.addCleanup(lambda: (os.environ.__setitem__("KLODE_JUDGE_HURDLE", self._saved)
+                                 if self._saved is not None
+                                 else os.environ.pop("KLODE_JUDGE_HURDLE", None)))
+
+    def test_the_configured_hurdle_arrives_at_the_review_service(self):
+        from klode.lib import cli
+        seen = {}
+
+        def fake_run(args, op, params):
+            seen.update(params)
+            raise ValueError("stop here — the parameter is what is under test")
+        real = cli._run
+        self.addCleanup(setattr, cli, "_run", real)
+        cli._run = fake_run
+
+        os.environ["KLODE_JUDGE_HURDLE"] = "85"
+        cli.cmd_review(cli.build_parser().parse_args(["review", "draft text", "pacing"]))
+        self.assertEqual(seen["hurdle"], 85, "the service would have used its hardcoded 60")
+
+    def test_an_out_of_range_hurdle_is_refused_before_any_review_runs(self):
+        from klode.lib import cli
+        called = []
+        real = cli._run
+        self.addCleanup(setattr, cli, "_run", real)
+        cli._run = lambda *a, **k: called.append(1)
+        os.environ["KLODE_JUDGE_HURDLE"] = "999"
+        rc = cli.cmd_review(cli.build_parser().parse_args(["review", "d", "pacing"]))
+        self.assertEqual(rc, 1)
+        self.assertEqual(called, [], "a bad setting must stop the run, not be clamped silently")
 
 
 class SecretsStayOut(unittest.TestCase):

@@ -32,10 +32,16 @@ anyone who prefers to keep it ephemeral.
 "provider" abstraction — there is exactly one judge transport (Anthropic). Calling it provider
 configuration would promise a contract that does not exist.
 
-**The judge settings are not yet consumed.** `klode review` still builds its own judge; these keys
-are resolved and displayed but nothing reads them. They are declared here so the resolver and its
-diagnostics are testable ahead of that wiring — but until `review` reads them, setting
-`judge.model` changes nothing, and this paragraph is the honest statement of that.
+**`judge.model` and `judge.permutations` are still not consumed.** `klode review` builds its own
+fixture judge, so setting them changes nothing. They are declared here so the resolver and its
+diagnostics are testable ahead of that wiring. That caveat now lives in each key's `help`, not only
+in this docstring: a user reads `klode settings --explain`, not a module header, and a caveat only
+the source states is a caveat nobody sees. `tests/test_settings.py` asserts the marker is present
+on every unconsumed key, so wiring one without removing its warning fails.
+
+`judge.hurdle` IS consumed. It was in the same inert state — declared, printed by `klode settings`,
+and read by nothing, while the review service hardcoded `60`. A setting that cannot change
+behaviour is worse than no setting: it invites a change and then ignores it silently.
 """
 from __future__ import annotations
 
@@ -66,12 +72,15 @@ class Spec:
 
 SPEC: tuple[Spec, ...] = (
     Spec("judge", "model", "KLODE_JUDGE_MODEL", None, str,
-         "model id for the rubric judge — no default on purpose (self-enhancement bias: it must "
-         "differ from whatever produced the draft)"),
+         "NOT YET CONSUMED — `klode review` still builds its own fixture judge, so setting this "
+         "changes nothing today. Model id for the rubric judge; no default on purpose "
+         "(self-enhancement bias: it must differ from whatever produced the draft)"),
     Spec("judge", "permutations", "KLODE_JUDGE_PERMUTATIONS", 2, int,
-         "how many opposed level orders to average over", lo=1, hi=16),
+         "NOT YET CONSUMED — see judge.model. How many opposed level orders to average over, "
+         "against position bias", lo=1, hi=16),
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
-         "Go/Recycle threshold, 0..100", lo=0, hi=100),
+         "Go/Recycle threshold, 0..100 — the mean criterion percentage a draft must reach",
+         lo=0, hi=100),
     Spec("ingest", "tier", "KLODE_INGEST_TIER", "auto", str,
          "default PDF extraction tier. `marker` is selectable but is NOT in the `auto` ladder — a "
          "backend earns a ladder slot by measuring better (eval/extract_bakeoff.py), not by being "
