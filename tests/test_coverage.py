@@ -39,9 +39,19 @@ class PageSplitting(unittest.TestCase):
 
 
 class DoclingProvenance(unittest.TestCase):
-    def test_pages_map_shape(self):
-        doc = {"pages": {"1": {}, "2": {}, "3": {}}}
-        self.assertEqual(coverage.pages_from_docling(doc), (1, 2, 3))
+    def test_the_source_page_map_is_not_content_coverage(self):
+        # This test previously ASSERTED the bug: it blessed docling's top-level `pages` map as
+        # evidence of extracted content. That map is the SOURCE's page inventory — a document
+        # declaring pages 1-3 whose blocks carry provenance for only 1 and 3 has lost page 2, and
+        # reading the map would report full coverage and mask exactly that.
+        masked = {"pages": {"1": {}, "2": {}, "3": {}},
+                  "texts": [{"prov": [{"page_no": 1}]}, {"prov": [{"page_no": 3}]}]}
+        self.assertEqual(coverage.pages_from_docling(masked), (1, 3))
+        cov = coverage.assess(3, "a\fb\fc\f", coverage.pages_from_docling(masked))
+        self.assertEqual(cov.candidate_missing, (2,))     # the dropped page is visible
+
+    def test_a_page_map_with_no_content_provenance_says_it_cannot_tell(self):
+        self.assertIsNone(coverage.pages_from_docling({"pages": {"1": {}, "2": {}}}))
 
     def test_prov_page_no_shape(self):
         doc = {"texts": [{"prov": [{"page_no": 1}]}, {"prov": [{"page_no": 3}]}],
@@ -54,11 +64,14 @@ class DoclingProvenance(unittest.TestCase):
             with self.subTest(doc=doc):
                 self.assertIsNone(coverage.pages_from_docling(doc))
 
-    def test_malformed_page_numbers_are_ignored_not_crashed_on(self):
-        doc = {"pages": {"1": {}, "notanumber": {}}, "texts": [{"prov": [{"page_no": True}]},
-                                                               {"prov": [{"page_no": "2"}]},
-                                                               {"prov": "junk"}, "junk"]}
-        self.assertEqual(coverage.pages_from_docling(doc), (1,))   # bool/str rejected, no exception
+    def test_malformed_provenance_is_ignored_not_crashed_on(self):
+        doc = {"texts": [{"prov": [{"page_no": True}]},     # bool is not a page number
+                         {"prov": [{"page_no": "2"}]},      # nor is a string
+                         {"prov": 1},                       # `prov: 1` used to raise TypeError
+                         {"prov": "junk"},                  # a str is iterable — used to slip through
+                         "junk",
+                         {"prov": [{"page_no": 5}]}]}       # the only real one
+        self.assertEqual(coverage.pages_from_docling(doc), (5,))
 
 
 class ControlVersusCandidate(unittest.TestCase):

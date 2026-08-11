@@ -15,12 +15,18 @@ Three signals, because they catch disjoint failures and none subsumes another:
 | `inflation` | duplicated tables, repeated headers | reordering, loss |
 | per-window `order` | reading-order scrambling | loss, duplication |
 
-**Order is measured per window, never book-wide.** A whole-book rank correlation is the wrong
-instrument: 300 pages of 400 tokens with *every page internally reversed* scores ρ = 0.999978 —
-invisible — while relocating the first 1% of a document scores 0.9406, a loud alarm for text whose
-local order is 99% intact. Both numbers are reproduced in `tests/test_agreement.py`. Windowing
-inverts that sensitivity: per-page reversal drives every window to ≈ −1, and a relocated block
-leaves every window's internal order intact, which is the honest reading of both events.
+**Order is measured per window, never book-wide.** When the caller supplies real page boundaries
+(`compare(..., control_pages=[...])`) the windows ARE pages. Without them the window is a
+fixed-size *proxy* for a page, and the guarantee is correspondingly weaker: a document whose pages
+are much shorter than the window can have every page internally reversed while each window — which
+straddles several pages — still scores near 1.0. `pdftotext` gives page boundaries for free via
+form feeds, so the pipeline passes them; the fixed-window path is the fallback, not the promise.
+
+A whole-book rank correlation is the wrong instrument either way: 300 pages of 400 tokens with
+*every page internally reversed* scores ρ = 0.999978 — invisible — while relocating the first 1% of
+a document scores 0.9406, a loud alarm for text whose local order is 99% intact. Both numbers are
+reproduced in `tests/test_agreement.py`. Windowing inverts that sensitivity: per-page reversal
+drives every window to ≈ −1, and a relocated block leaves every window's internal order intact.
 
 Pure and stdlib-only: no I/O, no backend, no subprocess.
 """
@@ -37,7 +43,6 @@ DEFAULT_WINDOW = 400        # tokens — roughly one printed page, the unit layo
 MIN_ANCHORS = 8             # per window: below this, order is not measured, it is abstained on
 
 _DEHYPHEN = re.compile(r"-\s*")
-_NONWORD = re.compile(r"[^0-9a-z]+")
 
 
 def tokenize(text: str) -> list[str]:
@@ -47,14 +52,29 @@ def tokenize(text: str) -> list[str]:
     2. **De-hyphenation** of `-` plus any following whitespace, so a line-wrapped `informa-\\ntion`
        is one token. This mirrors `common._dehyphenate`, the rule the citation linter already uses;
        diverging here would mean the two halves of klode disagree about what a word is.
-    3. **Casefold**, then split on any run of non-alphanumerics.
+    3. **Casefold**, then split on any run of non-alphanumerics, judged by Unicode-aware
+       `str.isalnum()` — an ASCII-only character class silently discarded every CJK,
+       Cyrillic, and Greek word, making unrelated documents look identical.
 
     Punctuation and layout whitespace carry no evidence about extraction fidelity and vary freely
     between backends, so they are removed rather than compared.
     """
     t = unicodedata.normalize("NFKC", text)
     t = _DEHYPHEN.sub("", t)
-    return [w for w in _NONWORD.split(t.casefold()) if w]
+    out, cur = [], []
+    for ch in t.casefold():
+        # `str.isalnum()` is Unicode-aware. An ASCII-only class ([^0-9a-z]) discarded EVERY
+        # non-Latin character, so two entirely different CJK or Cyrillic documents tokenized to
+        # the same ASCII residue and scored containment/inflation/order = 1.0 — a confident
+        # `verified` on unrelated text.
+        if ch.isalnum():
+            cur.append(ch)
+        elif cur:
+            out.append("".join(cur))
+            cur = []
+    if cur:
+        out.append("".join(cur))
+    return out
 
 
 @dataclass(frozen=True)
@@ -113,12 +133,28 @@ def _spearman(xs: list[int], ys: list[int]) -> float | None:
 
 
 def compare(control: str, candidate: str, *, window: int = DEFAULT_WINDOW,
-            min_anchors: int = MIN_ANCHORS) -> Agreement:
-    """Compare a candidate extraction against a control. See the module docstring for what this
-    does and does not establish."""
+            min_anchors: int = MIN_ANCHORS,
+            control_pages: "list[str] | None" = None) -> Agreement:
+    """Compare a candidate extraction against a control.
+
+    `control_pages` — the control's text split by real page boundaries. When supplied, each window
+    IS a page and the per-page guarantee is exact. When omitted, windows are fixed-size proxies and
+    a document with short pages can hide per-page reversal inside a straddling window.
+    """
     if window < 2:
         raise ValueError(f"window must be >= 2 tokens, got {window}")
-    a, b = tokenize(control), tokenize(candidate)
+    if control_pages is not None:
+        a = []
+        bounds = []
+        for page in control_pages:
+            toks = tokenize(page)
+            bounds.append((len(a), len(a) + len(toks)))
+            a.extend(toks)
+        control = None                                    # `a` is authoritative now
+    else:
+        a = tokenize(control)
+        bounds = [(i, min(i + window, len(a))) for i in range(0, len(a), window)] or [(0, 0)]
+    b = tokenize(candidate)
     ca, cb = Counter(a), Counter(b)
 
     overlap = sum(min(n, cb[t]) for t, n in ca.items())
@@ -132,9 +168,8 @@ def compare(control: str, candidate: str, *, window: int = DEFAULT_WINDOW,
     pos_b = {t: i for i, t in enumerate(b) if t in anchor_set}
 
     windows: list[Window] = []
-    for wi, start in enumerate(range(0, len(a), window)):
-        chunk = [(i, t) for i, t in enumerate(a[start:start + window], start=start)
-                 if t in anchor_set]
+    for wi, (start, stop) in enumerate(bounds):
+        chunk = [(i, t) for i, t in enumerate(a[start:stop], start=start) if t in anchor_set]
         if len(chunk) < min_anchors:
             windows.append(Window(wi, start, len(chunk), None))
             continue

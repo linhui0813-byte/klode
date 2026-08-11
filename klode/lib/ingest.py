@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,8 +76,12 @@ def verify_extraction(cfg: Config, source: Path, ext, cleaned: str, dic) -> "int
     except (RuntimeError, OSError) as e:
         return integrity.Integrity(integrity.ABSTAINED, (f"control extraction unavailable ({e})",),
                                    {}, integrity.Thresholds().as_dict())
-    control_clean, _ = process(control_raw, dic)          # same pipeline both sides, or it is not
-    agr = agreement.compare(control_clean, cleaned)       # a comparison
+    # Normalize each control PAGE separately so real page boundaries survive into `compare`.
+    # Without them the window is a fixed 400-token proxy, and a book with short pages can have
+    # every page internally reversed while each straddling window still scores ~0.98.
+    control_pages = [process(pg, dic)[0] for pg in coverage.split_pages(control_raw)]
+    control_clean = "\n".join(control_pages)             # same pipeline both sides, or it is not
+    agr = agreement.compare(control_clean, cleaned, control_pages=control_pages)
     cov = coverage.assess(_declared_pages(source), control_raw, ext.pages)
     return integrity.decide(agr, cov)
 
@@ -135,6 +140,38 @@ class IngestResult:
     provenance: str
     note: str
     verification: "integrity.Integrity | None" = None
+
+
+
+def _provenance_row(cid, shelf, source, src_sha, ext, cleaned, stats, verdict, out_sha,
+                    q_before=None, q_after=None) -> dict:
+    """The provenance record. Built BEFORE promotion so an unwritable log cannot leave a shelf
+    artifact behind, and bound to `out_sha` — the hash of the exact bytes about to be written."""
+    tool = _tool_version(ext.handler)          # computed once; it can spawn a subprocess
+    return {
+        "id": cid, "shelf": shelf,
+        "format": ext.format, "handler": ext.handler,
+        "source": source.name, "source_sha256": src_sha,
+        "tool": tool,
+        "words": len(cleaned.split()),
+        "corruption_before": round((q_before or {}).get("corruption", 0.0), 2),
+        "corruption_after": round((q_after or {}).get("corruption", 0.0), 2),
+        "furniture_stripped": stats.get("furniture", 0),
+        "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        # bind the verification to the bytes actually written: changing one byte of the shelf
+        # artifact orphans this record rather than inheriting its verdict.
+        "output_sha256": out_sha,
+        "verification": {
+            "schema": integrity.SCHEMA,
+            "status": verdict.state,
+            "reasons": list(verdict.reasons),
+            "metrics": verdict.metrics,
+            "thresholds": verdict.thresholds,
+            "control_tier": CONTROL_TIER,
+            "candidate_tier": ext.handler,
+            "tool": tool,
+        },
+    }
 
 
 def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
@@ -200,42 +237,36 @@ def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
 
     src_sha = sha256(source)       # hash the ORIGINAL bytes BEFORE any write (a forced re-ingest onto
     dest.parent.mkdir(parents=True, exist_ok=True)       # the source itself must record the source hash)
-    tmp = dest.with_name(dest.name + ".tmp")             # atomic write: never leave a truncated .txt
-    try:
-        tmp.write_text(cleaned, encoding="utf-8")
-        os.replace(tmp, dest)
-    except OSError:
-        tmp.unlink(missing_ok=True)                      # don't orphan a partial .tmp on write failure
-        raise
+    payload = cleaned.encode("utf-8")                    # encode ONCE and hash exactly these bytes:
+    out_sha = hashlib.sha256(payload).hexdigest()        # text-mode newline translation would make a
+    #                                                      hash of `cleaned` disagree with the file.
 
-    prov = {
-        "id": cid, "shelf": shelf,
-        "format": ext.format, "handler": ext.handler,
-        "source": source.name, "source_sha256": src_sha,
-        "tool": _tool_version(ext.handler),
-        "words": len(cleaned.split()),
-        "corruption_before": round(q_before["corruption"], 2),
-        "corruption_after": round(q_after["corruption"], 2),
-        "furniture_stripped": stats.get("furniture", 0),
-        "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        # WI-5: bind the verification to the bytes actually written. `output_sha256` is the hash of
-        # the shelf artifact, so changing one byte of it orphans this record rather than inheriting
-        # its verdict, and a forced re-ingest writes a NEW row with a NEW hash.
-        "output_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
-        "verification": {
-            "schema": integrity.SCHEMA,
-            "status": verdict.state,
-            "reasons": list(verdict.reasons),
-            "metrics": verdict.metrics,
-            "thresholds": verdict.thresholds,
-            "control_tier": CONTROL_TIER,
-            "candidate_tier": ext.handler,
-            "tool": _tool_version(ext.handler),
-        },
-    }
+    # The provenance row is assembled and appended BEFORE the artifact is promoted. Promoting first
+    # and recording second meant an unwritable PROVENANCE.jsonl produced failure PLUS a shelf
+    # mutation — precisely the "never both" this pipeline claims. Now a provenance failure happens
+    # while the shelf is still untouched.
+    prov = _provenance_row(cid, shelf, source, src_sha, ext, cleaned, stats, verdict, out_sha,
+                           q_before, q_after)
     prov_path = cfg.lib / "PROVENANCE.jsonl"
     with open(prov_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(prov, ensure_ascii=False) + "\n")
+
+    # mkstemp: an UNPREDICTABLE name, created O_EXCL at 0600, in the destination's own directory.
+    # A fixed `<dest>.tmp` is guessable, and opening it with write_text FOLLOWS a symlink an
+    # attacker planted there, truncating the target. Same defect class already fixed in
+    # klode/gate/__main__.py — it was left unfixed here.
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dest)
+    except OSError:
+        tmp.unlink(missing_ok=True)                      # don't orphan a partial temp on failure
+        raise
 
     return IngestResult(
         verification=verdict,

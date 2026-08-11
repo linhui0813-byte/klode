@@ -44,7 +44,10 @@ def _declared(pdf: Path) -> int:
         return 0
     for line in out.stdout.splitlines():
         if line.startswith("Pages:"):
-            return int(line.split()[1])
+            try:
+                return int(line.split()[1])
+            except (IndexError, ValueError):     # `Pages: unknown` must not crash the harness
+                return 0
     return 0
 
 
@@ -116,6 +119,24 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
             per_tier[tier] = row
         report["pdfs"][pdf.name] = {"declared_pages": declared, "control_error": control_err,
                                     "tiers": per_tier}
+    # Rank. Previously the harness printed tiers in insertion order and computed no aggregate —
+    # deleting "the ranking logic" would have changed nothing, because there was none.
+    agg: dict = {}
+    for doc in report["pdfs"].values():
+        for tier, row in doc["tiers"].items():
+            a = agg.setdefault(tier, {"scored": [], "pdfs": 0, "unscored": 0})
+            a["pdfs"] += 1
+            if row.get("visual") is None:
+                a["unscored"] += 1
+            else:
+                a["scored"].append(row["visual"])
+    for tier, a in agg.items():
+        a["median_visual"] = (sorted(a["scored"])[len(a["scored"]) // 2] if a["scored"] else None)
+    # A backend with no measurable score cannot be ranked above one that was measured; it sorts
+    # last and its reason is reported rather than being silently treated as zero.
+    report["ranking"] = sorted(
+        agg, key=lambda t: (agg[t]["median_visual"] is None, -(agg[t]["median_visual"] or 0.0), t))
+    report["aggregate"] = agg
     return report
 
 
@@ -150,6 +171,12 @@ def main(argv=None) -> int:
             print(f"{name[:21]:<22}{tier:<12}{fmt(row.get('visual')):>8}"
                   f"{fmt(row.get('containment')):>9}{fmt(row.get('inflation')):>9}"
                   f"{fmt(row.get('order_median')):>8}{fmt(row.get('anchor_compatibility')):>8}")
+    print("\nRANKING (by median visual fidelity; unmeasurable backends sort last):")
+    for i, tier in enumerate(rep["ranking"], 1):
+        a = rep["aggregate"][tier]
+        mv = "n/a" if a["median_visual"] is None else f"{a['median_visual']:.3f}"
+        print(f"  {i}. {tier:<12} median_visual={mv:<7} scored {len(a['scored'])}/{a['pdfs']} pdfs"
+              + (f"  ({a['unscored']} unscorable)" if a["unscored"] else ""))
     if rep["skipped"]:
         print("\nnot tested:")
         for tier, why in rep["skipped"].items():

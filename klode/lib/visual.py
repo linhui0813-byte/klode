@@ -28,6 +28,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from collections import Counter
+
 from .agreement import tokenize
 
 __all__ = ["available", "PageCheck", "VisualReport", "sample_pages", "check_pages"]
@@ -49,8 +51,9 @@ def available() -> tuple[bool, str]:
 class PageCheck:
     page: int
     ocr_tokens: int
-    matched: int                 # OCR tokens also present in the candidate's text for this page
+    matched: int                 # OCR tokens the candidate also has, counted as a MULTISET
     error: str = ""
+    order: float | None = None   # rank agreement of the shared anchors on this page
 
     @property
     def recall(self) -> float | None:
@@ -73,7 +76,18 @@ class VisualReport:
 
     @property
     def ran(self) -> bool:
+        """The check executed. NOT the same as "produced a score" — see `measured`."""
         return not self.skipped
+
+    @property
+    def measured(self) -> bool:
+        """At least one page yielded a recall. `ran` can be true while every page errored."""
+        return bool(self.recalls)
+
+    @property
+    def worst_order(self) -> float | None:
+        vals = [c.order for c in self.checks if c.order is not None]
+        return min(vals) if vals else None
 
     @property
     def recalls(self) -> tuple[float, ...]:
@@ -132,7 +146,12 @@ def check_pages(pdf: Path, candidate_page_text: dict[int, str], *, pages: tuple[
         return VisualReport(seed=seed, sampled=pages, checks=(), skipped=f"no such pdf: {pdf}")
 
     checks: list[PageCheck] = []
-    with tempfile.TemporaryDirectory(prefix="klode-visual-") as td:
+    try:
+        td_ctx = tempfile.TemporaryDirectory(prefix="klode-visual-")
+    except OSError as e:      # no writable temp dir — a recorded skip, not an escaping exception
+        return VisualReport(seed=seed, sampled=pages, checks=(),
+                            skipped=f"cannot create a temporary directory ({e})")
+    with td_ctx as td:
         work = Path(td)
         for page in pages:
             try:
@@ -145,7 +164,27 @@ def check_pages(pdf: Path, candidate_page_text: dict[int, str], *, pages: tuple[
                 checks.append(PageCheck(page, len(ocr_toks), 0,
                                         error="candidate has no text for this page"))
                 continue
-            cand = set(tokenize(candidate_page_text[page]))
-            matched = sum(1 for t in ocr_toks if t in cand)
-            checks.append(PageCheck(page, len(ocr_toks), matched))
+            cand_toks = tokenize(candidate_page_text[page])
+            # MULTISET, not a set: with a set, a candidate containing one "the" matched all 100
+            # OCR occurrences, so a page reduced to its vocabulary scored perfect recall.
+            oc, cc = Counter(ocr_toks), Counter(cand_toks)
+            matched = sum(min(n, cc[t]) for t, n in oc.items())
+            # Recall alone is order-blind, which would let the very scrambling this module exists
+            # to detect score 1.0. Rank-agree the anchors shared by OCR and candidate ON THIS PAGE.
+            anchors = {t for t, n in oc.items() if n == 1 and cc.get(t) == 1}
+            order = None
+            if len(anchors) >= 4:
+                seq = [t for t in ocr_toks if t in anchors]
+                pos = {t: i for i, t in enumerate(cand_toks) if t in anchors}
+                xs = list(range(len(seq)))
+                rank = sorted(range(len(seq)), key=lambda k: pos[seq[k]])
+                ys = [0] * len(seq)
+                for r, k in enumerate(rank):
+                    ys[k] = r
+                n = len(xs)
+                mx, my = sum(xs) / n, sum(ys) / n
+                num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+                den = (sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)) ** 0.5
+                order = (num / den) if den else None
+            checks.append(PageCheck(page, len(ocr_toks), matched, order=order))
     return VisualReport(seed=seed, sampled=pages, checks=tuple(checks))

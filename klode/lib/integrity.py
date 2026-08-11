@@ -43,10 +43,24 @@ class Thresholds:
     max_inflation: float = 1.50       # candidate is half again the control — duplication
     min_inflation: float = 0.67       # candidate is two-thirds of the control — loss
     min_median_order: float = 0.0     # median window ACTIVELY inverted, not merely noisy
+    min_worst_order: float = -0.5     # ANY single page this badly scrambled is a finding; a
+    #                                   median-only gate let one fully reversed page in ten pass
 
     def as_dict(self) -> dict:
         return {"min_containment": self.min_containment, "max_inflation": self.max_inflation,
-                "min_inflation": self.min_inflation, "min_median_order": self.min_median_order}
+                "min_inflation": self.min_inflation, "min_median_order": self.min_median_order,
+                "min_worst_order": self.min_worst_order}
+
+    def __post_init__(self):
+        import math
+        for name, v in self.as_dict().items():
+            if not math.isfinite(v):       # a NaN threshold makes every comparison False -> verified
+                raise ValueError(f"threshold {name} must be finite, got {v}")
+        if self.min_inflation > self.max_inflation:
+            raise ValueError("min_inflation must not exceed max_inflation")
+
+
+STATES = (VERIFIED, FAILED, ABSTAINED, UNVERIFIED)
 
 
 @dataclass(frozen=True)
@@ -55,6 +69,12 @@ class Integrity:
     reasons: tuple[str, ...] = ()
     metrics: dict = field(default_factory=dict)
     thresholds: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # An unvalidated state fails OPEN: `Integrity("faield").blocks_write` was False, so a typo
+        # in the one field that gates a write silently permitted it.
+        if self.state not in STATES:
+            raise ValueError(f"unknown integrity state {self.state!r} — one of {STATES}")
 
     @property
     def ok(self) -> bool:
@@ -107,6 +127,10 @@ def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = Non
         if median is not None and median < th.min_median_order:
             reasons.append(f"median window order {median:.3f} < {th.min_median_order} "
                            "— reading order is inverted across most of the document")
+        worst = agreement.worst_window
+        if worst is not None and worst.order < th.min_worst_order:
+            reasons.append(f"window {worst.index} order {worst.order:.3f} < {th.min_worst_order} "
+                           "— at least one page is scrambled, which a median gate would bury")
 
     if coverage is not None:
         metrics.update({
@@ -121,8 +145,23 @@ def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = Non
 
     if accepted:
         return Integrity(UNVERIFIED, tuple(reasons), metrics, th.as_dict())
-    if agreement is None and coverage is None:
-        return Integrity(ABSTAINED, ("nothing could be measured",), metrics, th.as_dict())
     if reasons:
         return Integrity(FAILED, tuple(reasons), metrics, th.as_dict())
+
+    # `verified` requires that something was actually MEASURED. Three ways this used to return a
+    # confident pass on no evidence:
+    #   * both inputs None                      -> nothing measured at all
+    #   * every order window abstained          -> order unmeasurable (e.g. no unique anchors)
+    #   * coverage present but candidate unknown-> a Coverage object is not candidate evidence
+    unmeasured: list[str] = []
+    if agreement is None and coverage is None:
+        unmeasured.append("nothing could be measured")
+    if agreement is not None and not agreement.measured:
+        unmeasured.append("no order window could be measured (too few unique anchors) — "
+                          "reading order is unknown, not confirmed")
+    if agreement is None and coverage is not None and not coverage.candidate_known:
+        unmeasured.append("coverage could not speak for the candidate (no page provenance) — "
+                          "and there is no agreement measurement either")
+    if unmeasured:
+        return Integrity(ABSTAINED, tuple(unmeasured), metrics, th.as_dict())
     return Integrity(VERIFIED, (), metrics, th.as_dict())

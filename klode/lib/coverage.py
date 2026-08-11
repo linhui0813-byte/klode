@@ -48,20 +48,10 @@ def pages_from_docling(doc) -> tuple[int, ...] | None:
         return None
     found: set[int] = set()
 
-    pages = doc.get("pages")
-    if isinstance(pages, dict):
-        for key in pages:
-            try:
-                found.add(int(key))
-            except (TypeError, ValueError):
-                continue
-    elif isinstance(pages, list):
-        for entry in pages:
-            if isinstance(entry, dict):
-                n = entry.get("page_no", entry.get("page"))
-                if isinstance(n, int) and not isinstance(n, bool):
-                    found.add(n)
-
+    # NOTE: the top-level `pages` map is deliberately NOT read. It is docling's inventory of the
+    # SOURCE's pages, not evidence that content was extracted from each one — a document declaring
+    # pages 1-3 whose blocks carry provenance for only 1 and 3 would otherwise report full
+    # coverage and mask the missing page. Only content provenance counts as coverage.
     for key in ("texts", "tables", "pictures", "body"):
         blocks = doc.get(key)
         if not isinstance(blocks, list):
@@ -69,7 +59,10 @@ def pages_from_docling(doc) -> tuple[int, ...] | None:
         for b in blocks:
             if not isinstance(b, dict):
                 continue
-            for pr in (b.get("prov") or []):
+            prov = b.get("prov")
+            if not isinstance(prov, list):     # `prov: 1` raised TypeError; a str silently iterated
+                continue
+            for pr in prov:
                 if isinstance(pr, dict):
                     n = pr.get("page_no")
                     if isinstance(n, int) and not isinstance(n, bool):
@@ -95,7 +88,8 @@ class Coverage:
         callers must check `candidate_known` first rather than reading emptiness as success."""
         if self.candidate_pages is None or not self.declared:
             return ()
-        return tuple(p for p in range(1, self.declared + 1) if p not in set(self.candidate_pages))
+        have = set(self.candidate_pages)      # build once, not per declared page
+        return tuple(p for p in range(1, self.declared + 1) if p not in have)
 
     @property
     def control_mismatch(self) -> bool:

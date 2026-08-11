@@ -213,8 +213,6 @@ class ProvenanceBoundToBytes(unittest.TestCase):
         self.assertFalse(r.verification.ok)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class VerifyExtractionOnRealText(unittest.TestCase):
@@ -284,3 +282,60 @@ class VerifyExtractionOnRealText(unittest.TestCase):
         ext = Extraction(text="x", handler="txt", format="txt")
         v = verify_extraction(self.cfg, self.pdf, ext, "x", load_dict(self.cfg.dict_path))
         self.assertEqual(v.state, integrity.ABSTAINED)
+
+
+class FailOpensClosedInAudit(unittest.TestCase):
+    """States that returned a confident `verified` on no evidence. Each was a real fail-open."""
+
+    def _agree(self, control, candidate, **kw):
+        return agreement.compare(control, candidate, window=50, **kw)
+
+    def test_all_windows_abstaining_is_not_verified(self):
+        # every token repeated -> no unique anchors -> order unmeasurable. Containment and
+        # inflation still pass, and the verdict used to be `verified`: a confident pass on text
+        # whose reading order was never measured at all.
+        a = " ".join(["same"] * 500)
+        r = self._agree(a, a)
+        self.assertEqual(r.measured, ())
+        v = integrity.decide(r, None)
+        self.assertEqual(v.state, integrity.ABSTAINED)
+        self.assertFalse(v.ok)
+
+    def test_one_fully_scrambled_page_among_good_ones_is_not_verified(self):
+        # median stays ~1.0 while one window is inverted; a median-only gate buried it, which
+        # directly contradicted the docstring promising one bad page is a real finding
+        toks = [f"tok{i}" for i in range(500)]
+        b = list(toks)
+        b[100:150] = list(reversed(b[100:150]))
+        r = self._agree(" ".join(toks), " ".join(b))
+        self.assertGreater(r.quantile(0.50), 0.99)          # the median is still fine...
+        self.assertLess(r.worst_window.order, -0.9)         # ...and the bad page is still there
+        self.assertEqual(integrity.decide(r, None).state, integrity.FAILED)
+
+    def test_coverage_that_cannot_speak_for_the_candidate_is_not_verified(self):
+        cov = coverage.assess(3, "a\fb\fc\f", candidate_pages=None)
+        self.assertFalse(cov.candidate_known)
+        self.assertEqual(integrity.decide(None, cov).state, integrity.ABSTAINED)
+
+    def test_an_invalid_state_string_cannot_be_constructed(self):
+        # `Integrity("faield").blocks_write` was False — a typo in the field that gates the write
+        with self.assertRaises(ValueError):
+            integrity.Integrity("faield")
+
+    def test_a_nan_threshold_is_refused(self):
+        # NaN makes every comparison False, turning a failure into `verified`
+        with self.assertRaises(ValueError):
+            integrity.Thresholds(min_containment=float("nan"))
+        with self.assertRaises(ValueError):
+            integrity.Thresholds(min_inflation=2.0, max_inflation=1.0)
+
+    def test_non_latin_text_is_compared_rather_than_discarded(self):
+        # an ASCII-only tokenizer reduced two unrelated documents to the same residue and
+        # verified them
+        a = "共通 a1 a2 a3 a4 a5 a6 a7 a8 完全に異なる内容がここにあります"
+        b = "共通 a1 a2 a3 a4 a5 a6 a7 a8 совершенно другой текст здесь"
+        self.assertLess(self._agree(a, b).containment, 0.95)
+
+
+if __name__ == "__main__":
+    unittest.main()

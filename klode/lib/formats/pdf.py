@@ -28,10 +28,6 @@ MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a
 DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
 DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
-# Page provenance from the most recent structured extraction, keyed by source path. The tier
-# functions return plain text (the escalation loop compares text and nothing else), so provenance
-# is carried beside them rather than by widening every extractor's signature.
-_LAST_PAGES: dict = {}
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
 
@@ -76,8 +72,11 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
     safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
     parts: list[bytes] = []
     for k, v in fields.items():
-        parts += [f"--{boundary}".encode(),
-                  f'Content-Disposition: form-data; name="{k}"'.encode(), b"", str(v).encode()]
+        # a list value becomes a REPEATED field, which is how multipart encodes a list. Joining
+        # with a comma produced one value the server can reject as an invalid enum.
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            parts += [f"--{boundary}".encode(),
+                      f'Content-Disposition: form-data; name="{k}"'.encode(), b"", str(item).encode()]
     parts += [f"--{boundary}".encode(),
               f'Content-Disposition: form-data; name="{file_field}"; filename="{safe_name}"'.encode(),
               b"Content-Type: application/pdf", b"", file_bytes,
@@ -96,7 +95,10 @@ def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | No
     `prov[].page_no` rather than inferred from the control — the control cannot answer for the
     candidate, and inferring it was a defect in an earlier design."""
     boundary = uuid.uuid4().hex
-    body = _multipart({"to_formats": "md,json", "do_table_structure": "true"},
+    # repeated field, not "md,json": docling models `to_formats` as a list of enum values, and a
+    # single comma-joined value can be rejected — in which case the JSON provenance never arrives
+    # and coverage silently degrades to "cannot say".
+    body = _multipart({"to_formats": ["md", "json"], "do_table_structure": "true"},
                       "files", pdf.name, pdf.read_bytes(), boundary)
     req = urllib.request.Request(
         f"{endpoint}/v1/convert/file", data=body, method="POST",
@@ -109,6 +111,8 @@ def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | No
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:         # JSONDecodeError is a ValueError
         raise RuntimeError(f"docling-serve returned an unparseable response ({e})") from e
+    if not isinstance(data, dict):        # a valid but non-object body (e.g. `[]`) must degrade
+        raise RuntimeError("docling-serve returned a non-object JSON response")
     doc = data.get("document") or {}
     md = doc.get("md_content") or ""
     if not md.strip():
@@ -122,15 +126,25 @@ def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | No
     return md, coverage.pages_from_docling(structured)
 
 
+def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
+    """Markdown plus page provenance. `_docling` wraps this for the text-only extractor table."""
+    endpoint = os.environ.get(DOCLING_ENV)
+    if endpoint:
+        if not str(endpoint).lower().startswith(("http://", "https://")):
+            raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
+        return _docling_remote(pdf, endpoint)
+    md = _docling(pdf, lang)
+    return md, None          # the local path has a DoclingDocument but no export wired yet
+
+
 def _docling(pdf: Path, lang: str = "eng") -> str:
-    """Markdown only — the escalation loop compares text. `_docling_pages` carries the provenance."""
+    """Markdown only — the escalation loop compares text and nothing else."""
     endpoint = os.environ.get(DOCLING_ENV)
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
         endpoint = endpoint.rstrip("/")
         if not endpoint.startswith(("http://", "https://")):
             raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-        md, pages = _docling_remote(pdf, endpoint)
-        _LAST_PAGES[pdf] = pages          # provenance rides alongside; see PdfHandler.extract
+        md, _pages = _docling_remote(pdf, endpoint)
         return md
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -159,6 +173,12 @@ class Choice:
     text: str
     score: float
     note: str = ""
+    pages: "tuple[int, ...] | None" = None
+    """Page provenance from a structured backend, or None when it cannot say.
+
+    Carried on the result rather than in a module-global keyed by path: that global raced when the
+    same path was ingested concurrently (one call could consume another's provenance) and leaked
+    entries whenever docling ran during `auto` but lost."""
 
 
 def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
@@ -168,6 +188,9 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
         fn = _EXTRACTORS.get(tier)
         if fn is None:
             raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
+        if tier == "docling":
+            text, pages = _docling_with_pages(pdf, lang)
+            return Choice(tier, text, corruption_score(text), pages=pages)
         text = fn(pdf, lang)
         return Choice(tier, text, corruption_score(text))
 
@@ -216,8 +239,5 @@ class PdfHandler:
         return head.startswith(b"%PDF")
 
     def extract(self, path: Path, *, lang: str = "eng", tier: str = "auto") -> Extraction:
-        _LAST_PAGES.pop(path, None)
         c = choose_and_extract(path, tier, lang)
-        # only the tier that actually produced the winning text may claim its provenance
-        pages = _LAST_PAGES.pop(path, None) if c.tier == "docling" else None
-        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note, pages=pages)
+        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note, pages=c.pages)

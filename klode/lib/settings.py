@@ -19,6 +19,11 @@ for exactly this reason: a split configuration surface nobody can audit is worse
 **Scope, stated honestly:** this configures a judge *model* and ingest defaults. It is not a
 "provider" abstraction — there is exactly one judge transport (Anthropic). Calling it provider
 configuration would promise a contract that does not exist.
+
+**The judge settings are not yet consumed.** `klode review` still builds its own judge; these keys
+are resolved and displayed but nothing reads them. They are declared here so the resolver and its
+diagnostics are testable ahead of that wiring — but until `review` reads them, setting
+`judge.model` changes nothing, and this paragraph is the honest statement of that.
 """
 from __future__ import annotations
 
@@ -41,6 +46,9 @@ class Spec:
     default: object
     kind: type
     help: str
+    choices: tuple = ()          # allowed values, when the domain is closed
+    lo: object = None            # inclusive numeric bounds
+    hi: object = None
 
 
 SPEC: tuple[Spec, ...] = (
@@ -48,11 +56,12 @@ SPEC: tuple[Spec, ...] = (
          "model id for the rubric judge — no default on purpose (self-enhancement bias: it must "
          "differ from whatever produced the draft)"),
     Spec("judge", "permutations", "KLODE_JUDGE_PERMUTATIONS", 2, int,
-         "how many opposed level orders to average over"),
+         "how many opposed level orders to average over", lo=1, hi=16),
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
-         "Go/Recycle threshold, 0..100"),
+         "Go/Recycle threshold, 0..100", lo=0, hi=100),
     Spec("ingest", "tier", "KLODE_INGEST_TIER", "auto", str,
-         "default PDF extraction tier"),
+         "default PDF extraction tier",
+         choices=("auto", "pdftotext", "xberg", "docling")),
     Spec("ingest", "verify", "KLODE_INGEST_VERIFY", True, bool,
          "check extraction integrity before promoting to the shelf"),
 )
@@ -139,6 +148,22 @@ def _from_env(spec: Spec):
     return raw, True
 
 
+def _validate(spec: Spec, value, where: str):
+    """Domain validation, applied to EVERY source. Type-checking alone accepted tier="bogus",
+    hurdle=999, permutations=0, and an empty model — values that pass as the right type and then
+    fail much later, or silently do the wrong thing."""
+    if spec.choices and value not in spec.choices:
+        raise ValueError(f"{where}: [{spec.section}].{spec.key} must be one of "
+                         f"{spec.choices}, got {value!r}")
+    if spec.lo is not None and value < spec.lo:
+        raise ValueError(f"{where}: [{spec.section}].{spec.key} must be >= {spec.lo}, got {value}")
+    if spec.hi is not None and value > spec.hi:
+        raise ValueError(f"{where}: [{spec.section}].{spec.key} must be <= {spec.hi}, got {value}")
+    if spec.kind is str and not spec.choices and not str(value).strip():
+        raise ValueError(f"{where}: [{spec.section}].{spec.key} must not be empty")
+    return value
+
+
 def _coerce(spec: Spec, value, where: str):
     if spec.kind is bool and not isinstance(value, bool):
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must be a boolean, "
@@ -149,7 +174,7 @@ def _coerce(spec: Spec, value, where: str):
     if spec.kind is str and not isinstance(value, str):
         raise ValueError(f"{where}: [{spec.section}].{spec.key} must be a string, "
                          f"got {type(value).__name__}")
-    return value
+    return _validate(spec, value, where)
 
 
 def resolve(args=None, *, file_values: dict | None = None, explicit=None, home=None) -> Settings:
@@ -159,7 +184,16 @@ def resolve(args=None, *, file_values: dict | None = None, explicit=None, home=N
     default to `None` there, or an omitted flag is indistinguishable from an explicit one and the
     argument level of this chain silently swallows the other three.
     """
-    fv = load(explicit, home=home) if file_values is None else file_values
+    if file_values is None:
+        fv = load(explicit, home=home)
+    else:
+        # An injected mapping must face the SAME unknown-key check as a file on disk, or the
+        # documented guarantee ("unknown keys are rejected") holds only for one of two paths.
+        known = {f"{s.section}.{s.key}" for s in SPEC}
+        unknown = sorted(set(file_values) - known)
+        if unknown:
+            raise ValueError(f"unknown setting(s) {unknown} — known: {sorted(known)}")
+        fv = file_values
     out = Settings()
     for spec in SPEC:
         name = f"{spec.section}.{spec.key}"
@@ -174,7 +208,7 @@ def resolve(args=None, *, file_values: dict | None = None, explicit=None, home=N
 
         env_val, found = _from_env(spec)
         if found:
-            out[name] = Setting(name, env_val, ENV)
+            out[name] = Setting(name, _validate(spec, env_val, spec.env or "environment"), ENV)
             continue
 
         if name in fv:
