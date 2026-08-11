@@ -10,6 +10,7 @@ import io
 import json
 import shutil
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -175,6 +176,80 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
         bake.pdfmod.docling_page_text = boom
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
         self.assertIsNone(rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]["visual"])
+
+
+class SurvivesACrashOnTheLastDocument(unittest.TestCase):
+    """A real run is hours — two model backends convert every page. Holding every result in memory
+    and printing once at the end meant a crash on the final document discarded the whole run."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-bakeoff-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.out = self.tmp / "report.json"
+        self.pdfs = [PDFS / "single-page.pdf", PDFS / "three-pages.pdf"]
+        real = bake.visual.check_pages
+        self.addCleanup(setattr, bake.visual, "check_pages", real)
+        bake.visual.check_pages = lambda pdf, cpt, *, pages, seed: bake.visual.VisualReport(
+            seed=seed, sampled=pages,
+            checks=(bake.visual.PageCheck(1, 10, 10, order=1.0),))
+
+    def test_the_checkpoint_lands_after_every_document_not_at_the_end(self):
+        seen = []
+        real_cp = bake._checkpoint
+
+        def spy(report, out):
+            real_cp(report, out)
+            if out is not None:
+                seen.append(len(json.loads(out.read_text())["pdfs"]))
+        self.addCleanup(setattr, bake, "_checkpoint", real_cp)
+        bake._checkpoint = spy
+        bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
+        self.assertEqual(seen[:2], [1, 2], "a partial report must exist before the run ends")
+
+    def test_a_crash_midway_leaves_the_finished_documents_on_disk(self):
+        real = bake._declared
+        self.addCleanup(setattr, bake, "_declared", real)
+
+        def boom(pdf):
+            if pdf.name == "three-pages.pdf":
+                raise RuntimeError("simulated crash on the second document")
+            return real(pdf)
+        bake._declared = boom
+        with self.assertRaises(RuntimeError):
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
+        saved = json.loads(self.out.read_text())
+        self.assertEqual(list(saved["pdfs"]), ["single-page.pdf"])   # the first survived
+
+    def test_resume_skips_what_was_already_measured(self):
+        bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1, out=self.out)
+        touched = []
+        real = bake._declared
+        self.addCleanup(setattr, bake, "_declared", real)
+        bake._declared = lambda pdf: (touched.append(pdf.name), real(pdf))[1]
+        rep = bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out, resume=True)
+        self.assertEqual(touched, ["three-pages.pdf"], "the finished document was re-measured")
+        self.assertEqual(sorted(rep["pdfs"]), ["single-page.pdf", "three-pages.pdf"])
+
+    def test_resuming_across_a_different_seed_is_refused_not_merged(self):
+        # merging two seeds silently blends two experiments into one table
+        bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1, seed=1, out=self.out)
+        with self.assertRaises(SystemExit):
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=1, seed=2, out=self.out, resume=True)
+        with self.assertRaises(SystemExit):
+            bake.bake_off(self.pdfs, ["pdftotext"], sample=2, seed=1, out=self.out, resume=True)
+
+    def test_a_corrupt_checkpoint_restarts_rather_than_half_loading(self):
+        self.out.write_text("{not json", encoding="utf-8")
+        rep = bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1, out=self.out, resume=True)
+        self.assertEqual(list(rep["pdfs"]), ["single-page.pdf"])
+
+    def test_no_partial_file_is_left_behind(self):
+        bake.bake_off(self.pdfs, ["pdftotext"], sample=1, out=self.out)
+        self.assertEqual(list(self.tmp.glob("*.part")), [], "temp checkpoint was orphaned")
+
+    def test_without_out_nothing_is_written(self):
+        bake.bake_off([self.pdfs[0]], ["pdftotext"], sample=1)
+        self.assertEqual(list(self.tmp.iterdir()), [])
 
 
 class HarnessBehaviour(unittest.TestCase):

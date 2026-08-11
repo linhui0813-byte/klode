@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -127,10 +128,49 @@ def anchor_compatibility(text: str, anchors: list[str]) -> float | None:
     return sum(1 for a in anchors if resolve_marker(Marker(a), hays).found) / len(anchors)
 
 
+def _checkpoint(report: dict, out: Path | None) -> None:
+    """Persist the partial report after every document, atomically.
+
+    A full run over a real corpus is hours: two model backends convert every page, and on a host
+    where the VLM inference server cannot start, marker stalls ~10 minutes per affected document
+    before falling back. Holding every result in memory and printing once at the end meant a crash
+    on the last document threw away the whole run — and a run that expensive will eventually meet
+    an OOM, a dropped endpoint, or a closed laptop lid. Temp-plus-rename so a crash mid-write
+    cannot corrupt the checkpoint it is there to protect.
+    """
+    if out is None:
+        return
+    tmp = out.with_suffix(out.suffix + ".part")
+    tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    os.replace(tmp, out)
+
+
+def _resume(out: Path | None) -> dict | None:
+    """A previous run's checkpoint, if it is readable and looks like one."""
+    if out is None or not out.is_file():
+        return None
+    try:
+        prior = json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None                          # a corrupt checkpoint restarts; it never half-loads
+    return prior if isinstance(prior, dict) and isinstance(prior.get("pdfs"), dict) else None
+
+
 def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int = 1618,
-             anchors: dict | None = None) -> dict:
+             anchors: dict | None = None, out: Path | None = None, resume: bool = False) -> dict:
     report: dict = {"seed": seed, "sample_pages_per_pdf": sample, "pdfs": {}, "skipped": {}}
+    done: set[str] = set()
+    if resume and (prior := _resume(out)) is not None:
+        if prior.get("seed") != seed or prior.get("sample_pages_per_pdf") != sample:
+            # resuming across a different seed or sample size would silently mix two experiments
+            raise SystemExit(f"{out} was produced with seed={prior.get('seed')} "
+                             f"sample={prior.get('sample_pages_per_pdf')}; refusing to merge")
+        report = prior
+        done = set(prior["pdfs"])
+        print(f"resuming: {len(done)} PDF(s) already measured", file=sys.stderr)
     for pdf in pdfs:
+        if pdf.name in done:
+            continue
         declared = _declared(pdf)
         control_raw, control_err = _extract(pdf, "pdftotext")
         per_tier: dict = {}
@@ -180,6 +220,7 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
             per_tier[tier] = row
         report["pdfs"][pdf.name] = {"declared_pages": declared, "control_error": control_err,
                                     "tiers": per_tier}
+        _checkpoint(report, out)             # after EVERY document, not at the end
     # Rank. Previously the harness printed tiers in insertion order and computed no aggregate —
     # deleting "the ranking logic" would have changed nothing, because there was none.
     agg: dict = {}
@@ -207,6 +248,7 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
         agg, key=lambda t: (agg[t]["median_visual"] is None, agg[t]["order_inverted"],
                             -(agg[t]["median_visual"] or 0.0), t))
     report["aggregate"] = agg
+    _checkpoint(report, out)                 # the final write carries the ranking too
     return report
 
 
@@ -219,7 +261,13 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=1618)
     ap.add_argument("--anchors", help="JSON: {card_stem: [phrase, ...]} for the compatibility stat")
     ap.add_argument("--json", action="store_true", help="emit the raw report")
+    ap.add_argument("--out", help="checkpoint the report here after EVERY pdf — a multi-hour run "
+                                  "must survive a crash on its last document")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip PDFs already measured in --out (refuses a different seed/sample)")
     args = ap.parse_args(argv)
+    if args.resume and not args.out:
+        raise SystemExit("--resume needs --out: there is nothing to resume from")
 
     root = Path(args.pdfs).expanduser()
     pdfs = sorted(root.glob("*.pdf")) if root.is_dir() else [root]
@@ -227,7 +275,8 @@ def main(argv=None) -> int:
         raise SystemExit(f"no PDFs found in {root}")
     anchors = json.loads(Path(args.anchors).read_text()) if args.anchors else None
 
-    rep = bake_off(pdfs, args.tiers.split(","), sample=args.sample, seed=args.seed, anchors=anchors)
+    rep = bake_off(pdfs, args.tiers.split(","), sample=args.sample, seed=args.seed, anchors=anchors,
+                   out=Path(args.out).expanduser() if args.out else None, resume=args.resume)
     if args.json:
         print(json.dumps(rep, indent=2))
         return 0
