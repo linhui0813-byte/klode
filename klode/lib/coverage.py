@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["split_pages", "pages_from_docling", "Coverage", "assess"]
+__all__ = ["split_pages", "pages_from_docling", "page_text_from_docling", "Coverage", "assess"]
 
 
 def split_pages(text: str) -> list[str]:
@@ -68,6 +68,44 @@ def pages_from_docling(doc) -> tuple[int, ...] | None:
                     if isinstance(n, int) and not isinstance(n, bool):
                         found.add(n)
     return tuple(sorted(found)) or None
+
+
+def page_text_from_docling(doc) -> dict[int, str] | None:
+    """Per-page text from a docling structured result, or None when it carries no provenance.
+
+    Markdown has no page separators, so a markdown-only backend cannot be page-aligned at all —
+    which meant the visual check (the one signal not downstream of another extractor) scored
+    `None` for docling on every document, and the backend the bake-off exists to evaluate could
+    never be ranked. The structured result *does* carry the boundary: every block names its page.
+
+    Blocks are joined in document order per page, which is the order docling emits them — the same
+    order its markdown export uses, so the reading-order signal is preserved rather than sorted
+    away.
+    """
+    if not isinstance(doc, dict):
+        return None
+    out: dict[int, list[str]] = {}
+    for key in ("texts", "tables", "pictures", "body"):
+        blocks = doc.get(key)
+        if not isinstance(blocks, list):
+            continue
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            text = b.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            prov = b.get("prov")
+            if not isinstance(prov, list):
+                continue
+            for pr in prov:
+                if not isinstance(pr, dict):
+                    continue
+                n = pr.get("page_no")
+                if isinstance(n, int) and not isinstance(n, bool):
+                    out.setdefault(n, []).append(text)
+                    break            # one block belongs to one page, whatever else prov claims
+    return {n: "\n".join(v) for n, v in sorted(out.items())} or None
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""extract_bakeoff.py — rank PDF extraction backends against ground truth, not against each other.
+"""extract_bakeoff.py — rank PDF extraction backends against the rendered page, not against each other.
+
+**Which ground truth, precisely.** The truth this harness ranks on is the *rendered page*: the PDF
+rasterised and OCR-read (`visual.py`). It does NOT read `tests/fixtures/pdfs/GROUND-TRUTH.json` —
+that file labels the small hand-built corpus by construction and is consumed by
+`tests/test_pdf_corpus.py`, which checks the corpus itself. Saying "ground truth" without naming
+which one invited the reading that this harness scores against those labels; it does not, and it
+works on any PDF, labeled or not.
+
 
     python3 eval/extract_bakeoff.py --pdfs tests/fixtures/pdfs [--tiers pdftotext,docling] [-v]
 
@@ -51,6 +59,17 @@ def _declared(pdf: Path) -> int:
     return 0
 
 
+def _median(vals) -> float | None:
+    """The TRUE median — the mean of the two middle values when the count is even. Reporting
+    `sorted(v)[len(v)//2]` as "median" gave 1.0 for `[0.0, 1.0]`, i.e. the better of two backends'
+    scores was presented as the pair's midpoint."""
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return None
+    mid = len(v) // 2
+    return v[mid] if len(v) % 2 else (v[mid - 1] + v[mid]) / 2
+
+
 def _extract(pdf: Path, tier: str) -> tuple[str, str]:
     """(text, error). A missing backend is an error string, not an exception — the harness must
     report which backends it could not test rather than quietly testing fewer."""
@@ -64,6 +83,18 @@ def _extract(pdf: Path, tier: str) -> tuple[str, str]:
         return "", f"not installed ({e})"
     except (RuntimeError, OSError) as e:
         return "", f"failed ({e})"
+
+
+def _structured_pages(pdf: Path, tier: str) -> "dict[int, str] | None":
+    """Per-page text from a backend that carries structure instead of form feeds. None when the
+    backend cannot say — never inferred from the markdown, which is the guess this whole harness
+    exists to avoid."""
+    if tier != "docling":
+        return None
+    try:
+        return pdfmod.docling_page_text(pdf)
+    except (RuntimeError, OSError, ImportError):
+        return None                       # unavailable is `visual=None` with a note, not a crash
 
 
 def anchor_compatibility(text: str, anchors: list[str]) -> float | None:
@@ -93,6 +124,11 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
             # fidelity — the ranking signal
             pages = {i: t for i, t in enumerate(coverage.split_pages(text), start=1)} \
                 if "\f" in text else {}
+            if not pages:
+                # A markdown-only backend has no form feeds, so docling — the backend this harness
+                # exists to evaluate — scored `visual=None` on every document and could never be
+                # ranked. Its STRUCTURED result does carry the boundary; ask for it.
+                pages = _structured_pages(pdf, tier) or {}
             if not pages and control_raw:
                 # a backend with no page separators cannot be page-matched; say so rather than
                 # silently score it against the wrong text
@@ -102,6 +138,11 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
                 sel = visual.sample_pages(declared, sample, seed)
                 vr = visual.check_pages(pdf, pages, pages=sel, seed=seed)
                 row["visual"] = None if not vr.ran else vr.quantile(0.5)
+                # Recall is order-blind: a fully reversed page contains every OCR token and scores
+                # 1.0. Ranking on recall alone therefore could not distinguish the scrambling this
+                # harness exists to catch, even though `visual.py` had already measured it.
+                row["visual_order"] = None if not vr.ran else _median(
+                    [c.order for c in vr.checks if c.order is not None])
                 row["visual_sampled"] = list(vr.sampled)
                 if not vr.ran:
                     row["visual_note"] = vr.skipped
@@ -124,18 +165,27 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
     agg: dict = {}
     for doc in report["pdfs"].values():
         for tier, row in doc["tiers"].items():
-            a = agg.setdefault(tier, {"scored": [], "pdfs": 0, "unscored": 0})
+            a = agg.setdefault(tier, {"scored": [], "orders": [], "pdfs": 0, "unscored": 0})
             a["pdfs"] += 1
             if row.get("visual") is None:
                 a["unscored"] += 1
             else:
                 a["scored"].append(row["visual"])
+            if row.get("visual_order") is not None:
+                a["orders"].append(row["visual_order"])
     for tier, a in agg.items():
-        a["median_visual"] = (sorted(a["scored"])[len(a["scored"]) // 2] if a["scored"] else None)
+        a["median_visual"] = _median(a["scored"])
+        a["median_order"] = _median(a["orders"])
+        # Actively inverted reading order is not a lower score on the same axis — it is a different
+        # failure, and recall cannot see it. A backend measured as inverted sorts below every
+        # backend that is not, whatever its recall. Same line the integrity gate draws
+        # (`Thresholds.min_median_order`).
+        a["order_inverted"] = a["median_order"] is not None and a["median_order"] < 0.0
     # A backend with no measurable score cannot be ranked above one that was measured; it sorts
     # last and its reason is reported rather than being silently treated as zero.
     report["ranking"] = sorted(
-        agg, key=lambda t: (agg[t]["median_visual"] is None, -(agg[t]["median_visual"] or 0.0), t))
+        agg, key=lambda t: (agg[t]["median_visual"] is None, agg[t]["order_inverted"],
+                            -(agg[t]["median_visual"] or 0.0), t))
     report["aggregate"] = agg
     return report
 
@@ -163,20 +213,26 @@ def main(argv=None) -> int:
         return 0
 
     print(f"extraction bake-off — {len(pdfs)} PDF(s), seed {rep['seed']}\n")
-    print(f"{'pdf':<22}{'tier':<12}{'visual':>8}{'contain':>9}{'inflate':>9}{'order':>8}{'compat':>8}")
-    print("-" * 76)
+    print(f"{'pdf':<22}{'tier':<12}{'visual':>8}{'v.order':>8}"
+          f"{'contain':>9}{'inflate':>9}{'order':>8}{'compat':>8}")
+    print("-" * 84)
     for name, doc in rep["pdfs"].items():
         for tier, row in doc["tiers"].items():
             fmt = lambda v: "  n/a" if v is None else f"{v:.3f}"       # noqa: E731
             print(f"{name[:21]:<22}{tier:<12}{fmt(row.get('visual')):>8}"
+                  f"{fmt(row.get('visual_order')):>8}"
                   f"{fmt(row.get('containment')):>9}{fmt(row.get('inflation')):>9}"
                   f"{fmt(row.get('order_median')):>8}{fmt(row.get('anchor_compatibility')):>8}")
-    print("\nRANKING (by median visual fidelity; unmeasurable backends sort last):")
+    print("\nRANKING (by median visual fidelity; inverted reading order demoted; "
+          "unmeasurable backends last):")
     for i, tier in enumerate(rep["ranking"], 1):
         a = rep["aggregate"][tier]
         mv = "n/a" if a["median_visual"] is None else f"{a['median_visual']:.3f}"
-        print(f"  {i}. {tier:<12} median_visual={mv:<7} scored {len(a['scored'])}/{a['pdfs']} pdfs"
-              + (f"  ({a['unscored']} unscorable)" if a["unscored"] else ""))
+        mo = "n/a" if a["median_order"] is None else f"{a['median_order']:.3f}"
+        print(f"  {i}. {tier:<12} median_visual={mv:<7} order={mo:<7} "
+              f"scored {len(a['scored'])}/{a['pdfs']} pdfs"
+              + (f"  ({a['unscored']} unscorable)" if a["unscored"] else "")
+              + ("  [READING ORDER INVERTED]" if a["order_inverted"] else ""))
     if rep["skipped"]:
         print("\nnot tested:")
         for tier, why in rep["skipped"].items():

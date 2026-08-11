@@ -85,11 +85,19 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
 
 
 def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | None]:
+    """`(markdown, pages)` — the escalation path's view. See `_docling_structured`."""
+    md, pages, _text = _docling_structured(pdf, endpoint)
+    return md, pages
+
+
+def _docling_structured(pdf: Path,
+                        endpoint: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
     """Convert via a docling-serve endpoint (the GPU lives on the server; klode stays zero-dep).
-    Returns `(markdown, pages)` where `pages` is the page numbers the structured result claims to
-    cover, or None when it carries no provenance. Network/HTTP failure raises OSError and a
-    malformed/oversized response raises RuntimeError, so the escalation loop degrades to the best
-    local tier instead of crashing.
+    Returns `(markdown, pages, page_text)` where `pages` is the page numbers the structured result
+    claims to cover and `page_text` maps each page to its blocks' text — both None when the
+    response carries no provenance. Network/HTTP failure raises OSError and a malformed/oversized
+    response raises RuntimeError, so the escalation loop degrades to the best local tier instead of
+    crashing.
 
     `json` is requested alongside `md` so candidate page coverage can be read DIRECTLY from
     `prov[].page_no` rather than inferred from the control — the control cannot answer for the
@@ -123,7 +131,8 @@ def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | No
             structured = json.loads(structured)
         except ValueError:
             structured = None
-    return md, coverage.pages_from_docling(structured)
+    return (md, coverage.pages_from_docling(structured),
+            coverage.page_text_from_docling(structured))
 
 
 def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
@@ -132,9 +141,25 @@ def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, 
     if endpoint:
         if not str(endpoint).lower().startswith(("http://", "https://")):
             raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-        return _docling_remote(pdf, endpoint)
+        return _docling_remote(pdf, endpoint.rstrip("/"))   # or the URL becomes `…//v1/convert`
     md = _docling(pdf, lang)
     return md, None          # the local path has a DoclingDocument but no export wired yet
+
+
+def docling_page_text(pdf: Path) -> "dict[int, str] | None":
+    """Per-page candidate text from docling's structured result, or None when it cannot say.
+
+    Only the remote path can answer today: `_docling_remote` requests `json` alongside `md`, so the
+    per-block `prov[].page_no` is available. The local `DocumentConverter` path has a
+    `DoclingDocument` in hand but no export wired, and inventing page text from markdown would be
+    exactly the inference this module refuses to make.
+    """
+    endpoint = os.environ.get(DOCLING_ENV)
+    if not endpoint:
+        return None
+    if not str(endpoint).lower().startswith(("http://", "https://")):
+        raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
+    return _docling_structured(pdf, endpoint.rstrip("/"))[2]
 
 
 def _docling(pdf: Path, lang: str = "eng") -> str:
@@ -194,14 +219,14 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
         text = fn(pdf, lang)
         return Choice(tier, text, corruption_score(text))
 
-    def _better(cur: Choice, name: str, text: str, note: str) -> Choice:
+    def _better(cur: Choice, name: str, text: str, note: str, pages=None) -> Choice:
         # never replace usable text with an EMPTY/short OCR result (an empty result scores 0 and
         # would otherwise look "clean"); otherwise prefer strictly-lower corruption.
         if not text.split():
             return cur
         score = corruption_score(text)
         if not cur.text.split() or score <= cur.score:
-            return Choice(name, text, score, note)
+            return Choice(name, text, score, note, pages=pages)
         return cur
 
     # Tier 1 — pdftotext (cheap). A missing/failing Poppler is an escalation reason, not an abort.
@@ -217,16 +242,23 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
     try:                                                  # Tier 2 — OCR
         best = _better(best, "xberg", _xberg(pdf, lang), f"escalated: pdftotext scored {best.score:.1f}")
     except ImportError as e:
-        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}")
+        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}",
+                      pages=best.pages)
     except (RuntimeError, OSError) as e:                  # backend runtime failure, not a bug
-        best = Choice(best.tier, best.text, best.score, f"{best.note}; xberg failed ({e})")
+        best = Choice(best.tier, best.text, best.score,
+                      f"{best.note}; xberg failed ({e})", pages=best.pages)
 
     if not best.text.split() or best.score >= CLEAN_THRESHOLD:   # still unusable — Tier 3
         try:
-            best = _better(best, "docling", _docling(pdf, lang),
-                           f"escalated to docling: prior scored {best.score:.1f}")
+            # `_docling_with_pages`, not `_docling`: the auto path used the text-only extractor, so
+            # an auto-escalated docling win arrived with `pages=None` even when the backend had
+            # supplied per-block provenance — and coverage then abstained on evidence it had.
+            md, pages = _docling_with_pages(pdf, lang)
+            best = _better(best, "docling", md,
+                           f"escalated to docling: prior scored {best.score:.1f}", pages=pages)
         except (ImportError, RuntimeError, OSError) as e:
-            best = Choice(best.tier, best.text, best.score, f"{best.note}; docling absent ({e})")
+            best = Choice(best.tier, best.text, best.score,
+                          f"{best.note}; docling absent ({e})", pages=best.pages)
     return best
 
 

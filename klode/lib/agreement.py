@@ -98,6 +98,19 @@ class Agreement:
     candidate_tokens: int
     windows: tuple[Window, ...]
 
+    def __post_init__(self):
+        # A NaN measurement makes every threshold comparison False, so the gate reads "nothing
+        # exceeded a limit" and returns `verified` on numbers that mean nothing. Reject it where it
+        # originates rather than letting it travel into a verdict and a provenance row.
+        import math
+        for name in ("containment", "inflation"):
+            v = getattr(self, name)
+            if not math.isfinite(v):
+                raise ValueError(f"{name} must be finite, got {v!r}")
+        for w in self.windows:
+            if w.order is not None and not math.isfinite(w.order):
+                raise ValueError(f"window {w.index} order must be finite or None, got {w.order!r}")
+
     @property
     def measured(self) -> tuple[float, ...]:
         return tuple(w.order for w in self.windows if w.order is not None)
@@ -105,6 +118,24 @@ class Agreement:
     @property
     def abstained_windows(self) -> int:
         return sum(1 for w in self.windows if w.abstained)
+
+    @property
+    def measured_share(self) -> float:
+        """Fraction of windows whose order could actually be measured. A verdict drawn from a
+        minority of the document is a verdict about the minority."""
+        return (len(self.measured) / len(self.windows)) if self.windows else 0.0
+
+    @property
+    def median(self) -> float | None:
+        """The TRUE median of the measured window orders — the mean of the two middle values when
+        the count is even. `quantile(0.5)` is a nearest-rank quantile, which for an even count
+        returns one of the two middle observations; calling that "the median" reported 1.0 for
+        `[0.0, 1.0]`."""
+        vals = sorted(self.measured)
+        if not vals:
+            return None
+        mid = len(vals) // 2
+        return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
 
     def quantile(self, q: float) -> float | None:
         """Nearest-rank quantile of the measured window orders, or None when nothing was measured.

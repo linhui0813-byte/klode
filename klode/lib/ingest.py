@@ -56,6 +56,39 @@ def _declared_pages(source: Path) -> int:
     return 0
 
 
+_PAGE_MARK = "" * 16
+"""A page boundary that survives normalization. Chosen against every rule in `normalize.py`:
+16 private-use characters are too long for the OCR-noise class (≤12), carry no letter (so
+`running_head` never matches), are not control bytes (so `repair_ctrl` leaves them), and are not
+ligature or dictionary material. A bare `\\f` does not survive — `repair_ctrl` strips it to a
+space, which is why page boundaries have to be re-expressed before normalizing."""
+
+
+def _normalize_control(control_raw: str, dic) -> "tuple[str, list[str] | None]":
+    """Normalize the control ONCE, as a whole document, keeping page boundaries.
+
+    Normalizing page-at-a-time is a DIFFERENT pipeline from the one the candidate went through.
+    `strip_page_furniture` only recognizes a running head that repeats ≥5 times *across the text it
+    is given*, so a head stripped from the whole-document candidate survives in a page-at-a-time
+    control — six pages of "CHAPTER ONE" become six retained lines against zero. The control then
+    holds tokens the candidate correctly dropped, and containment falls (and inflation with it) for
+    a faithful extraction: a manufactured failure.
+
+    Returns `(text, pages)`. `pages is None` means the boundaries could not be recovered and the
+    caller must fall back to fixed-size windows — a weaker order guarantee (documented in
+    `agreement.compare`), but never a wrong containment number.
+    """
+    pages = coverage.split_pages(control_raw)
+    if len(pages) < 2 or _PAGE_MARK in control_raw:
+        return process(control_raw, dic)[0], None
+    cleaned = process(f"\n\n{_PAGE_MARK}\n\n".join(pages), dic)[0]
+    if cleaned.count(_PAGE_MARK) != len(pages) - 1:
+        # normalization consumed or duplicated a marker; report the text without page claims
+        return process(control_raw, dic)[0], None
+    out = cleaned.split(_PAGE_MARK)
+    return "\n".join(out), out
+
+
 def verify_extraction(cfg: Config, source: Path, ext, cleaned: str, dic) -> "integrity.Integrity":
     """Measure the candidate against a control and the page counts.
 
@@ -76,11 +109,12 @@ def verify_extraction(cfg: Config, source: Path, ext, cleaned: str, dic) -> "int
     except (RuntimeError, OSError) as e:
         return integrity.Integrity(integrity.ABSTAINED, (f"control extraction unavailable ({e})",),
                                    {}, integrity.Thresholds().as_dict())
-    # Normalize each control PAGE separately so real page boundaries survive into `compare`.
-    # Without them the window is a fixed 400-token proxy, and a book with short pages can have
-    # every page internally reversed while each straddling window still scores ~0.98.
-    control_pages = [process(pg, dic)[0] for pg in coverage.split_pages(control_raw)]
-    control_clean = "\n".join(control_pages)             # same pipeline both sides, or it is not
+    # Real page boundaries must survive into `compare` — without them the window is a fixed
+    # 400-token proxy, and a book with short pages can have every page internally reversed while
+    # each straddling window still scores ~0.98. They are re-expressed as a marker rather than
+    # recovered by normalizing page-at-a-time, which would silently change the pipeline (see
+    # `_normalize_control`).
+    control_clean, control_pages = _normalize_control(control_raw, dic)
     agr = agreement.compare(control_clean, cleaned, control_pages=control_pages)
     cov = coverage.assess(_declared_pages(source), control_raw, ext.pages)
     return integrity.decide(agr, cov)
@@ -174,6 +208,20 @@ def _provenance_row(cid, shelf, source, src_sha, ext, cleaned, stats, verdict, o
     }
 
 
+def _rollback_provenance(prov_path: Path, before: int, written: int) -> None:
+    """Remove a just-appended row after the promotion it describes failed.
+
+    Truncates ONLY when the log is still exactly `before + written` bytes — i.e. nothing else has
+    appended since. A concurrent ingest's row must never be destroyed to tidy up this one's, so a
+    surprising size means the row is left in place and the caller's exception still propagates.
+    """
+    try:
+        if prov_path.stat().st_size == before + written:
+            os.truncate(prov_path, before)
+    except OSError:
+        pass          # best effort: the failure being handled is the one worth reporting
+
+
 def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
            tier: str = "auto", lang: str = "eng", force: bool = False,
            fmt: str | None = None, verify: bool = True,
@@ -241,16 +289,21 @@ def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
     out_sha = hashlib.sha256(payload).hexdigest()        # text-mode newline translation would make a
     #                                                      hash of `cleaned` disagree with the file.
 
-    # The provenance row is assembled and appended BEFORE the artifact is promoted. Promoting first
-    # and recording second meant an unwritable PROVENANCE.jsonl produced failure PLUS a shelf
-    # mutation — precisely the "never both" this pipeline claims. Now a provenance failure happens
-    # while the shelf is still untouched.
-    prov = _provenance_row(cid, shelf, source, src_sha, ext, cleaned, stats, verdict, out_sha,
-                           q_before, q_after)
-    prov_path = cfg.lib / "PROVENANCE.jsonl"
-    with open(prov_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(prov, ensure_ascii=False) + "\n")
-
+    # Ordering exists to make "success WITH an artifact, or failure with NOTHING changed" true in
+    # both directions. Promoting first and recording second left a shelf artifact behind when
+    # PROVENANCE.jsonl was unwritable; recording first and promoting second left a durable row for
+    # an artifact that never landed. So every fallible step runs BEFORE either side is mutated:
+    #
+    #   1. write the payload to a temp file in the destination directory (fallible; a dotfile temp
+    #      is not the artifact, and it is removed on any failure)
+    #   2. append the provenance row (fallible; the shelf is still untouched)
+    #   3. os.replace (atomic, same directory — after step 1 succeeded there is no ENOSPC, no
+    #      EXDEV, no missing parent left to fail on)
+    #
+    # If step 3 fails anyway, step 2 is rolled back by truncating the row back off the log — and
+    # only when the log is still exactly as this call left it, so a concurrent ingest's row is
+    # never destroyed.
+    #
     # mkstemp: an UNPREDICTABLE name, created O_EXCL at 0600, in the destination's own directory.
     # A fixed `<dest>.tmp` is guessable, and opening it with write_text FOLLOWS a symlink an
     # attacker planted there, truncating the target. Same defect class already fixed in
@@ -263,7 +316,19 @@ def ingest(cfg: Config, source: Path, shelf: str, *, card_id: str | None = None,
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(tmp, 0o644)
-        os.replace(tmp, dest)
+
+        prov = _provenance_row(cid, shelf, source, src_sha, ext, cleaned, stats, verdict, out_sha,
+                               q_before, q_after)
+        prov_path = cfg.lib / "PROVENANCE.jsonl"
+        line = json.dumps(prov, ensure_ascii=False) + "\n"
+        before = prov_path.stat().st_size if prov_path.exists() else 0
+        with open(prov_path, "a", encoding="utf-8") as f:
+            f.write(line)
+        try:
+            os.replace(tmp, dest)
+        except OSError:
+            _rollback_provenance(prov_path, before, len(line.encode("utf-8")))
+            raise
     except OSError:
         tmp.unlink(missing_ok=True)                      # don't orphan a partial temp on failure
         raise

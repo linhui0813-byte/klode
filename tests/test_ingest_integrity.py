@@ -11,6 +11,7 @@ produces the shelf artifact.
 """
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -144,6 +145,56 @@ class TransactionalSemantics(unittest.TestCase):
         r = ingest(self.cfg, self.src, "books", card_id="retry")   # no --force needed
         self.assertEqual(self._shelf(), ["retry.txt"])
         self.assertIsNotNone(r)
+
+    def test_an_unwritable_provenance_log_leaves_no_shelf_artifact(self):
+        # the first direction: promote-then-record left a shelf artifact behind when the log could
+        # not be appended — failure PLUS a mutation.
+        prov = self.tmp / "library" / "PROVENANCE.jsonl"
+        prov.parent.mkdir(parents=True, exist_ok=True)
+        prov.write_text("", encoding="utf-8")
+        os.chmod(prov, 0o400)
+        self.addCleanup(os.chmod, prov, 0o600)
+        if os.access(prov, os.W_OK):                      # root ignores the mode
+            self.skipTest("running as a user who can write a read-only file")
+        with self.assertRaises(OSError):
+            ingest(self.cfg, self.src, "books", card_id="noprov")
+        self.assertEqual(self._shelf(), [])
+
+    def test_a_failed_promotion_leaves_no_provenance_row(self):
+        # the OTHER direction, introduced by fixing the first: recording before promoting left a
+        # durable row describing an artifact that never landed.
+        import klode.lib.ingest as ing
+        real_replace = ing.os.replace
+
+        def boom(src, dst):
+            raise OSError("simulated promotion failure")
+        ing.os.replace = boom
+        self.addCleanup(setattr, ing.os, "replace", real_replace)
+        prov = self.tmp / "library" / "PROVENANCE.jsonl"
+        prov.parent.mkdir(parents=True, exist_ok=True)
+        prov.write_text('{"id": "earlier"}\n', encoding="utf-8")
+        with self.assertRaises(OSError):
+            ingest(self.cfg, self.src, "books", card_id="norow")
+        self.assertEqual(self._shelf(), [])
+        self.assertEqual(prov.read_text(encoding="utf-8"), '{"id": "earlier"}\n',
+                         "the rolled-back row must go, and the earlier one must stay")
+        self.assertEqual(list((self.tmp / "library" / "books").glob(".*")), [],
+                         "the temp file must not be orphaned either")
+
+    def test_a_concurrent_row_is_never_destroyed_by_a_rollback(self):
+        # the rollback truncates a log; it must refuse when anything else has appended since, or
+        # tidying up this ingest deletes another one's record
+        from klode.lib.ingest import _rollback_provenance
+        prov = self.tmp / "rollback.jsonl"
+        prov.write_text("a\n", encoding="utf-8")
+        before = 2
+        prov.write_text("a\nmine\nsomeone-else\n", encoding="utf-8")
+        _rollback_provenance(prov, before, len("mine\n"))
+        self.assertEqual(prov.read_text(encoding="utf-8"), "a\nmine\nsomeone-else\n")
+        # ...and it does truncate when the log is exactly as this call left it
+        prov.write_text("a\nmine\n", encoding="utf-8")
+        _rollback_provenance(prov, before, len("mine\n"))
+        self.assertEqual(prov.read_text(encoding="utf-8"), "a\n")
 
     def test_accept_unverified_writes_and_records_the_failure(self):
         import klode.lib.ingest as ing
@@ -335,6 +386,107 @@ class FailOpensClosedInAudit(unittest.TestCase):
         a = "共通 a1 a2 a3 a4 a5 a6 a7 a8 完全に異なる内容がここにあります"
         b = "共通 a1 a2 a3 a4 a5 a6 a7 a8 совершенно другой текст здесь"
         self.assertLess(self._agree(a, b).containment, 0.95)
+
+    # ---- round 3: fail-opens an independent verification pass found still open ----
+
+    def test_a_non_finite_measurement_cannot_reach_a_verdict(self):
+        # NaN makes every threshold comparison False, so the gate saw "nothing exceeded a limit"
+        # and returned `verified` with NaN in the metrics — and in the provenance row.
+        with self.assertRaises(ValueError):
+            agreement.Agreement(containment=float("nan"), inflation=1.0, control_tokens=10,
+                                candidate_tokens=10, windows=())
+        with self.assertRaises(ValueError):
+            agreement.Agreement(containment=1.0, inflation=1.0, control_tokens=10,
+                                candidate_tokens=10,
+                                windows=(agreement.Window(0, 0, 9, float("nan")),))
+
+    def test_order_measured_on_only_half_the_windows_is_not_verified(self):
+        # one measurable page + one page too short to measure is a verdict about one page.
+        w = (agreement.Window(0, 0, 9, 1.0), agreement.Window(1, 10, 7, None))
+        a = agreement.Agreement(containment=1.0, inflation=1.0, control_tokens=20,
+                                candidate_tokens=20, windows=w)
+        self.assertEqual(a.measured_share, 0.5)
+        v = integrity.decide(a, None)
+        self.assertEqual(v.state, integrity.ABSTAINED)
+        self.assertTrue(any("not a majority" in r for r in v.reasons))
+        self.assertEqual(v.metrics["order_measured_share"], 0.5)
+
+    def test_a_strict_majority_of_measured_windows_still_verifies(self):
+        w = (agreement.Window(0, 0, 9, 1.0), agreement.Window(1, 10, 9, 1.0),
+             agreement.Window(2, 20, 7, None))
+        a = agreement.Agreement(containment=1.0, inflation=1.0, control_tokens=30,
+                                candidate_tokens=30, windows=w)
+        self.assertEqual(integrity.decide(a, None).state, integrity.VERIFIED)
+
+    def test_coverage_with_an_unknown_declared_page_count_is_not_verified(self):
+        # `declared=0` means pdfinfo could not say. `candidate_missing` is then empty for the
+        # trivial reason that there is nothing to be missing from — which read as a clean pass.
+        cov = coverage.assess(0, "", candidate_pages=(1,))
+        self.assertTrue(cov.candidate_known)
+        v = integrity.decide(None, cov)
+        self.assertEqual(v.state, integrity.ABSTAINED)
+        self.assertFalse(v.ok)
+
+    def test_the_reported_order_median_is_a_median_not_a_nearest_rank_pick(self):
+        # `quantile(0.5)` on [-1.0, 1.0] returns an OBSERVATION (-1.0 or 1.0 depending on
+        # rounding), which is not the midpoint the field name promises.
+        w = (agreement.Window(0, 0, 9, -1.0), agreement.Window(1, 10, 9, 1.0))
+        a = agreement.Agreement(containment=1.0, inflation=1.0, control_tokens=20,
+                                candidate_tokens=20, windows=w)
+        self.assertEqual(a.median, 0.0)
+        self.assertIn(a.quantile(0.50), (-1.0, 1.0))        # a nearest-rank pick, by definition
+        v = integrity.decide(a, None)
+        self.assertEqual(v.metrics["order_median"], 0.0,    # the RECORDED number, not just the API
+                         "the provenance row must carry a median, not one of the two observations")
+        # ...and the inverted page is still caught, by the worst-window gate rather than the median
+        self.assertEqual(v.state, integrity.FAILED)
+
+
+class ControlNormalizationMatchesTheCandidatesPipeline(unittest.TestCase):
+    """Both sides must go through the SAME normalization, or the comparison manufactures failures.
+
+    Normalizing the control page-at-a-time is a different pipeline: `strip_page_furniture` only
+    recognizes a running head that repeats >=5 times across the text it is given, so a head the
+    whole-document candidate lost survives on every control page.
+    """
+
+    def _pages(self, n=6):
+        return [f"CHAPTER ONE\n\npage {i} body text alpha beta gamma delta {i}\n"
+                for i in range(1, n + 1)]
+
+    def test_running_heads_are_stripped_from_the_control_too(self):
+        from klode.lib.ingest import _normalize_control
+        raw = "\f".join(self._pages())
+        text, pages = _normalize_control(raw, set())
+        self.assertNotIn("CHAPTER ONE", text)
+        self.assertIsNotNone(pages)
+        self.assertEqual(len(pages), 6)
+
+    def test_page_boundaries_survive_whole_document_normalization(self):
+        from klode.lib.ingest import _normalize_control
+        raw = "\f".join(self._pages())
+        _text, pages = _normalize_control(raw, set())
+        for i, page in enumerate(pages, start=1):
+            self.assertIn(f"delta {i}", page, f"page {i} lost its own content")
+
+    def test_the_control_and_candidate_agree_when_the_extraction_is_faithful(self):
+        # the manufactured failure: page-wise control kept 6 running heads the candidate dropped,
+        # so containment fell for an extraction that is byte-identical after normalization
+        from klode.lib.ingest import _normalize_control
+        from klode.lib.normalize import process
+        raw = "\f".join(self._pages())
+        control, pages = _normalize_control(raw, set())
+        candidate = process(raw, set())[0]                # the pipeline every candidate goes through
+        a = agreement.compare(control, candidate, control_pages=pages)
+        self.assertGreaterEqual(a.containment, 0.99)
+        self.assertAlmostEqual(a.inflation, 1.0, places=2)
+
+    def test_unrecoverable_boundaries_degrade_to_windows_rather_than_to_a_wrong_number(self):
+        from klode.lib.ingest import _PAGE_MARK, _normalize_control
+        raw = f"{_PAGE_MARK} a b c\fd e f"                 # the marker already occurs in the source
+        text, pages = _normalize_control(raw, set())
+        self.assertIsNone(pages)                           # no page claim...
+        self.assertTrue(text.strip())                      # ...but the text is still normalized once
 
 
 if __name__ == "__main__":

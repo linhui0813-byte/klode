@@ -74,6 +74,49 @@ class DoclingProvenance(unittest.TestCase):
         self.assertEqual(coverage.pages_from_docling(doc), (5,))
 
 
+class PageTextFromStructure(unittest.TestCase):
+    """Markdown has no form feeds, so a markdown-only backend scored `visual=None` on every
+    document — docling, the backend the bake-off exists to evaluate, could never be ranked at all.
+    The structured result carries the page boundary the markdown lost."""
+
+    def test_blocks_are_grouped_under_their_declared_page(self):
+        doc = {"texts": [{"text": "alpha", "prov": [{"page_no": 1}]},
+                         {"text": "beta", "prov": [{"page_no": 2}]},
+                         {"text": "gamma", "prov": [{"page_no": 1}]}]}
+        self.assertEqual(coverage.page_text_from_docling(doc),
+                         {1: "alpha\ngamma", 2: "beta"})
+
+    def test_document_order_is_preserved_within_a_page(self):
+        # sorting the blocks would destroy the reading-order signal the visual check measures
+        doc = {"texts": [{"text": "zulu", "prov": [{"page_no": 1}]},
+                         {"text": "alpha", "prov": [{"page_no": 1}]}]}
+        self.assertEqual(coverage.page_text_from_docling(doc)[1], "zulu\nalpha")
+
+    def test_tables_and_pictures_contribute_their_text(self):
+        doc = {"tables": [{"text": "| a | b |", "prov": [{"page_no": 2}]}],
+               "pictures": [{"text": "caption", "prov": [{"page_no": 2}]}]}
+        self.assertEqual(coverage.page_text_from_docling(doc), {2: "| a | b |\ncaption"})
+
+    def test_a_block_claiming_two_pages_is_counted_once(self):
+        doc = {"texts": [{"text": "spanning", "prov": [{"page_no": 1}, {"page_no": 2}]}]}
+        self.assertEqual(coverage.page_text_from_docling(doc), {1: "spanning"})
+
+    def test_cannot_say_is_None_not_an_empty_map(self):
+        for doc in (None, {}, "not a dict", {"texts": []},
+                    {"texts": [{"text": "x"}]},                  # no provenance
+                    {"texts": [{"prov": [{"page_no": 1}]}]},     # no text
+                    {"texts": [{"text": "   ", "prov": [{"page_no": 1}]}]}):
+            with self.subTest(doc=doc):
+                self.assertIsNone(coverage.page_text_from_docling(doc))
+
+    def test_malformed_input_is_ignored_not_crashed_on(self):
+        doc = {"texts": [{"text": 7, "prov": [{"page_no": 1}]},
+                         {"text": "ok", "prov": "junk"},
+                         "junk",
+                         {"text": "real", "prov": [{"page_no": 4}]}]}
+        self.assertEqual(coverage.page_text_from_docling(doc), {4: "real"})
+
+
 class ControlVersusCandidate(unittest.TestCase):
     """The defect this module exists to prevent."""
 

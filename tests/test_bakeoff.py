@@ -66,50 +66,115 @@ class Ranking(unittest.TestCase):
     deleting "the ranking logic" would have changed nothing. Two backends with known-opposite
     fidelity must come back in the right order."""
 
+    # Each backend emits DISTINGUISHABLE text so one mocked `check_pages` can score them
+    # differently within a SINGLE bake_off run. Running each backend in its own one-tier report and
+    # asserting `ranking == ["good"]` proved only that a list of one sorts to itself — production
+    # ranking between two backends was never exercised.
+    GOOD, POOR, REVERSED = "g1 g2 g3\f", "p1 p2 p3\f", "r1 r2 r3\f"
+
     def setUp(self):
         real_ex, real_vis = bake.pdfmod._EXTRACTORS, bake.visual.check_pages
         self.addCleanup(setattr, bake.pdfmod, "_EXTRACTORS", real_ex)
         self.addCleanup(setattr, bake.visual, "check_pages", real_vis)
         bake.pdfmod._EXTRACTORS = dict(real_ex)
-        bake.pdfmod._EXTRACTORS["good"] = lambda p, l: "a b c\f"
-        bake.pdfmod._EXTRACTORS["poor"] = lambda p, l: "a b c\f"
-        scores = {"good": (10, 10), "poor": (10, 2)}
-        self._which = "good"
-        # signature must match the real one: check_pages(pdf, candidate_page_text, *, pages, seed)
+        bake.pdfmod._EXTRACTORS["good"] = lambda p, l: self.GOOD
+        bake.pdfmod._EXTRACTORS["poor"] = lambda p, l: self.POOR
+        bake.pdfmod._EXTRACTORS["reversed"] = lambda p, l: self.REVERSED
+        bake.pdfmod._EXTRACTORS["unmeasurable"] = lambda p, l: "u1 u2 u3\f"
+
+        # (ocr_tokens, matched, order) keyed by the candidate text, so the mock scores whichever
+        # backend it is actually being called for
+        table = {self.GOOD.strip(): (10, 10, 1.0),
+                 self.POOR.strip(): (10, 2, 1.0),
+                 self.REVERSED.strip(): (10, 10, -1.0)}
+
         def fake(pdf, candidate_page_text, *, pages, seed):
-            ocr, matched = scores[self._which]
-            return bake.visual.VisualReport(seed=seed, sampled=pages,
-                                            checks=(bake.visual.PageCheck(1, ocr, matched),))
+            key = "".join(candidate_page_text.values()).strip()
+            if key not in table:            # the "unmeasurable" backend: ran, produced no score
+                return bake.visual.VisualReport(seed=seed, sampled=pages,
+                                                checks=(bake.visual.PageCheck(1, 0, 0, error="no ocr"),))
+            ocr, matched, order = table[key]
+            return bake.visual.VisualReport(
+                seed=seed, sampled=pages,
+                checks=(bake.visual.PageCheck(1, ocr, matched, order=order),))
         self._fake = fake
 
     def test_the_better_backend_ranks_first(self):
         bake.visual.check_pages = self._fake
-        # run each backend separately so the mock can score them differently, then merge
-        self._which = "good"
-        good = bake.bake_off([PDFS / "single-page.pdf"], ["good"], sample=1)
-        self._which = "poor"
-        poor = bake.bake_off([PDFS / "single-page.pdf"], ["poor"], sample=1)
-        self.assertGreater(good["aggregate"]["good"]["median_visual"],
-                           poor["aggregate"]["poor"]["median_visual"])
-        self.assertEqual(good["ranking"], ["good"])
-        self.assertEqual(poor["ranking"], ["poor"])
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["poor", "good"], sample=1)
+        self.assertEqual(rep["ranking"], ["good", "poor"])       # NOT insertion order
+        self.assertGreater(rep["aggregate"]["good"]["median_visual"],
+                           rep["aggregate"]["poor"]["median_visual"])
+
+    def test_a_backend_with_inverted_reading_order_is_demoted_below_a_worse_recall(self):
+        # recall is order-blind: `reversed` matches every OCR token and outscores `poor` on recall
+        # alone. Ranking must still put it last — the scrambling is the failure this harness exists
+        # to catch, and it was measured and then discarded.
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["reversed", "poor"], sample=1)
+        agg = rep["aggregate"]
+        self.assertGreater(agg["reversed"]["median_visual"], agg["poor"]["median_visual"])
+        self.assertTrue(agg["reversed"]["order_inverted"])
+        self.assertEqual(rep["ranking"], ["poor", "reversed"])
 
     def test_an_unmeasurable_backend_sorts_last_rather_than_scoring_zero(self):
-        rep = {"pdfs": {"x.pdf": {"tiers": {"measured": {"visual": 0.4},
-                                            "unmeasurable": {"visual": None}}}}, "skipped": {}}
-        # exercise the real aggregation path on a hand-built report
-        agg = {}
-        for doc in rep["pdfs"].values():
-            for tier, row in doc["tiers"].items():
-                a = agg.setdefault(tier, {"scored": [], "pdfs": 0, "unscored": 0})
-                a["pdfs"] += 1
-                (a["scored"].append(row["visual"]) if row["visual"] is not None
-                 else a.__setitem__("unscored", a["unscored"] + 1))
-        for t, a in agg.items():
-            a["median_visual"] = sorted(a["scored"])[len(a["scored"]) // 2] if a["scored"] else None
-        ranking = sorted(agg, key=lambda t: (agg[t]["median_visual"] is None,
-                                             -(agg[t]["median_visual"] or 0.0), t))
-        self.assertEqual(ranking, ["measured", "unmeasurable"])
+        # through the REAL bake_off. The previous version reimplemented the aggregation inline, so
+        # deleting the production ranking left it green.
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["unmeasurable", "poor"], sample=1)
+        self.assertIsNone(rep["aggregate"]["unmeasurable"]["median_visual"])
+        self.assertEqual(rep["ranking"], ["poor", "unmeasurable"])
+
+    def test_the_reported_median_is_a_median_not_the_upper_of_two(self):
+        # `sorted(v)[len(v)//2]` reported 1.0 for [0.0, 1.0] — the better score presented as the
+        # midpoint of the pair, which flatters a backend that failed half its documents.
+        self.assertEqual(bake._median([0.0, 1.0]), 0.5)
+        self.assertEqual(bake._median([0.2, 0.4, 0.9]), 0.4)
+        self.assertIsNone(bake._median([None, None]))
+
+
+class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
+    """docling emits markdown with no form feeds, so page alignment failed and `visual` was None on
+    every document — the backend the harness exists to evaluate was the one it could never score."""
+
+    def setUp(self):
+        real_ex = bake.pdfmod._EXTRACTORS
+        self.addCleanup(setattr, bake.pdfmod, "_EXTRACTORS", real_ex)
+        bake.pdfmod._EXTRACTORS = dict(real_ex)
+        bake.pdfmod._EXTRACTORS["docling"] = lambda p, l: "# Heading\n\nalpha beta gamma"  # no \f
+        real_vis, real_pt = bake.visual.check_pages, bake.pdfmod.docling_page_text
+        self.addCleanup(setattr, bake.visual, "check_pages", real_vis)
+        self.addCleanup(setattr, bake.pdfmod, "docling_page_text", real_pt)
+        self.seen = {}
+
+        def fake(pdf, candidate_page_text, *, pages, seed):
+            self.seen.update(candidate_page_text)
+            return bake.visual.VisualReport(
+                seed=seed, sampled=pages,
+                checks=(bake.visual.PageCheck(1, 10, 9, order=1.0),))
+        bake.visual.check_pages = fake
+
+    def test_structured_provenance_supplies_the_pages_markdown_lost(self):
+        bake.pdfmod.docling_page_text = lambda pdf: {1: "alpha beta gamma"}
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
+        row = rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]
+        self.assertIsNotNone(row["visual"], "docling was scored, not skipped")
+        self.assertEqual(self.seen, {1: "alpha beta gamma"})
+        self.assertEqual(rep["ranking"], ["docling"])
+
+    def test_a_backend_that_cannot_supply_pages_is_still_reported_not_guessed_at(self):
+        bake.pdfmod.docling_page_text = lambda pdf: None
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
+        row = rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]
+        self.assertIsNone(row["visual"])
+        self.assertIn("no page separators", row["visual_note"])
+
+    def test_an_unreachable_endpoint_is_an_unscored_row_not_a_crash(self):
+        def boom(pdf):
+            raise OSError("connection refused")
+        bake.pdfmod.docling_page_text = boom
+        rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
+        self.assertIsNone(rep["pdfs"]["single-page.pdf"]["tiers"]["docling"]["visual"])
 
 
 class HarnessBehaviour(unittest.TestCase):

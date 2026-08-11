@@ -95,18 +95,24 @@ class CorpusMatchesGroundTruth(unittest.TestCase):
                                       f"{name}: {token!r} belongs on page {i+1} but is not there")
 
     def test_two_column_pages_extract_the_left_column_before_the_right(self):
-        # the ordering claim the corpus was built to make checkable
+        # The ordering claim the corpus was built to make checkable — asserted over the WHOLE
+        # column, not just its first line. Comparing only the first left marker against the first
+        # right marker accepts row-interleaved output (L1 R1 L2 R2 …), which is exactly the
+        # two-column reading-order failure, since L1 still precedes R1.
         from klode.lib.coverage import split_pages
         meta = TRUTH["files"]["two-column.pdf"]
         out = subprocess.run(["pdftotext", str(PDFS / "two-column.pdf"), "-"],
                              capture_output=True, text=True, timeout=60).stdout
         for i, page in enumerate(split_pages(out)[:meta["pages"]]):
-            first_left = meta["text"][i]["left"][0].split()[-1]
-            first_right = meta["text"][i]["right"][0].split()[-1]
-            self.assertIn(first_left, page)
-            self.assertIn(first_right, page)
-            self.assertLess(page.index(first_left), page.index(first_right),
-                            f"page {i+1}: the right column was read before the left")
+            lefts = [l.split()[-1] for l in meta["text"][i]["left"]]
+            rights = [l.split()[-1] for l in meta["text"][i]["right"]]
+            for token in lefts + rights:
+                self.assertIn(token, page, f"page {i+1}: {token!r} missing entirely")
+            last_left = max(page.index(t) for t in lefts)
+            first_right = min(page.index(t) for t in rights)
+            self.assertLess(last_left, first_right,
+                            f"page {i+1}: the columns interleave — the whole left column must "
+                            f"precede the whole right one")
 
     def test_the_blank_page_really_is_blank(self):
         meta = TRUTH["files"]["blank-middle.pdf"]

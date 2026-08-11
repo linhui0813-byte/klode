@@ -113,6 +113,20 @@ class InvalidInputFailsLoud(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / ".klode").mkdir()
         self.file = self.tmp / ".klode" / "settings.toml"
+        # These tests SET KLODE_* vars and then pop them unconditionally, which deletes a value the
+        # caller had before the suite ran. Same defect Precedence.setUp already fixed; the class
+        # boundary is not a reason for it to survive here.
+        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
+        for var in self._saved:
+            os.environ.pop(var, None)
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for var, val in self._saved.items():
+            if val is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = val
 
     def test_an_unknown_key_is_rejected_rather_than_ignored(self):
         # silently dropping it is how a setting "does nothing" with no explanation

@@ -45,11 +45,16 @@ class Thresholds:
     min_median_order: float = 0.0     # median window ACTIVELY inverted, not merely noisy
     min_worst_order: float = -0.5     # ANY single page this badly scrambled is a finding; a
     #                                   median-only gate let one fully reversed page in ten pass
+    min_measured_share: float = 0.5   # a STRICT majority of windows must have yielded an order.
+    #                                   With half the document's reading order unknown, "verified"
+    #                                   is a claim about the other half. Abstention is the honest
+    #                                   answer and it does not block promotion.
 
     def as_dict(self) -> dict:
         return {"min_containment": self.min_containment, "max_inflation": self.max_inflation,
                 "min_inflation": self.min_inflation, "min_median_order": self.min_median_order,
-                "min_worst_order": self.min_worst_order}
+                "min_worst_order": self.min_worst_order,
+                "min_measured_share": self.min_measured_share}
 
     def __post_init__(self):
         import math
@@ -58,6 +63,9 @@ class Thresholds:
                 raise ValueError(f"threshold {name} must be finite, got {v}")
         if self.min_inflation > self.max_inflation:
             raise ValueError("min_inflation must not exceed max_inflation")
+        if not 0.0 <= self.min_measured_share <= 1.0:
+            raise ValueError("min_measured_share is a fraction of windows and must be in [0, 1], "
+                             f"got {self.min_measured_share}")
 
 
 STATES = (VERIFIED, FAILED, ABSTAINED, UNVERIFIED)
@@ -89,6 +97,14 @@ class Integrity:
         return self.state == FAILED
 
 
+def _coverage_is_evidence(coverage) -> bool:
+    """Coverage speaks for the candidate only when BOTH sides of its comparison exist: the
+    candidate must carry page provenance, and `pdfinfo` must have said how many pages there are.
+    `declared == 0` means unknown, so `candidate_missing` is empty for the trivial reason that
+    there is nothing to be missing from — which read as a clean pass."""
+    return bool(coverage.candidate_known and coverage.declared > 0)
+
+
 def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = None,
            accepted: bool = False) -> Integrity:
     """Combine the measurements into a state.
@@ -102,7 +118,7 @@ def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = Non
     reasons: list[str] = []
 
     if agreement is not None:
-        median = agreement.quantile(0.50)
+        median = agreement.median               # the TRUE median, not a nearest-rank observation
         metrics.update({
             "containment": round(agreement.containment, 4),
             "inflation": round(agreement.inflation, 4),
@@ -110,6 +126,7 @@ def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = Non
             "candidate_tokens": agreement.candidate_tokens,
             "windows": len(agreement.windows),
             "windows_abstained": agreement.abstained_windows,
+            "order_measured_share": round(agreement.measured_share, 4),
             "order_median": None if median is None else round(median, 4),
             "order_p05": None if agreement.quantile(0.05) is None else round(agreement.quantile(0.05), 4),
             "order_worst": (None if agreement.worst_window is None
@@ -148,20 +165,28 @@ def decide(agreement=None, coverage=None, *, thresholds: Thresholds | None = Non
     if reasons:
         return Integrity(FAILED, tuple(reasons), metrics, th.as_dict())
 
-    # `verified` requires that something was actually MEASURED. Three ways this used to return a
+    # `verified` requires that something was actually MEASURED. Every way this has returned a
     # confident pass on no evidence:
     #   * both inputs None                      -> nothing measured at all
     #   * every order window abstained          -> order unmeasurable (e.g. no unique anchors)
+    #   * only a MINORITY of windows measured   -> a verdict about part of the document
     #   * coverage present but candidate unknown-> a Coverage object is not candidate evidence
+    #   * coverage present but `declared` is 0  -> pdfinfo unavailable, so nothing to compare to
     unmeasured: list[str] = []
     if agreement is None and coverage is None:
         unmeasured.append("nothing could be measured")
     if agreement is not None and not agreement.measured:
         unmeasured.append("no order window could be measured (too few unique anchors) — "
                           "reading order is unknown, not confirmed")
-    if agreement is None and coverage is not None and not coverage.candidate_known:
-        unmeasured.append("coverage could not speak for the candidate (no page provenance) — "
-                          "and there is no agreement measurement either")
+    elif agreement is not None and agreement.measured_share <= th.min_measured_share:
+        unmeasured.append(
+            f"order measured on {len(agreement.measured)}/{len(agreement.windows)} windows "
+            f"({agreement.measured_share:.0%}) — not a majority of the document, so reading "
+            "order is unknown for most of it")
+    if agreement is None and coverage is not None and not _coverage_is_evidence(coverage):
+        unmeasured.append("coverage could not speak for the candidate (no page provenance, or "
+                          "pdfinfo could not say how many pages exist) — and there is no "
+                          "agreement measurement either")
     if unmeasured:
         return Integrity(ABSTAINED, tuple(unmeasured), metrics, th.as_dict())
     return Integrity(VERIFIED, (), metrics, th.as_dict())
