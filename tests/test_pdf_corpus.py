@@ -50,17 +50,24 @@ class CorpusExists(unittest.TestCase):
         for gap in ("scan", "broken text layer", "script"):
             self.assertIn(gap, joined)
 
-    def test_regeneration_is_byte_identical(self):
-        # the corpus must be reproducible from the generator, or "ground truth" is just some bytes
+    def test_regeneration_into_an_empty_directory_reproduces_every_file(self):
+        # The previous version regenerated IN PLACE and compared against copies, so deleting every
+        # write_pdf() call still passed — the old files were simply still there. Generate into an
+        # empty directory and require the complete expected file set, byte for byte.
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        for p in PDFS.glob("*.pdf"):
-            shutil.copy2(p, tmp / p.name)
-        subprocess.run([sys.executable, str(PDFS / "make_fixtures.py")], check=True,
-                       capture_output=True, timeout=60)
-        for p in sorted(PDFS.glob("*.pdf")):
-            self.assertEqual(p.read_bytes(), (tmp / p.name).read_bytes(),
-                             f"{p.name} changed on regeneration — the generator is not deterministic")
+        shutil.copy2(PDFS / "make_fixtures.py", tmp / "make_fixtures.py")
+        r = subprocess.run([sys.executable, str(tmp / "make_fixtures.py")],
+                           capture_output=True, timeout=120, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        produced = {p.name for p in tmp.glob("*.pdf")}
+        self.assertEqual(produced, set(TRUTH["files"]),
+                         "the generator did not produce exactly the declared corpus")
+        for name in sorted(TRUTH["files"]):
+            self.assertEqual((tmp / name).read_bytes(), (PDFS / name).read_bytes(),
+                             f"{name} is not byte-reproducible from the generator")
+        self.assertEqual(json.loads((tmp / "GROUND-TRUTH.json").read_text()), TRUTH,
+                         "GROUND-TRUTH.json is not reproducible either")
 
 
 @unittest.skipUnless(HAVE_POPPLER, "poppler (pdfinfo/pdftotext) not installed")
@@ -70,18 +77,36 @@ class CorpusMatchesGroundTruth(unittest.TestCase):
             with self.subTest(pdf=name):
                 self.assertEqual(_pdfinfo_pages(PDFS / name), meta["pages"])
 
-    def test_declared_text_actually_extracts(self):
+    def test_declared_text_extracts_ON_ITS_DECLARED_PAGE(self):
+        # Checking "anywhere in the document" passed even if every page's text were hoisted onto
+        # page 1 — which is precisely the reading-order failure this corpus exists to expose.
+        from klode.lib.coverage import split_pages
         for name, meta in TRUTH["files"].items():
             with self.subTest(pdf=name):
                 out = subprocess.run(["pdftotext", "-layout", str(PDFS / name), "-"],
                                      capture_output=True, text=True, timeout=60).stdout
-                # every page's ground-truth tokens must appear; this checks the fixture, not an
-                # extractor's ordering — ordering is what the agreement metrics measure later
-                for page in meta["text"]:
+                pages = split_pages(out)
+                self.assertEqual(len(pages), meta["pages"])
+                for i, page in enumerate(meta["text"]):
                     lines = (page["left"] + page["right"]) if isinstance(page, dict) else page
                     for line in lines:
-                        self.assertIn(line.split()[-1], out,
-                                      f"{name}: unique token from {line[:30]!r} missing")
+                        token = line.split()[-1]
+                        self.assertIn(token, pages[i],
+                                      f"{name}: {token!r} belongs on page {i+1} but is not there")
+
+    def test_two_column_pages_extract_the_left_column_before_the_right(self):
+        # the ordering claim the corpus was built to make checkable
+        from klode.lib.coverage import split_pages
+        meta = TRUTH["files"]["two-column.pdf"]
+        out = subprocess.run(["pdftotext", str(PDFS / "two-column.pdf"), "-"],
+                             capture_output=True, text=True, timeout=60).stdout
+        for i, page in enumerate(split_pages(out)[:meta["pages"]]):
+            first_left = meta["text"][i]["left"][0].split()[-1]
+            first_right = meta["text"][i]["right"][0].split()[-1]
+            self.assertIn(first_left, page)
+            self.assertIn(first_right, page)
+            self.assertLess(page.index(first_left), page.index(first_right),
+                            f"page {i+1}: the right column was read before the left")
 
     def test_the_blank_page_really_is_blank(self):
         meta = TRUTH["files"]["blank-middle.pdf"]

@@ -46,8 +46,19 @@ class Precedence(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / ".klode").mkdir()
         self.file = self.tmp / ".klode" / "settings.toml"
-        for var in [s.env for s in settings.SPEC if s.env]:
+        # SAVE and restore: the previous version deleted every KLODE_* var without putting them
+        # back, contaminating later tests and the caller's environment
+        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
+        for var in self._saved:
             os.environ.pop(var, None)
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for var, val in self._saved.items():
+            if val is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = val
 
     def _write(self, body: str):
         self.file.write_text(body, encoding="utf-8")

@@ -516,7 +516,7 @@ def cmd_settings(args) -> int:
     except ValueError as e:
         print(f"settings error: {e}", file=sys.stderr)
         return 1
-    show_sources = args.sources or not args.effective
+    show_sources = not getattr(args, "values_only", False)
     print(f"settings file: {_settings.settings_path()}"
           f"{'' if _settings.settings_path().is_file() else '  (absent — not an error)'}")
     print(f"{'setting':<24} {'value':<24}" + ("  source" if show_sources else ""))
@@ -653,8 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
     pcd.set_defaults(func=cmd_cards)
 
     pset = sub.add_parser("settings", help="show effective settings and where each value came from")
-    pset.add_argument("--effective", action="store_true", help="print resolved values (default)")
-    pset.add_argument("--sources", action="store_true", help="also print each value's origin")
+    # one mode, not two overlapping flags: `--effective` used to HIDE sources despite its help
+    # saying effective values were the default, and `--sources` was a no-op unless it did.
+    pset.add_argument("--values-only", action="store_true",
+                      help="print only the effective values, omitting where each came from")
     pset.set_defaults(func=cmd_settings)
 
     prv = sub.add_parser("review", help="[experimental] supervise a draft against a dimension (stub judge)")
