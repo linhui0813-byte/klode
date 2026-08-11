@@ -153,12 +153,20 @@ def source_of(cfg: Config, card_id: str) -> Source | None:
     rel = fm_get(front_matter(read(p)), "file")
     if not rel:
         return Source(rel=None, path=None, size=None)
-    # `file:` is card-authored: an absolute or `../` value would resolve outside the library tree,
-    # and verify_quote/zoom-content read this path. Require containment within cfg.root — an
-    # out-of-tree source is treated as 'not installed' (path=None), not read.
+    # `file:` is CARD-AUTHORED, and cards travel: the registry exists so you can point klode at a
+    # knowledge base someone else wrote. So this value is untrusted input, and containment within
+    # `cfg.root` was far too wide a fence — it admitted `library/.env`, `library.toml`, `.git/config`,
+    # and `library/books/../.env`, all of which `zoom --level content --grep` will then print line by
+    # line. Demonstrated: a card whose `file:` read `library/.env` printed an AWS secret.
+    #
+    # The fence is now the only shape a real source can have: `<lib>/<configured shelf>/<name>.txt`,
+    # one level deep, no traversal, real suffix. Anything else is 'not installed' (path=None) and is
+    # never opened.
     try:
         abspath = (cfg.root / rel).resolve()
-        if not abspath.is_relative_to(cfg.root.resolve()):
+        shelf_dirs = [(cfg.lib / s).resolve() for s in cfg.shelves]
+        if (abspath.suffix.lower() != ".txt"
+                or not any(abspath.parent == d for d in shelf_dirs)):
             return Source(rel=rel, path=None, size=None)
     except (OSError, ValueError):
         return Source(rel=rel, path=None, size=None)
