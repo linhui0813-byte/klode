@@ -101,11 +101,22 @@ class Precedence(unittest.TestCase):
         self.assertIsNone(r.value("judge.model"))
         self.assertEqual(r.source("judge.model"), settings.UNSET)
 
-    def test_an_empty_environment_variable_is_absence_not_a_value(self):
+    def test_an_explicitly_empty_environment_variable_is_an_error_not_absence(self):
+        """Reversed deliberately. Treating `FOO=` as "unset" meant `KLODE_INGEST_TIER=$TYPO klode …`
+        — the classic deployment bug, where the referenced variable does not exist — silently fell
+        through to the file or the default while the operator believed the override was in force.
+        Present-and-empty is broken configuration; `env -u` is how you actually unset."""
         os.environ["KLODE_INGEST_TIER"] = ""
         self.addCleanup(os.environ.pop, "KLODE_INGEST_TIER", None)
-        r = settings.resolve(None, home=self.tmp)
-        self.assertEqual(r.source("ingest.tier"), settings.DEFAULT)
+        with self.assertRaises(ValueError) as e:
+            settings.resolve(None, home=self.tmp)
+        self.assertIn("set but empty", str(e.exception))
+        self.assertIn("env -u", str(e.exception))       # the message says how to fix it
+
+    def test_a_genuinely_unset_variable_is_still_absence(self):
+        os.environ.pop("KLODE_INGEST_TIER", None)
+        self.assertEqual(settings.resolve(None, home=self.tmp).source("ingest.tier"),
+                         settings.DEFAULT)
 
 
 class InvalidInputFailsLoud(unittest.TestCase):
@@ -175,6 +186,73 @@ class InvalidInputFailsLoud(unittest.TestCase):
         self.assertEqual(r.value("ingest.docling_url"), "http://example.invalid:15001")
         self.assertEqual(r.source("ingest.docling_url"), settings.FILE)
 
+    def test_every_invalid_domain_is_rejected_from_every_source(self):
+        """The previous tests covered selected TYPE errors and no domain errors, so a regression in
+        `_validate` — an unknown tier, an out-of-range hurdle, an empty model — passed."""
+        class _Args:
+            def __init__(self, **kw): self.__dict__.update(kw)
+
+        cases = [("ingest.tier", "bogus", "KLODE_INGEST_TIER", dict(tier="bogus")),
+                 ("ingest.marker_mode", "turbo", "KLODE_MARKER_MODE", dict(marker_mode="turbo")),
+                 ("judge.hurdle", 999, "KLODE_JUDGE_HURDLE", dict(hurdle=999)),
+                 ("judge.hurdle", -1, "KLODE_JUDGE_HURDLE", dict(hurdle=-1)),
+                 ("judge.permutations", 0, "KLODE_JUDGE_PERMUTATIONS", dict(permutations=0)),
+                 ("judge.permutations", 99, "KLODE_JUDGE_PERMUTATIONS", dict(permutations=99)),
+                 ("judge.model", "   ", "KLODE_JUDGE_MODEL", dict(model="   "))]
+        for name, bad, env, argkw in cases:
+            with self.subTest(f"{name}={bad!r} from file"):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={name: bad})
+            with self.subTest(f"{name}={bad!r} from environment"):
+                os.environ[env] = str(bad)
+                try:
+                    with self.assertRaises(ValueError):
+                        settings.resolve(None, home=self.tmp)
+                finally:
+                    os.environ.pop(env, None)
+            with self.subTest(f"{name}={bad!r} from argument"):
+                with self.assertRaises(ValueError):
+                    settings.resolve(_Args(**argkw), home=self.tmp)
+
+    def test_every_builtin_default_is_itself_valid(self):
+        # resolution inserts defaults without running them through _coerce/_validate, so an
+        # out-of-domain default would ship silently
+        for spec in settings.SPEC:
+            if spec.default is None:
+                continue
+            with self.subTest(key=f"{spec.section}.{spec.key}"):
+                settings._coerce(spec, spec.default, "built-in default")
+
+    def test_a_malformed_file_value_is_rejected_even_when_shadowed(self):
+        # validated only when it WON precedence, so a broken file passed today and failed the
+        # moment the environment override was removed
+        self.file.write_text('[ingest]\nverify = "not-a-boolean"\n', encoding="utf-8")
+        os.environ["KLODE_INGEST_VERIFY"] = "true"
+        self.addCleanup(os.environ.pop, "KLODE_INGEST_VERIFY", None)
+        with self.assertRaises(ValueError):
+            settings.resolve(None, home=self.tmp)
+
+    def test_an_empty_typoed_section_is_rejected(self):
+        # no keys to iterate, so the unknown-key check never fired
+        self.file.write_text("[ingset]\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as e:
+            settings.load(home=self.tmp)
+        self.assertIn("unknown section", str(e.exception))
+
+    def test_an_explicit_settings_path_that_is_missing_or_a_directory_is_an_error(self):
+        # asked for BY NAME: returning {} made a typo'd path look like a working run at defaults
+        for bad in (self.tmp / "no-such.toml", self.tmp):
+            with self.subTest(path=bad):
+                with self.assertRaises(ValueError):
+                    settings.load(bad)
+
+    def test_an_unknown_programmatic_key_raises_rather_than_reading_as_unset(self):
+        r = settings.resolve(None, home=self.tmp)
+        with self.assertRaises(KeyError):
+            r.value("ingest.verfy")
+        with self.assertRaises(KeyError):
+            r.source("ingest.verfy")
+
     def test_boolean_environment_values_parse_both_ways(self):
         for raw, want in (("true", True), ("1", True), ("on", True),
                           ("false", False), ("0", False), ("off", False)):
@@ -222,22 +300,52 @@ class EverySettingIsDiscoverable(unittest.TestCase):
     anywhere — `marker_mode`'s whole reason for existing was reachable only by reading source."""
 
     def _explain(self):
+        """Isolated from the caller's real home and environment. These tests previously resolved
+        whatever was in `~/.klode/settings.toml` and the ambient `KLODE_*` variables, so an
+        unrelated local setting could change or break an output-format assertion."""
         import io
         from contextlib import redirect_stdout
+        from unittest import mock
         from klode.lib.cli import build_parser, cmd_settings
+        empty = pathlib.Path(tempfile.mkdtemp()) / "absent.toml"
+        env = {v: "" for s_ in settings.SPEC if (v := s_.env)}
         buf = io.StringIO()
-        with redirect_stdout(buf):
-            cmd_settings(build_parser().parse_args(["settings", "--explain"]))
+        with mock.patch.object(settings, "settings_path", lambda *a, **k: empty), \
+             mock.patch.dict(os.environ, env, clear=False):
+            for v in env:
+                os.environ.pop(v, None)
+            with redirect_stdout(buf):
+                cmd_settings(build_parser().parse_args(["settings", "--explain"]))
         return buf.getvalue()
 
     def test_every_spec_appears_with_its_help_and_env(self):
+        """Asserted per SETTING and against the WHOLE help text.
+
+        The previous version matched roughly the first 40 characters against the whole output, so
+        help could be truncated, rewritten past that point, or attached to the wrong key and still
+        pass — and an empty `help` produced `assertIn("", out)`, which is always true, so the test
+        named "with its help" did not require help to exist."""
         out = self._explain()
+        blocks = {}
+        current = None
+        for line in out.splitlines():
+            if line and not line.startswith(" "):
+                current = line.strip()
+                blocks[current] = []
+            elif current:
+                blocks[current].append(line.strip())
         for spec in settings.SPEC:
-            with self.subTest(key=f"{spec.section}.{spec.key}"):
-                self.assertIn(f"{spec.section}.{spec.key}", out)
-                self.assertIn(spec.help.split(".")[0].split("—")[0].strip()[:40], out)
-                if spec.env:
-                    self.assertIn(spec.env, out)
+            name = f"{spec.section}.{spec.key}"
+            with self.subTest(key=name):
+                self.assertIn(name, blocks, "setting missing from --explain entirely")
+                body = " ".join(blocks[name])
+                self.assertTrue(spec.help.strip(), f"{name} has no help text at all")
+                # the whole help, whitespace-normalised (it is wrapped in the output)
+                self.assertIn(" ".join(spec.help.split()), " ".join(body.split()),
+                              f"{name}'s help is truncated or attached to another key")
+                self.assertIn(spec.env or "(none)", body)
+                if spec.choices:
+                    self.assertIn(repr(list(spec.choices))[1:-1].split(",")[0].strip(), body)
 
     def test_closed_domains_are_shown_so_a_valid_value_is_guessable(self):
         out = self._explain()
@@ -312,6 +420,67 @@ class JudgeHurdleActuallyReachesTheVerdict(unittest.TestCase):
         self.assertEqual(called, [], "a bad setting must stop the run, not be clamped silently")
 
 
+class SafetySettingsReachTheirConsumer(unittest.TestCase):
+    """Resolution is not consumption. These tests would all have passed with `ingest.run()` no
+    longer forwarding tier/verify, or the marker request no longer sending `mode` — the resolver
+    would still resolve them correctly and change nothing about what runs."""
+
+    def setUp(self):
+        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
+        for v in self._saved:
+            os.environ.pop(v, None)
+        self.addCleanup(lambda: [os.environ.__setitem__(k, v) if v is not None
+                                 else os.environ.pop(k, None) for k, v in self._saved.items()])
+
+    def test_ingest_tier_and_verify_arrive_at_ingest(self):
+        from unittest import mock
+        from klode.lib import ingest as ing
+        seen = {}
+
+        def fake_ingest(cfg, source, shelf, **kw):
+            seen.update(kw)
+            raise RuntimeError("stop — the arguments are what is under test")
+        os.environ["KLODE_INGEST_TIER"] = "docling"
+        os.environ["KLODE_INGEST_VERIFY"] = "false"
+        args = type("A", (), {"source": "x.pdf", "shelf": "books", "id": None, "lang": "eng",
+                              "force": False, "format": None, "tier": None, "verify": None,
+                              "accept_unverified": False})()
+        with mock.patch.object(ing, "ingest", fake_ingest):
+            ing.run(None, args)
+        self.assertEqual(seen.get("tier"), "docling")
+        self.assertIs(seen.get("verify"), False)
+
+    def test_marker_mode_arrives_in_the_request_body(self):
+        from unittest import mock
+        from klode.lib.formats import pdf
+        os.environ["KLODE_MARKER_URL"] = "http://marker.test:15002"
+        os.environ["KLODE_MARKER_MODE"] = "balanced"
+        payload = {"success": True, "output": f"\n\n{{0}}{'-' * 48}\n\nalpha",
+                   "metadata": {"page_stats": [{"page_id": 0}]}}
+        with mock.patch.object(pdf.urllib.request, "urlopen",
+                               return_value=_FakeRespForSettings(payload)) as uo:
+            pdf._marker_structured(pathlib.Path("tests/fixtures/pdfs/single-page.pdf"),
+                                   pdf.marker_endpoint())
+        body = uo.call_args[0][0].data
+        self.assertIn(b'name="mode"', body)
+        self.assertIn(b"balanced", body)
+
+
+class _FakeRespForSettings:
+    def __init__(self, payload):
+        import json as _j
+        self._b = _j.dumps(payload).encode()
+
+    def read(self, n=-1):
+        return self._b[:n] if (n is not None and n >= 0) else self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 class SecretsStayOut(unittest.TestCase):
     """The line is CREDENTIALS, not 'anything that looks infrastructural'.
 
@@ -336,6 +505,29 @@ class SecretsStayOut(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", envs)
         for env in envs:
             self.assertFalse(any(c in env.lower() for c in self.CREDENTIALS), env)
+
+    def test_the_module_reads_no_credential_from_the_environment_at_all(self):
+        """Over the module's CODE, not just its SPEC.
+
+        The declarative check inspects `SPEC.env`, so a direct `os.environ["ANTHROPIC_API_KEY"]`
+        anywhere else in settings.py would have satisfied it while doing exactly the thing the
+        class name forbids. This walks every string constant the module can pass to an environment
+        lookup."""
+        import ast
+        tree = ast.parse(pathlib.Path(settings.__file__).read_text(encoding="utf-8"))
+        looked_up = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in ("get", "getenv") and node.args \
+                    and isinstance(node.args[0], ast.Constant) \
+                    and isinstance(node.args[0].value, str):
+                looked_up.add(node.args[0].value)
+            if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) \
+                    and isinstance(node.slice.value, str):
+                looked_up.add(node.slice.value)
+        for name in looked_up:
+            self.assertFalse(any(c in name.lower() for c in self.CREDENTIALS),
+                             f"settings.py reads {name!r} from the environment")
 
     def test_a_url_carrying_credentials_is_refused_from_every_source(self):
         """A prefix check called this validation and it was not.
