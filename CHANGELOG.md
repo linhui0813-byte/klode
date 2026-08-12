@@ -3,6 +3,81 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
+## 0.4.1 — 2026-08-13
+
+A second audit, of the code written to close the first one. 1,515 lines had been reviewed by
+nobody but their author; an independent pass plus an owner-proxy review of three deferred decisions
+returned 22 findings, five of which were rows the first audit had already marked `fixed`.
+
+### Breaking
+
+- **`klode review` verdict labels name the judge that actually ran.** The line was hardcoded to
+  "stub judge", which would have stayed wrong the moment a real one was wired. Anything parsing
+  that string must expect the judge's class name and a calibration reason.
+- **`--max` requires `--grep`, and defaults to `None` rather than 10.** An explicit `--max 10` was
+  indistinguishable from omission, so the dependency check could not tell "asked for and ignored"
+  from "not asked for".
+- **`--tier auto` refuses an extraction with too little text when no control corroborates it.**
+  With `pdftotext` failed, a single clean token became the chosen result and cleared the corruption
+  gate — a ratio scores one word exactly as it scores an empty string.
+
+### Added
+
+- **`klode review --live-judge`** — constructs the real `LLMJudge` from `[judge].model` and
+  `[judge].permutations`. Those settings were declared, labelled "not yet consumed", and inert; an
+  owner-proxy review ruled that a labelled dead setting is still dead. The flag exists because a
+  config file is consent to *choose* a model, not to *spend money*: `ANTHROPIC_API_KEY` is commonly
+  ambient for other tools, and this command advertises a stub. Without the flag klode makes no
+  network call whatever the settings say. With it, a model and a key are required and the cost —
+  `1 + permutations` calls per criterion — is printed before any call is made.
+- **`klode settings --lint`** — validates every value in the settings file, including ones an
+  override shadows. Resolution validates the winners; a shadowed broken value still goes live the
+  moment the override is removed, so both matter and neither should cost the other.
+- **`KLODE_ALLOW_INSECURE_HTTP`** — an explicit opt-in for plaintext endpoints a lexical rule
+  cannot classify. The private-host check is a heuristic, and it now says so rather than guessing.
+
+### Fixed
+
+- **The bake-off dropped the wrong backend when pairing.** It removed the tier with the fewest
+  total measurements, which is not the tier blocking the intersection: with A covering documents
+  1–3, B covering 1–4 and C covering 4–7, A and B are perfectly comparable and the ranking came
+  back empty. Selection is exhaustive now, and a test checks it against a brute-force oracle over
+  every coverage mask.
+- **Remote backends were still converted twice per document.** `_extract()` took the text and
+  `_structured_pages()` ran the backend again for page text, so the two could describe different
+  nondeterministic runs — `words` and `visual` describing different conversions. One invocation now
+  returns both.
+- **`--lang` reached one backend of four**, so a non-English scan was OCR'd as English while the
+  CLI and the changelog both said otherwise. It now reaches xberg, docling (remote and local) and
+  marker, asserted on the request body.
+- **Terminal sanitisation was applied per call site and had already missed one** — `verify` printed
+  raw source lines exactly as `zoom` had. The module now shadows `print`, so there is a single
+  boundary, with an AST guard against reaching around it. Writing that guard found the sanitiser
+  stripping newlines, which would have collapsed every multi-line message into one line.
+- **`--json kbs` exited 1 on a fresh install** while `klode kbs` exited 0. An empty catalog is a
+  successful answer; an empty search result is a miss. Both are empty lists, so the operation has
+  to say which.
+- **Four guards added in 0.4.0 refused legitimate input**: `http://docling:15001` (the ordinary
+  Docker deployment), an empty *optional* environment variable, a shadowed file value blocking
+  unrelated commands, and a single ordinary identifier such as `testIDs` in a short document.
+- The upload cap raced between `stat()` and `read_bytes()`; the `init` symlink guard covered three
+  managed paths of eight; the PDF header check allocated whole files to read five bytes; a
+  kreuzberg `TypeError` inside extraction was misdiagnosed as API incompatibility; an xberg
+  `ImportError` erased the reason `pdftotext` had failed.
+- **Conversion deadlines scale with the document.** A 222-page scanned book exceeded both fixed
+  timeouts, so it could not be ingested through a remote backend at all, while a 12-page paper
+  converts in under three seconds. One constant cannot serve both.
+
+### Known limit, stated rather than implied
+
+Local OCR (in-process kreuzberg and docling) has **no wall-clock bound**; `pdftotext` and the
+remote backends do. An `OCR_TIMEOUT` constant previously sat in the source wired to nothing, which
+reads as a guarantee. Bounding these needs a worker process — they are C/torch extensions that
+never return to the interpreter to notice a signal — and that re-imports torch in the child,
+roughly doubling docling's cost. It was built, and not shipped: neither backend is installed in the
+environment where it was written, so it could not be tested against the thing it wraps. Use a
+remote endpoint where a deadline matters.
+
 ## 0.4.0 — 2026-08-12
 
 Extraction integrity: an ingest can now say whether the text it wrote actually represents the
