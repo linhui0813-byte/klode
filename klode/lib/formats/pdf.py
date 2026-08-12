@@ -387,6 +387,9 @@ def _marker_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, .
 
 _EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling,
                "marker": _marker}
+_PAGE_AWARE = {"docling": _docling_with_pages, "marker": _marker_with_pages}
+"""Backends that can report which pages they represent. One table, so a forced tier cannot
+silently take the text-only extractor and discard the provenance."""
 # `marker` is selectable and rankable but NOT in the `auto` ladder — see the marker section above.
 
 
@@ -404,92 +407,103 @@ class Choice:
     entries whenever docling ran during `auto` but lost."""
 
 
-def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
-    """Pick a tier. Forced tiers run as asked; `auto` uses the cheap path unless its measured
-    corruption says otherwise, then escalates pdftotext -> xberg -> docling, taking the best."""
-    if tier != "auto":
-        fn = _EXTRACTORS.get(tier)
-        if fn is None:
-            raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
-        if tier in ("docling", "marker"):
-            # both carry page provenance; taking the text-only extractor would discard it
-            text, pages = (_docling_with_pages if tier == "docling" else _marker_with_pages)(pdf, lang)
-            return Choice(tier, text, corruption_score(text), pages=pages)
-        text = fn(pdf, lang)
-        return Choice(tier, text, corruption_score(text))
+def _forced(pdf: Path, tier: str, lang: str) -> Choice:
+    """A tier the caller named. Returns whatever it produced — no quality refusal, because only
+    `auto` claims to have chosen on quality."""
+    fn = _EXTRACTORS.get(tier)
+    if fn is None:
+        raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
+    if tier in _PAGE_AWARE:
+        # both carry page provenance; taking the text-only extractor would discard it
+        text, pages = _PAGE_AWARE[tier](pdf, lang)
+        return Choice(tier, text, corruption_score(text), pages=pages)
+    text = fn(pdf, lang)
+    return Choice(tier, text, corruption_score(text))
 
-    def _better(cur: Choice, name: str, text: str, note: str, pages=None) -> Choice:
-        """Replace the incumbent only on evidence.
 
-        The guard said "EMPTY/short" and only tested EMPTY, so a one-word OCR result — which scores
-        corruption 0.0 because it contains no corruption markers to find — displaced hundreds of
-        words of usable text and suppressed further escalation. Reproduced by an audit.
+def _better(cur: Choice, name: str, text: str, note: str, pages=None) -> Choice:
+    """Replace the incumbent only on evidence.
 
-        `RETENTION_FLOOR` is the missing half: a candidate must also keep a plausible share of the
-        incumbent's words. A backend that returns a fragment is not cleaner, it is emptier, and
-        `corruption_score` cannot tell those apart — it is a ratio over words that are present.
-        """
-        words, cur_words = len(text.split()), len(cur.text.split())
-        if not words:
-            return cur
-        # RELATIVE to the incumbent, not an absolute floor. Gating on MIN_WORDS as well rejected a
-        # clean 120-word OCR that preserved 100% of a corrupted 120-word document — the corruption
-        # stayed at 10000 because the recovery was "too short", which is only true of documents,
-        # not of extractions. An independent verification caught it: MIN_WORDS answers "is this
-        # extraction substantial enough to trust on its own" (its job in the tier-1 fast path) and
-        # cannot answer "did this candidate lose material", which is what this guard needs.
-        if cur_words and words < cur_words * RETENTION_FLOOR:
-            return cur                                    # a fragment, not an improvement
-        score = corruption_score(text)
-        # strictly lower, as the contract says. `<=` let an equally-scored backend displace the
-        # incumbent for no measured reason, and repeated ties walked the ladder to its last rung.
-        if not cur_words or score < cur.score:
-            return Choice(name, text, score, note, pages=pages)
+    Two guards, because `corruption_score` cannot supply either on its own:
+
+    - RETENTION. The comment said it rejected "EMPTY/short" output and the code tested only EMPTY,
+      so a one-word OCR result — which scores 0.0, there being no corruption markers in one word to
+      find — displaced hundreds of words and suppressed further escalation. `corruption_score` is a
+      RATIO over the words present and structurally cannot see loss. The floor is relative to the
+      incumbent, not an absolute count: gating on MIN_WORDS too rejected a clean 120-word recovery
+      of a corrupted 120-word document, which is a fact about the document, not the extraction.
+    - STRICTLY LOWER. `<=` let an equally-scored backend displace the incumbent for no measured
+      reason, and repeated ties walked the ladder to its last rung.
+    """
+    words, cur_words = len(text.split()), len(cur.text.split())
+    if not words:
         return cur
+    if cur_words and words < cur_words * RETENTION_FLOOR:
+        return cur                                        # a fragment, not an improvement
+    score = corruption_score(text)
+    if not cur_words or score < cur.score:
+        return Choice(name, text, score, note, pages=pages)
+    return cur
 
-    # Tier 1 — pdftotext (cheap). A missing/failing Poppler is an escalation reason, not an abort.
+
+def _tier1(pdf: Path, lang: str) -> tuple[Choice, bool]:
+    """(candidate, done). A missing or failing Poppler is an escalation reason, not an abort."""
     try:
         t1 = _pdftotext(pdf, lang)
         s1 = corruption_score(t1)
         if s1 < CLEAN_THRESHOLD and len(t1.split()) >= MIN_WORDS:
-            return Choice("pdftotext", t1, s1, "text layer clean")
-        best = Choice("pdftotext", t1, s1, f"pdftotext scored {s1:.1f}")
+            return Choice("pdftotext", t1, s1, "text layer clean"), True
+        return Choice("pdftotext", t1, s1, f"pdftotext scored {s1:.1f}"), False
     except (RuntimeError, OSError) as e:
-        best = Choice("pdftotext", "", float("inf"), f"pdftotext failed ({e})")
+        return Choice("pdftotext", "", float("inf"), f"pdftotext failed ({e})"), False
 
-    try:                                                  # Tier 2 — OCR
-        best = _better(best, "xberg", _xberg(pdf, lang), f"escalated: pdftotext scored {best.score:.1f}")
+
+def _escalate(best: Choice, pdf: Path, lang: str) -> Choice:
+    """Tier 2 then, only if still unusable, Tier 3. Backend absence is a note, never a crash."""
+    try:
+        best = _better(best, "xberg", _xberg(pdf, lang),
+                       f"escalated: pdftotext scored {best.score:.1f}")
     except ImportError as e:
-        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}",
-                      pages=best.pages)
+        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}", pages=best.pages)
     except (RuntimeError, OSError) as e:                  # backend runtime failure, not a bug
         best = Choice(best.tier, best.text, best.score,
                       f"{best.note}; xberg failed ({e})", pages=best.pages)
 
-    if not best.text.split() or best.score >= CLEAN_THRESHOLD:   # still unusable — Tier 3
-        try:
-            # `_docling_with_pages`, not `_docling`: the auto path used the text-only extractor, so
-            # an auto-escalated docling win arrived with `pages=None` even when the backend had
-            # supplied per-block provenance — and coverage then abstained on evidence it had.
-            md, pages = _docling_with_pages(pdf, lang)
-            best = _better(best, "docling", md,
-                           f"escalated to docling: prior scored {best.score:.1f}", pages=pages)
-        except (ImportError, RuntimeError, OSError) as e:
-            best = Choice(best.tier, best.text, best.score,
-                          f"{best.note}; docling absent ({e})", pages=best.pages)
+    if best.text.split() and best.score < CLEAN_THRESHOLD:
+        return best
+    try:
+        # `_docling_with_pages`, not `_docling`: the auto path used the text-only extractor, so an
+        # auto-escalated docling win arrived with `pages=None` even when the backend had supplied
+        # per-block provenance — and coverage then abstained on evidence it had.
+        md, pages = _docling_with_pages(pdf, lang)
+        return _better(best, "docling", md,
+                       f"escalated to docling: prior scored {best.score:.1f}", pages=pages)
+    except (ImportError, RuntimeError, OSError) as e:
+        return Choice(best.tier, best.text, best.score,
+                      f"{best.note}; docling absent ({e})", pages=best.pages)
 
-    # `auto` used to return `best` even when EVERY tier failed the criteria `auto` itself judges by.
-    # A 15-word extraction scoring 6667 was handed back as the chosen result, and downstream
-    # verification then ABSTAINED — because the control tier IS pdftotext, so there is nothing to
-    # compare against — and the garbage was promoted with no check having run. `auto` means "pick
-    # the cheapest tier that reaches quality"; when none does, saying so is the only honest answer.
-    #
-    # A forced tier still returns whatever it produces. This refusal is `auto`'s alone, because only
-    # `auto` claims to have chosen on quality.
-    # Gated on CORRUPTION only, deliberately. MIN_WORDS belongs to the tier-1 fast path — it stops
-    # an "empty but clean" extraction from short-circuiting escalation — and it cannot mean "this
-    # document is too short to be real". Including it here refused a legitimate 120-word PDF, which
-    # is the same over-correction the retention floor had already made once.
+
+def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
+    """Pick a tier. Forced tiers run as asked; `auto` uses the cheap path unless its measured
+    corruption says otherwise, then escalates pdftotext -> xberg -> docling, taking the best.
+
+    Split into `_forced` / `_tier1` / `_escalate` / `_better` because the single 94-line version
+    interleaved dispatch, scoring, orchestration and error translation — and the inconsistency that
+    produced (a usability check applied on one path and not the other) is exactly where the
+    one-word-fragment defect lived.
+    """
+    if tier != "auto":
+        return _forced(pdf, tier, lang)
+    best, done = _tier1(pdf, lang)
+    if done:
+        return best
+    best = _escalate(best, pdf, lang)
+
+    # `auto` used to return `best` even when EVERY tier failed the criteria `auto` itself judges
+    # by. A 15-word extraction scoring 6667 was handed back as the chosen result, and verification
+    # then ABSTAINED — the control tier IS pdftotext, so there is nothing to compare against — and
+    # the garbage was promoted with no check having run. Gated on CORRUPTION only: MIN_WORDS
+    # belongs to the tier-1 fast path and cannot mean "this document is too short to be real".
     words = len(best.text.split())
     if not words or best.score >= CLEAN_THRESHOLD:
         raise ExtractionError(
@@ -499,7 +513,6 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
             f"Install an OCR tier, point --tier at a remote backend, or force "
             f"`--tier {best.tier}` to accept this text deliberately.")
     return best
-
 
 class PdfHandler:
     name = "pdf"

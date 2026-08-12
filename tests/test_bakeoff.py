@@ -458,6 +458,19 @@ class HarnessBehaviour(unittest.TestCase):
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["nonesuch"], sample=1)
         self.assertIn("nonesuch", rep["skipped"])
 
+    def test_the_cli_refuses_an_unknown_tier_and_a_non_pdf(self):
+        # both produced a confident empty report and exit 0: "measured, nothing to report"
+        # is indistinguishable from "never ran"
+        for argv, why in (
+                (["--pdfs", str(PDFS), "--tiers", "nonesuch"], "unknown tier"),
+                (["--pdfs", str(REPO / "README.md"), "--tiers", "pdftotext"], "not a PDF"),
+                (["--pdfs", str(PDFS), "--tiers", "pdftotext", "--sample", "0"], "sample < 1"),
+                (["--pdfs", str(PDFS), "--tiers", "pdftotext,pdftotext"], "repeated tier"),
+                (["--pdfs", str(PDFS / "nope"), "--tiers", "pdftotext"], "missing path")):
+            with self.subTest(why):
+                with self.assertRaises(SystemExit):
+                    bake.main(argv)
+
     def test_the_seed_and_sampled_pages_are_recorded(self):
         # asserted UNCONDITIONALLY via a mocked visual report: the previous version guarded the
         # assertion behind `if visual is not None`, so in exactly the environment that needed
