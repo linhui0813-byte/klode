@@ -99,6 +99,15 @@ def cmd_init(args) -> int:
                   file=sys.stderr)                        # reject `/`, `..`, quotes, newlines up front —
             return 2                                       # no TOML injection, no writing outside the project
     root.mkdir(parents=True, exist_ok=True)
+    # Refuse to write THROUGH a symlink. In an attacker-prepared (or merely surprising) target
+    # directory, a pre-existing `library` / `library.toml` / `.gitignore` symlink made init create
+    # and overwrite files somewhere else entirely — verified: `init` wrote a shelf into the
+    # symlink's target outside the requested root.
+    for managed in (cfg_path, root / "library", root / ".gitignore"):
+        if managed.is_symlink():
+            print(f"refusing to write through the symlink {managed} -> "
+                  f"{os.readlink(managed)}; remove it or choose another directory", file=sys.stderr)
+            return 2
     cfg_path.write_text(
         _TOML_TEMPLATE.format(shelves=", ".join(f'"{s}"' for s in shelves)), encoding="utf-8")
 
@@ -154,6 +163,13 @@ def cmd_build(args) -> int:
 
 def cmd_check(args) -> int:
     from . import check as check_mod
+    if not getattr(args, "entail", False):
+        for flag, val in (("--entail-model", args.entail_model),
+                          ("--entail-threshold", args.entail_threshold)):
+            if val not in (None, 0.5):
+                # silently ignored without --entail, so a tightened threshold looked applied
+                print(f"{flag} has no effect without --entail", file=sys.stderr)
+                return 2
     entail_unavailable = ""
     cfg = _load(args)
     backend = None
@@ -173,8 +189,9 @@ def cmd_check(args) -> int:
                             f"({entail_unavailable}) — no claim was scored")
     if not args.quiet:
         print(f"library check — {r.n_cards} cards, {r.n_txts} shelf sources")
-    for nt in r.notes:
-        print(f"  NOTE  {nt}")
+    if not args.quiet:                      # `--quiet` said "only problems + summary" and then
+        for nt in r.notes:                  # printed every informational note
+            print(f"  NOTE  {nt}")
     for w in r.warns:
         print(f"  WARN  {w}")
     for e in r.errors:
@@ -249,13 +266,16 @@ def cmd_normalize(args) -> int:
 # search / zoom — the LOD retrieval surface
 # ---------------------------------------------------------------------------
 def cmd_search(args) -> int:
+    # Validate BEFORE choosing a renderer. The JSON branch returned first, so `--json search ""`
+    # produced a successful empty result while prose rejected the identical input — the two
+    # surfaces disagreeing about what a valid request even is.
+    if not [t for t in args.query if t.strip()]:
+        print("nothing to search for", file=sys.stderr)
+        return 1
     if args.json:
         return _emit_json(_run(args, "search",
                                {"terms": args.query, "full": args.full, "limit": args.limit}))
     cfg = _load(args)
-    if not [t for t in args.query if t.strip()]:
-        print("nothing to search for", file=sys.stderr)
-        return 1
     hits, total = query.search(cfg, args.query, full=args.full, limit=args.limit)
     if not hits:
         print("no matching cards")
@@ -263,14 +283,32 @@ def cmd_search(args) -> int:
     for h in hits:
         line = f"{h.id}  [{h.zoom}·{h.shelf}]  {h.score:.1f}"
         if h.gist:
-            line += f"  — {h.gist[:110]}"
+            line += f"  — {sane(h.gist[:110])}"
         print(line)
     if total > len(hits):
         print(f"… {total - len(hits)} more (raise --limit)")
     return 0
 
 
+def _validate_zoom_args(args) -> str:
+    """`--grep` and `--max` were accepted at every level and silently ignored above `content`, so a
+    user asking to verify a claim at `--level thin` got a confident answer to a question that was
+    never asked. An explicitly blank `--grep ""` was likewise treated as "no verification
+    requested" and exited 0."""
+    if args.level != "content":
+        for flag, val, default in (("--grep", args.grep, None), ("--max", args.max, 10)):
+            if val != default:
+                return (f"{flag} applies only to --level content (got --level {args.level}); "
+                        "it would have been silently ignored")
+    elif args.grep is not None and not args.grep.strip():
+        return "--grep was given an empty phrase; pass a phrase, or omit --grep entirely"
+    return ""
+
+
 def cmd_zoom(args) -> int:
+    if (bad := _validate_zoom_args(args)):
+        print(bad, file=sys.stderr)
+        return 2
     if args.json:
         if args.level == "content" and getattr(args, "grep", None):   # legacy zoom-verify combo
             return _emit_json(_run(args, "verify",
@@ -289,8 +327,8 @@ def cmd_zoom(args) -> int:
         if not body:
             print(f"[{level}] section not found in {args.id}", file=sys.stderr)
             return 1
-        print(f"# {query.card_title(cfg, args.id)}  ({level})\n")
-        print(body)
+        print(f"# {sane(query.card_title(cfg, args.id))}  ({level})\n")
+        print(sane(body))
         return 0
     # content (L3): the source .txt itself
     src = query.source_of(cfg, args.id)
@@ -307,8 +345,8 @@ def cmd_zoom(args) -> int:
         return 0
     v = query.verify(cfg, args.id, args.grep, max_lines=args.max)
     if v.found:
-        for n, ln in v.lines:      # raw lines, so the reader sees the real source
-            print(f"{n}: {ln}")
+        for n, ln in v.lines:      # the real source line, with terminal control sequences neutered
+            print(f"{n}: {sane(ln)}")
         if v.folded_only:
             print(f"✓ resolves in {v.rel} (matches across line/hyphenation folding "
                   f"— not on a single line)")
@@ -399,7 +437,7 @@ def _render_framework(fw: dict, section: str | None, full: bool) -> int:
 
 def _render_source(cfg: Config, cid: str, full: bool) -> int:
     """A source-only book (no framework lens): show its L1 (and L2 with --full)."""
-    print(f"# {query.card_title(cfg, cid)}   (source card)")
+    print(f"# {sane(query.card_title(cfg, cid))}   (source card)")
     thin = query.body(cfg, cid, "thin")
     fullb = query.body(cfg, cid, "full")
     if thin:
@@ -631,8 +669,22 @@ def cmd_settings(args) -> int:
     return 0
 
 
+MAX_DRAFT_CHARS = 4 * 1024 * 1024
+"""A draft is a piece of prose someone wrote. `sys.stdin.read()` accepted an unbounded stream, so
+a mistaken `klode review - < /dev/zero` (or a large file) exhausted memory before anything was
+validated."""
+
+
+def _read_draft() -> str:
+    data = sys.stdin.read(MAX_DRAFT_CHARS + 1)
+    if len(data) > MAX_DRAFT_CHARS:
+        raise SystemExit(f"draft exceeds {MAX_DRAFT_CHARS // 1048576} MB on stdin — "
+                         "review one document at a time")
+    return data
+
+
 def cmd_review(args) -> int:
-    draft = sys.stdin.read() if args.draft == "-" else args.draft
+    draft = _read_draft() if args.draft == "-" else args.draft
     from . import settings as _settings
     try:
         # `judge.hurdle` was declared, printed by `klode settings`, and read by nothing — the
@@ -656,6 +708,39 @@ def cmd_review(args) -> int:
     else:
         print("no verdict — capability unavailable")
     return 0
+
+
+_CTRL_SAFE = {0x09}      # tab is legitimate layout in a source line
+
+
+def sane(text: str) -> str:
+    """Strip terminal control sequences from CORPUS- or CARD-derived text before printing.
+
+    Everything klode prints at L1/L3 comes from files it was pointed at, and a card or a source
+    .txt is not trusted input — cards travel through the registry, and a corpus is whatever PDF you
+    fed it. A raw `\x1b[2J\x1b[H` clears the reader's screen and rewrites it; `\x1b]0;…\x07` sets the
+    window title; other sequences can spoof a prompt or drive a clipboard. These were printed
+    verbatim.
+
+    JSON output is untouched: `json.dumps` already escapes them, and a machine consumer wants the
+    bytes that are actually in the file.
+    """
+    return "".join(ch if (ord(ch) >= 0x20 and not (0x7f <= ord(ch) <= 0x9f)) or ord(ch) in _CTRL_SAFE
+                   else "\uFFFD" for ch in text)
+
+
+def _positive_int(raw: str) -> int:
+    """A count, validated at PARSE time. `--limit 0` sliced to an empty list and printed "no
+    matching cards" — a false negative indistinguishable from a real one — and `--limit -1`
+    silently dropped the last result, while the JSON path clamped both to 1. Two surfaces, two
+    different wrong answers, from one unvalidated flag."""
+    try:
+        v = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not an integer")
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {raw}")
+    return v
 
 
 def _unit_interval(raw: str) -> float:
@@ -688,7 +773,8 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--kb", help="address a registered KB by id (via the registry) instead of --config")
     p.add_argument("--registry", help="registry manifest path (for --kb; else default precedence)")
     p.add_argument("--json", action="store_true",
-                   help="emit machine-readable JSON instead of prose (for agentic consumption)")
+                   help="emit machine-readable JSON instead of prose (for agentic consumption). "
+                        "Supported by the consumption verbs: " + ", ".join(sorted(JSON_COMMANDS)))
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init", help="scaffold a new library")
@@ -752,10 +838,14 @@ def build_parser() -> argparse.ArgumentParser:
     pg.set_defaults(func=cmd_ingest)
 
     pn = sub.add_parser("normalize", help="grep-readiness preprocessor for the corpus")
-    pn.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
+    pn_mode = pn.add_mutually_exclusive_group()
+    pn_mode.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     pn.add_argument("--glob", default="*/*.txt", help="which library files to process")
     pn.add_argument("--stamp", default=None, help="backup dir name (default: derived)")
-    pn.add_argument("--check", action="store_true", help="dry run that exits nonzero if anything would change")
+    # mutually exclusive: together, normalization MUTATED the files and the `--check` gate was
+    # silently disabled — the one combination that both changes the corpus and reports nothing
+    pn_mode.add_argument("--check", action="store_true",
+                         help="dry run that exits nonzero if anything would change")
     pn.add_argument("--allow-unmeasured", action="store_true",
                     help="exit 0 even when --check inspected no file")
     pn.set_defaults(func=cmd_normalize)
@@ -763,14 +853,15 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("search", help="L0/L1 retrieval over the cards")
     ps.add_argument("query", nargs="+", help="one or more terms")
     ps.add_argument("--full", action="store_true", help="also search L2 (Full) bodies")
-    ps.add_argument("--limit", type=int, default=20, help="max results (default 20)")
+    ps.add_argument("--limit", type=_positive_int, default=20, help="max results (default 20)")
     ps.set_defaults(func=cmd_search)
 
     pz = sub.add_parser("zoom", help="pull one level of a card")
     pz.add_argument("id", help="card id (filename stem)")
     pz.add_argument("--level", choices=["meta", "thin", "full", "content"], default="thin")
     pz.add_argument("--grep", help="with --level content: verify a phrase against the source .txt")
-    pz.add_argument("--max", type=int, default=10, help="max matching lines to show (default 10)")
+    pz.add_argument("--max", type=_positive_int, default=10,
+                    help="max matching lines to show (default 10)")
     pz.set_defaults(func=cmd_zoom)
 
     pco = sub.add_parser("consult", help="read a craft lens — by dimension, thinker, author, or book title")
@@ -817,8 +908,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+JSON_COMMANDS = frozenset({"search", "zoom", "consult", "diagnose", "verify", "cards",
+                           "lenses", "kbs", "review"})
+"""Commands whose `--json` is actually implemented.
+
+The flag is global, so it parsed everywhere and was honoured by roughly half. `klode --json check`
+printed prose and exited 0, which a machine consumer reads as valid, non-JSON output — the worst
+of the three possible behaviours (emit JSON / refuse / silently emit prose)."""
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "json", False) and args.cmd not in JSON_COMMANDS:
+        print(f"--json is not implemented for `{args.cmd}` (supported: "
+              f"{', '.join(sorted(JSON_COMMANDS))}) — it would have printed prose",
+              file=sys.stderr)
+        return 2
     try:
         if getattr(args, "kb", None) == "*" and not getattr(args, "json", False):
             raise ConfigError("`--kb '*'` (fan out over all KBs) needs --json; prose renders one KB")

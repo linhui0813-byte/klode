@@ -284,5 +284,114 @@ class WorkNotDoneIsNeverExitZero(unittest.TestCase):
         self._strip_corpus()
         self.assertEqual(self._run("check")[0], 2)
 
+class SurfacesAgreeAndFlagsDoWhatTheySay(unittest.TestCase):
+    """Findings whose common shape is a flag that parsed, did nothing, and reported success."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-cliflags-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.kb = self.tmp / "kb"
+        shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "kb-fixture", self.kb)
+        self.cfg = str(self.kb / "library.toml")
+
+    def _rc(self, *argv):
+        from klode.lib.cli import main
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            try:
+                rc = main(["-c", self.cfg] + list(argv))
+            except SystemExit as e:                 # argparse errors
+                rc = e.code if isinstance(e.code, int) else 2
+        return rc, buf.getvalue() + err.getvalue()
+
+    def test_a_nonpositive_limit_is_rejected_rather_than_slicing_to_nothing(self):
+        # `--limit 0` printed "no matching cards" — a false negative indistinguishable from a real
+        # one — and `-1` dropped the last result, while JSON clamped both to 1
+        for flag, cmd in (("--limit", ["search", "brevity"]), ("--max", ["zoom", "brevity",
+                                                                        "--level", "content",
+                                                                        "--grep", "x"])):
+            for bad in ("0", "-1"):
+                with self.subTest(flag=flag, value=bad):
+                    self.assertEqual(self._rc(*cmd, flag, bad)[0], 2)
+
+    def test_apply_and_check_cannot_be_combined(self):
+        # together they MUTATED the corpus and silently disabled the gate
+        self.assertEqual(self._rc("normalize", "--check", "--apply")[0], 2)
+
+    def test_grep_and_max_are_refused_where_they_would_be_ignored(self):
+        for lvl in ("meta", "thin", "full"):
+            with self.subTest(level=lvl):
+                rc, out = self._rc("zoom", "brevity", "--level", lvl, "--grep", "anything")
+                self.assertEqual(rc, 2)
+                self.assertIn("only to --level content", out)
+
+    def test_an_explicitly_blank_grep_is_not_read_as_no_verification(self):
+        rc, out = self._rc("zoom", "brevity", "--level", "content", "--grep", "")
+        self.assertEqual(rc, 2)
+        self.assertIn("empty phrase", out)
+
+    def test_both_surfaces_reject_an_empty_query(self):
+        # the JSON branch returned BEFORE prose's validation, so they disagreed about what a valid
+        # request even is
+        self.assertEqual(self._rc("search", "")[0], 1)
+        self.assertEqual(self._rc("--json", "search", "")[0], 1)
+
+    def test_json_on_a_command_that_cannot_emit_it_refuses_rather_than_printing_prose(self):
+        for cmd in ("check", "build", "normalize"):
+            with self.subTest(cmd=cmd):
+                rc, out = self._rc("--json", cmd)
+                self.assertEqual(rc, 2)
+                self.assertIn("not implemented", out)
+
+    def test_json_still_works_where_it_is_implemented(self):
+        rc, out = self._rc("--json", "search", "brevity")
+        self.assertEqual(rc, 0)
+        json.loads(out)
+
+    def test_entail_dependent_flags_require_entail(self):
+        for flag, val in (("--entail-model", "x"), ("--entail-threshold", "0.9")):
+            with self.subTest(flag=flag):
+                rc, out = self._rc("check", flag, val)
+                self.assertEqual(rc, 2)
+                self.assertIn("no effect without --entail", out)
+
+    def test_quiet_suppresses_notes(self):
+        for p in (self.kb / "library").rglob("*.txt"):
+            p.unlink()
+        loud = self._rc("check", "--allow-unmeasured")[1]
+        quiet = self._rc("check", "--quiet", "--allow-unmeasured")[1]
+        self.assertIn("NOTE", loud)
+        self.assertNotIn("NOTE", quiet)
+
+
+class TerminalControlSequencesAreNeutered(unittest.TestCase):
+    """A corpus is whatever PDF you fed it and a card can arrive through the registry, so both are
+    untrusted. Raw `\x1b[2J\x1b[H` clears the reader's screen; `\x1b]0;…\x07` sets the window title."""
+
+    def test_source_lines_are_sanitised_before_printing(self):
+        from klode.lib.cli import main
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        kb = tmp / "kb"
+        shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "kb-fixture", kb)
+        src = kb / "library" / "books" / "brevity.txt"
+        src.write_text(src.read_text(encoding="utf-8")
+                       + "\nNEEDLE \x1b[2J\x1b[H spoofed \x1b]0;pwned\x07\n", encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main(["-c", str(kb / "library.toml"), "zoom", "brevity",
+                  "--level", "content", "--grep", "NEEDLE"])
+        out = buf.getvalue()
+        self.assertIn("NEEDLE", out)
+        self.assertIn("spoofed", out)                 # the TEXT survives
+        self.assertNotIn("\x1b[", out)                # the control sequences do not
+        self.assertNotIn("\x1b]", out)
+
+    def test_sane_keeps_tabs_and_ordinary_unicode(self):
+        from klode.lib.cli import sane
+        self.assertEqual(sane("a\tb — café 世界"), "a\tb — café 世界")
+        self.assertNotIn("\x1b", sane("x\x1b[31my"))
+        self.assertNotIn("\x9b", sane("x\x9bmy"))    # C1 CSI, the single-byte form
+
 if __name__ == "__main__":
     unittest.main()
