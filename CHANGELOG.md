@@ -3,6 +3,19 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
+## Unreleased
+
+### Added
+
+- **Cited-passage retrieval** — `klode evidence`, MCP `retrieve_evidence`, and
+  `klode.lib.retrieve_evidence` return verbatim L3 excerpts with card id, source path, line range,
+  live SHA-256, and the retrieval route.
+- **Fail-closed full-source fallback** — relevant card anchors are tried first; when they yield no
+  usable passage, Klode searches the complete installed raw source automatically. Callers that
+  judge card evidence insufficient can force the fallback with `--full-text` / `full_text=true`.
+- **Honest terminal status** — an exhausted fallback returns `INSUFFICIENT_EVIDENCE` and explicitly
+  says not to answer from recall. `EVIDENCE_FOUND` remains retrieval-only, never an entailment claim.
+
 ## 0.3.0 — 2026-08-09
 
 The supervising gate (`klode.gate`) gets a real rubric artifact and a real judge. The engine

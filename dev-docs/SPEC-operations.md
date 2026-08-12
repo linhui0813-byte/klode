@@ -19,6 +19,7 @@ is therefore structurally impossible — and the registry-driven parity test pro
 | `Card` | a derived representation of a Source at Levels of Zoom | meta → thin → full → (source) |
 | `Lens` | distilled expertise — a discriminated union | `Dimension` (cross-thinker synthesis) \| `Framework` (one thinker) |
 | `Citation` / `EvidenceHit` | a grounding result: phrase, source, line, context, **resolution status** | a first-class result, not a pass-through |
+| `RawPassage` / `EvidenceSearchResult` | verbatim L3 passage(s), source line range, retrieval route, and an explicit sufficiency status | `evidence-found` means candidate text was retrieved, not that it entails an answer |
 
 Inputs (not nouns): `Draft`, `Symptom`. Result-only: `Verdict`.
 
@@ -69,6 +70,7 @@ means the op is not projected on that surface. This table is machine-parsed — 
 | consult | kb | LensContent | stable | consult | consult_dimension;consult_framework |
 | zoom | kb | CardContent | stable | zoom | zoom_card |
 | verify | kb | EvidenceHit | stable | verify | verify_quote |
+| evidence | kb | EvidenceSearchResult | stable | evidence | retrieve_evidence |
 | review | kb | Verdict | experimental | review | — |
 | init | registry | Scaffold | stable | init | — |
 | build | kb | BuildReport | stable | build | — |
@@ -80,8 +82,8 @@ Notes on projections that legitimately differ per adapter (documented, not drift
 - `consult` projects onto TWO MCP tools (`consult_dimension`, `consult_framework`) — typed entry
   points for LLM clarity — but ONE CLI verb (`consult`, which auto-resolves the lens kind).
 - `lenses.list` is `list_lenses` on MCP and `lenses` on the CLI; `kbs.list` is `list_kbs` / `kbs`.
-- `cards.list` and `review` are CLI-only for now: the MCP tool set stays frozen at its 8 names, and
-  `review` is experimental (stub judge) so it is not yet an MCP tool.
+- `cards.list` and `review` are CLI-only for now; `review` stays off MCP because its judge is
+  experimental, so it is not yet an agent-facing tool.
 - Authoring ops (`init`/`build`/`check`/`normalize`/`ingest`) are CLI-only maintenance verbs; they
   are registered for completeness but are not part of the agentic consumption surface.
 
@@ -99,3 +101,4 @@ Every existing MCP tool name keeps working; each maps to exactly one canonical o
 | consult_framework | consult |
 | zoom_card | zoom |
 | verify_quote | verify |
+| retrieve_evidence | evidence |

@@ -6,6 +6,7 @@
   klode normalize   grep-readiness preprocessor for the corpus .txt files
   klode search      L0/L1 retrieval — "which sources are relevant?"
   klode zoom        pull one level of a card — meta | thin | full | content
+  klode evidence    card-first cited passages, with complete-source fallback
 """
 from __future__ import annotations
 
@@ -454,6 +455,8 @@ def _json_exit(result) -> int:
     v = result.value
     if isinstance(v, core.EvidenceHit):
         return 0 if v.found else 1
+    if isinstance(v, core.EvidenceSearchResult):
+        return 0 if v.found else 1
     if v is None or isinstance(v, core.Note):
         return 1
     if isinstance(v, list) and not v:
@@ -482,6 +485,33 @@ def cmd_verify(args) -> int:
           + (f" in {e.rel}" if e.rel else ""))
     for n, ln in e.lines:
         print(f"  {n}: {ln}")
+    return 0 if e.found else 1
+
+
+def cmd_evidence(args) -> int:
+    question = " ".join(args.query).strip()
+    r = _run(args, "evidence", {
+        "card": args.card,
+        "query": question,
+        "full_text": args.full_text,
+        "context_lines": args.context,
+        "limit": args.limit,
+    })
+    if args.json:
+        return _emit_json(r)
+    e = r.value
+    kb = f"[{r.provenance.kb}] " if r.provenance.kb else ""
+    label = e.status.value.replace("-", "_").upper()
+    print(f"{kb}{label} — card={e.card} "
+          f"full_text_searched={str(e.full_text_searched).lower()}")
+    print(e.note)
+    for index, passage in enumerate(e.passages, 1):
+        print(f"\n[{index}] {passage.title} — {passage.rel}:{passage.line_start}-{passage.line_end} "
+              f"[{passage.route}]")
+        print(f"sha256: {passage.source_sha}")
+        print(passage.text)
+    for issue in e.unavailable_sources:
+        print(f"\nunavailable: {issue}")
     return 0 if e.found else 1
 
 
@@ -613,6 +643,16 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("card", help="card id")
     pv.add_argument("phrase", help="the exact phrase to check")
     pv.set_defaults(func=cmd_verify)
+
+    pe = sub.add_parser("evidence", help="retrieve cited raw passages, with complete-source fallback")
+    pe.add_argument("card", help="card id whose raw source should be searched")
+    pe.add_argument("query", nargs="+", help="question or source-language search terms")
+    pe.add_argument("--full-text", action="store_true",
+                    help="force a complete raw-source search after card evidence was judged insufficient")
+    pe.add_argument("--context", type=int, default=2,
+                    help="source lines around a card anchor (default 2)")
+    pe.add_argument("--limit", type=int, default=5, help="max cited passages (default 5)")
+    pe.set_defaults(func=cmd_evidence)
 
     pl = sub.add_parser("lenses", help="list the craft dimensions and frameworks")
     pl.set_defaults(func=cmd_lenses)

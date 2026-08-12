@@ -32,14 +32,15 @@ class OpRegistry(unittest.TestCase):
 
     def test_capability_flags(self):
         self.assertEqual(opspec.by_op_id("review").capability, CapabilityStatus.EXPERIMENTAL)
-        for stable in ("search", "consult", "zoom", "verify", "kbs.list"):
+        for stable in ("search", "consult", "zoom", "verify", "evidence", "kbs.list"):
             self.assertEqual(opspec.by_op_id(stable).capability, CapabilityStatus.STABLE)
 
-    def test_mcp_names_are_exactly_the_frozen_eight(self):
+    def test_mcp_names_are_exactly_the_documented_public_set(self):
         self.assertEqual(
             set(opspec.mcp_names()),
             {"list_kbs", "list_lenses", "search_sources", "diagnose",
-             "consult_dimension", "consult_framework", "zoom_card", "verify_quote"})
+             "consult_dimension", "consult_framework", "zoom_card", "verify_quote",
+             "retrieve_evidence"})
 
     def test_no_duplicate_op_ids_or_mcp_names(self):
         ids = [s.op_id for s in opspec.ops()]

@@ -42,6 +42,8 @@ klode -c path/to/library.toml check                 # citation-rot linter (exit 
 klode -c path/to/library.toml search pacing         # retrieval over the cards
 klode -c path/to/library.toml consult brevity       # read a craft lens
 klode -c path/to/library.toml verify brevity "the exact quote"   # prove a quote against its source
+klode -c path/to/library.toml evidence brevity "What does it say about inferable clauses?"
+klode -c path/to/library.toml evidence brevity "rare example" --full-text
 klode ingest paper.pdf --shelf papers               # ingest a source -> clean, grep-ready text
 klode kbs                                            # list the KBs in a registry
 ```
@@ -49,11 +51,31 @@ klode kbs                                            # list the KBs in a registr
 Add `--json` to any read verb for machine-readable output (the same structured result the MCP renders).
 
 **MCP server** — `klode-mcp` (stdio): exposes the read/verify surface to an agent — `list_kbs`,
-`search_sources`, `consult_dimension`, `consult_framework`, `zoom_card`, `verify_quote`, `diagnose`,
-`list_lenses`. Serves one KB (`-c`) or many (`--registry`), and every grounded result names its KB.
+`search_sources`, `consult_dimension`, `consult_framework`, `zoom_card`, `verify_quote`,
+`retrieve_evidence`, `diagnose`, `list_lenses`. Serves one KB (`-c`) or many (`--registry`), and
+every grounded result names its KB.
 
-**Library** — `import klode.lib`: the stable public-API facade — `verify`, `search`, `consult`,
-`resolve`, `diagnose`, `Config`. Cheap to import; pulls in no frontends or optional backends.
+**Library** — `import klode.lib`: the stable public-API facade — `verify`, `retrieve_evidence`,
+`search`, `consult`, `resolve`, `diagnose`, `Config`. Cheap to import; pulls in no frontends or
+optional backends.
+
+## Cited-passage fallback
+
+`klode evidence <card> <question>` returns verbatim L3 passages with the source path, line range,
+current source hash, and retrieval route:
+
+1. It first looks for question-relevant claims in the curated card and resolves their anchors to
+   raw source context.
+2. If the card yields no usable passage, it automatically searches the card's complete installed
+   raw source.
+3. If a person or agent judges the returned card evidence insufficient, `--full-text` (MCP:
+   `full_text=true`) explicitly forces the complete-source search.
+4. If that search also finds nothing, the result is `INSUFFICIENT_EVIDENCE`; callers are told not
+   to answer from recall.
+
+`EVIDENCE_FOUND` means that candidate text was retrieved, **not** that it logically supports an
+answer. The caller must still judge claim-to-passage fit. Full-source search is lexical and works
+best when the query includes keywords in the source's language.
 
 ## Ingestion — any format to grep-ready text
 
@@ -72,7 +94,7 @@ machine-readable operation table.
 
 ## Status
 
-`0.3.0` — beta. The engine (`klode.lib`) is solid: **600 tests**, a stable public-API facade, an AST
+`0.3.0` — beta. The engine (`klode.lib`) is solid: **600+ tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed

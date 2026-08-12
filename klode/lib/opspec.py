@@ -40,6 +40,7 @@ OPS: tuple[OpSpec, ...] = (
     OpSpec("zoom",        "kb",       _S, "zoom",      ("zoom_card",)),
     # consumption — ground
     OpSpec("verify",      "kb",       _S, "verify",    ("verify_quote",)),
+    OpSpec("evidence",    "kb",       _S, "evidence",  ("retrieve_evidence",)),
     # consumption — supervise (experimental: stub judge)
     OpSpec("review",      "kb",       _E, "review",    ()),
     # authoring — maintain a KB (CLI-only)

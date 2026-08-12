@@ -9,6 +9,7 @@ formatting. Imports the engine + core + opspec; imports NO adapter.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from . import common, console, core, opspec, query
 from .config import ConfigError
@@ -389,6 +390,245 @@ def build_context_bundle(cfg, requests, *, context_lines: int = 3, max_window: i
 
 
 # ---------------------------------------------------------------------------
+# evidence retrieval — card anchors first, then an explicit complete-L3 fallback.
+# This returns candidate raw passages, NEVER an answer or an entailment claim.
+# ---------------------------------------------------------------------------
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "could", "did",
+    "do", "does", "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "may", "me", "might", "my", "of",
+    "on", "or", "our", "ours", "she", "should", "so", "than", "that", "the", "their", "them",
+    "there", "these", "they", "this", "those", "to", "us", "was", "we", "were", "what",
+    "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "yours",
+})
+
+
+def _evidence_terms(text: str) -> tuple[str, ...]:
+    """Stable lexical terms for stdlib-only retrieval. Keep order, drop common query scaffolding."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in _WORD_RE.findall(text.lower()):
+        if len(token) < 2 or token in _STOP_WORDS or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
+def _passage_score(text: str, terms: tuple[str, ...], exact_query: str = "") -> float:
+    """A transparent lexical rank, not a confidence or entailment score."""
+    blob = " ".join(text.lower().split())
+    counts = [blob.count(t) for t in terms]
+    matched = sum(1 for n in counts if n)
+    required = 1 if len(terms) == 1 else 2
+    if matched < required:
+        return 0.0
+    coverage = matched / max(1, len(terms))
+    frequency = sum(min(n, 3) for n in counts)
+    exact = 5.0 if exact_query and " ".join(exact_query.lower().split()) in blob else 0.0
+    return exact + coverage * 10.0 + frequency
+
+
+def _clip_excerpt(text: str, terms: tuple[str, ...], max_chars: int = 2000) -> str:
+    """Bound a pathological one-line OCR paragraph while keeping the matching words visible."""
+    if len(text) <= max_chars:
+        return text
+    low = text.lower()
+    starts = [low.find(t) for t in terms if low.find(t) >= 0]
+    center = min(starts) if starts else 0
+    lo = max(0, center - max_chars // 3)
+    hi = min(len(text), lo + max_chars)
+    lo = max(0, hi - max_chars)
+    return ("…" if lo else "") + text[lo:hi] + ("…" if hi < len(text) else "")
+
+
+def _source_blocks(text: str, *, max_lines: int = 8):
+    """Yield bounded paragraph-like `(start, end, text)` blocks with 1-indexed source lines."""
+    lines = text.splitlines()
+    paragraph: list[tuple[int, str]] = []
+
+    def flush():
+        if not paragraph:
+            return []
+        return [
+            (chunk[0][0], chunk[-1][0], "\n".join(line for _, line in chunk))
+            for i in range(0, len(paragraph), max_lines)
+            if (chunk := paragraph[i:i + max_lines])
+        ]
+
+    for number, line in enumerate(lines, 1):
+        if line.strip():
+            paragraph.append((number, line))
+        else:
+            yield from flush()
+            paragraph = []
+    yield from flush()
+
+
+def _card_anchor_passages(cfg, card: str, question: str, terms: tuple[str, ...], *,
+                          context_lines: int, limit: int):
+    p = query.card_path(cfg, card)
+    src = query.source_of(cfg, card)
+    searched = ((src.rel,) if src and src.rel else ())
+    if not p:
+        return [], searched, (f"{card}: no such card",)
+    if src is None or not src.installed:
+        return [], searched, (f"{src.rel if src and src.rel else card}: source-not-installed",)
+
+    secs = query.sections(common.read(p))
+    body = "\n\n".join(secs.get(k, "") for k in ("thin", "full") if secs.get(k))
+    candidates = []
+    order = 0
+    for paragraph in re.split(r"\n\s*\n", body):
+        para_score = _passage_score(paragraph, terms, question)
+        if para_score <= 0:
+            continue
+        for marker in common.parse_markers(paragraph):
+            marker_score = _passage_score(marker.phrase, terms, question)
+            candidates.append((marker_score * 2.0 + para_score, order, marker))
+            order += 1
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+
+    passages: list[core.RawPassage] = []
+    issues: list[str] = []
+    seen: set[tuple[int, int]] = set()
+    for score, _, marker in candidates:
+        ctx = verify_context(cfg, card, marker, context_lines=context_lines, max_window=40)
+        if not ctx.usable:
+            issue = f"{src.rel}: {ctx.resolution.value}"
+            if issue not in issues:
+                issues.append(issue)
+            continue
+        key = (ctx.line_start, ctx.line_end)
+        if key in seen:
+            continue
+        seen.add(key)
+        passages.append(core.RawPassage(
+            card=card,
+            title=query.card_title(cfg, card),
+            rel=ctx.rel or src.rel or "",
+            line_start=ctx.line_start or 0,
+            line_end=ctx.line_end or 0,
+            text=_clip_excerpt(ctx.text, terms),
+            source_sha=ctx.source_sha or "",
+            route="card-anchor",
+            score=score,
+        ))
+        if len(passages) >= limit:
+            break
+    return passages, searched, tuple(issues)
+
+
+def _full_source_passages(cfg, card: str, question: str, terms: tuple[str, ...], *, limit: int):
+    src = query.source_of(cfg, card)
+    if src is None or not src.installed:
+        return [], (), (f"{src.rel if src and src.rel else card}: source-not-installed",), False
+    raw = src.path.read_bytes()
+    source_sha = hashlib.sha256(raw).hexdigest()
+    stored = _stored_sha(cfg, card)
+    if stored and stored != source_sha:
+        return [], (), (f"{src.rel}: source-stale",), False
+
+    # The card title selected the book; do not let title words dominate passage ranking inside it.
+    title_terms = set(_evidence_terms(query.card_title(cfg, card)))
+    content_terms = tuple(t for t in terms if t not in title_terms) or terms
+    candidates = []
+    text = raw.decode("utf-8", "replace")
+    for start, end, block in _source_blocks(text):
+        score = _passage_score(block, content_terms, question)
+        if score > 0:
+            candidates.append((score, start, end, block))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    passages = [
+        core.RawPassage(
+            card=card,
+            title=query.card_title(cfg, card),
+            rel=src.rel or "",
+            line_start=start,
+            line_end=end,
+            text=_clip_excerpt(block, content_terms),
+            source_sha=source_sha,
+            route="full-text",
+            score=score,
+        )
+        for score, start, end, block in candidates[:limit]
+    ]
+    return passages, (src.rel,) if src.rel else (), (), True
+
+
+def retrieve_evidence(cfg, card: str, question: str, *, full_text: bool = False,
+                      context_lines: int = 2, limit: int = 5) -> core.EvidenceSearchResult:
+    """Return citable raw passages for one source card.
+
+    Normal mode uses only query-relevant, card-authored anchors. If none yield usable passages, the
+    complete installed L3 source is searched automatically. A caller that judges returned card
+    evidence insufficient can set `full_text=True` to request that fallback explicitly. The result
+    says whether full text was searched and ends in INSUFFICIENT_EVIDENCE when no passage is found.
+    FOUND remains retrieval-only: the caller must still judge claim-to-passage support.
+    """
+    if not isinstance(context_lines, int) or isinstance(context_lines, bool) or context_lines < 0:
+        raise ValueError(f"context_lines must be a non-negative int, got {context_lines!r}")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError(f"limit must be a positive int, got {limit!r}")
+    question = str(question).strip()
+    card = str(card).strip()
+    if not query.card_path(cfg, card):
+        return core.EvidenceSearchResult(
+            question, card, core.EvidenceStatus.INSUFFICIENT,
+            note=f"No card with id {card!r}; no source was searched.",
+        )
+    terms = _evidence_terms(question)
+    if not terms:
+        return core.EvidenceSearchResult(
+            question, card, core.EvidenceStatus.INSUFFICIENT,
+            note="The question contains no searchable content terms; no evidence was guessed.",
+        )
+
+    if not full_text:
+        passages, searched, issues = _card_anchor_passages(
+            cfg, card, question, terms, context_lines=context_lines, limit=limit)
+        if passages:
+            return core.EvidenceSearchResult(
+                question, card, core.EvidenceStatus.FOUND, tuple(passages),
+                searched_sources=searched, unavailable_sources=issues,
+                note=("Citable raw passages were resolved through relevant card anchors. "
+                      "This proves occurrence, not that the passages answer the question."),
+            )
+
+    passages, searched, issues, full_text_searched = _full_source_passages(
+        cfg, card, question, terms, limit=limit)
+    if passages:
+        return core.EvidenceSearchResult(
+            question, card, core.EvidenceStatus.FOUND, tuple(passages),
+            full_text_searched=full_text_searched, searched_sources=searched, unavailable_sources=issues,
+            note=("The complete installed raw source was searched. These are candidate passages; "
+                  "the caller must still judge whether they support the answer."),
+        )
+    note = ("The complete installed raw source was searched and no relevant passage was found. "
+            "Report INSUFFICIENT_EVIDENCE; do not answer from recall.")
+    if issues:
+        note = ("The complete raw source could not provide usable evidence: " + "; ".join(issues)
+                + ". Report INSUFFICIENT_EVIDENCE; do not answer from recall.")
+    return core.EvidenceSearchResult(
+        question, card, core.EvidenceStatus.INSUFFICIENT,
+        full_text_searched=full_text_searched, searched_sources=searched,
+        unavailable_sources=issues, note=note,
+    )
+
+
+def _svc_evidence(cfg, params: dict) -> core.EvidenceSearchResult:
+    return retrieve_evidence(
+        cfg,
+        params.get("card") or params.get("id", ""),
+        params.get("query", ""),
+        full_text=bool(params.get("full_text", False)),
+        context_lines=_bounded_int(params, "context_lines", 2, 0, 20),
+        limit=_bounded_int(params, "limit", 5, 1, 50),
+    )
+
+
+# ---------------------------------------------------------------------------
 # supervision service — review a draft. EXPERIMENTAL: the judge is a stub, so the result MUST
 # self-label (never an authoritative Go/Recycle from a fake judge).
 # ---------------------------------------------------------------------------
@@ -446,6 +686,7 @@ SERVICES = {
     "consult": _svc_consult,
     "zoom": _svc_zoom,
     "verify": _svc_verify,
+    "evidence": _svc_evidence,
     "review": _svc_review,
     "check": _svc_check,
     "build": _svc_build,

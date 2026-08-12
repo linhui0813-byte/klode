@@ -10,9 +10,10 @@ sys.path.insert(0, str(REPO))
 
 SPEC = REPO / "dev-docs" / "SPEC-operations.md"
 _OP_COLUMNS = ("op-id", "scope", "result", "capability", "cli", "mcp")
-_LEGACY_MCP_TOOLS = {
+_PUBLIC_MCP_TOOLS = {
     "list_kbs", "list_lenses", "diagnose", "consult_dimension",
     "consult_framework", "search_sources", "zoom_card", "verify_quote",
+    "retrieve_evidence",
 }
 
 
@@ -61,16 +62,16 @@ class SpecOperations(unittest.TestCase):
     def test_core_consumption_ops_present(self):
         ids = {op["op-id"] for op in parse_ops(self.text)}
         for expected in ("kbs.list", "lenses.list", "cards.list", "search", "diagnose",
-                         "consult", "zoom", "verify", "review"):
+                         "consult", "zoom", "verify", "evidence", "review"):
             self.assertIn(expected, ids)
 
     def test_review_is_experimental(self):
         review = next(op for op in parse_ops(self.text) if op["op-id"] == "review")
         self.assertEqual(review["capability"], "experimental")
 
-    def test_every_legacy_mcp_tool_is_aliased_once(self):
+    def test_every_public_mcp_tool_is_aliased_once(self):
         aliases = parse_aliases(self.text)
-        self.assertEqual(set(aliases), _LEGACY_MCP_TOOLS)      # exactly the 8, each mapped once
+        self.assertEqual(set(aliases), _PUBLIC_MCP_TOOLS)
         op_ids = {op["op-id"] for op in parse_ops(self.text)}
         for tool, op_id in aliases.items():
             self.assertIn(op_id, op_ids, f"{tool} aliases unknown op {op_id}")

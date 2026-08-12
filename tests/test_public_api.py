@@ -31,7 +31,8 @@ class PublicApiContract(unittest.TestCase):
     def test_facade_declares_and_exposes_the_contract(self):
         import klode.lib as klode
         for name in ("Config", "consult", "ConsultRequest", "verify",
-                     "dimension", "framework", "diagnose", "resolve", "search"):
+                     "dimension", "framework", "diagnose", "resolve", "search",
+                     "retrieve_evidence", "EvidenceSearchResult", "EvidenceStatus", "RawPassage"):
             self.assertIn(name, klode.__all__)
             self.assertTrue(hasattr(klode, name), name)
         # the linter stays a module (name would shadow it); reachable, not a facade export

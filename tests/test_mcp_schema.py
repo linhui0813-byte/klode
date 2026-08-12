@@ -13,6 +13,7 @@ from klode.lib.pool import KBPool
 _EXPECTED_TOOLS = {
     "list_lenses", "diagnose", "consult_dimension", "consult_framework",
     "search_sources", "zoom_card", "verify_quote",
+    "retrieve_evidence",
     "list_kbs",
 }
 
@@ -23,7 +24,7 @@ class McpSchema(unittest.TestCase):
 
     def test_dispatch_covers_tools_except_router_handled_list_kbs(self):
         tool_names = {t["name"] for t in mcp.TOOLS}
-        self.assertEqual(tool_names, _EXPECTED_TOOLS)                        # 8 tools in the schema
+        self.assertEqual(tool_names, _EXPECTED_TOOLS)                        # public schema is explicit
         # every tool projects a renderer (the registry-driven dispatch table)
         self.assertEqual(set(mcp.RENDERERS), _EXPECTED_TOOLS)
 
@@ -56,7 +57,7 @@ class KbSelector(unittest.TestCase):
     def test_kb_on_grounding_and_discovery_absent_on_list_kbs(self):
         tools = self._by_name()
         for name in ("consult_dimension", "consult_framework", "zoom_card", "verify_quote",
-                     "search_sources", "list_lenses", "diagnose"):
+                     "retrieve_evidence", "search_sources", "list_lenses", "diagnose"):
             self.assertIn("kb", tools[name]["inputSchema"]["properties"], name)
         self.assertNotIn("kb", tools["list_kbs"]["inputSchema"].get("properties", {}))
 
@@ -73,6 +74,14 @@ class KbSelector(unittest.TestCase):
         self.assertIn("required when", grounding)
         self.assertIn("fan out", discovery)
         self.assertNotEqual(grounding, discovery)
+
+    def test_retrieve_evidence_requires_card_and_query_and_exposes_full_text_fallback(self):
+        tool = self._by_name()["retrieve_evidence"]
+        self.assertEqual(set(tool["inputSchema"]["required"]), {"id", "query"})
+        props = tool["inputSchema"]["properties"]
+        self.assertIn("full_text", props)
+        self.assertFalse(props["full_text"]["default"])
+        self.assertIn("insufficient_evidence", tool["description"].lower())
 
 
 class ServerName(unittest.TestCase):
