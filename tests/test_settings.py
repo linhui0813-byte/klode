@@ -39,27 +39,38 @@ class ArgparseCanDistinguishOmissionFromChoice(unittest.TestCase):
         self.assertFalse(p.parse_args(base + ["--no-verify"]).verify)      # explicit off
 
 
-class Precedence(unittest.TestCase):
-    """argument → environment → file → default, with the winner's origin recorded."""
+class _EnvIsolated(unittest.TestCase):
+    """Save, clear, and restore every `KLODE_*` variable around each test.
+
+    This block was copy-pasted into three classes and could drift between them, which makes test
+    isolation unreliable in exactly the way that is hardest to notice: a leaked variable changes a
+    LATER test, not this one.
+    """
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="klode-settings-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        (self.tmp / ".klode").mkdir()
-        self.file = self.tmp / ".klode" / "settings.toml"
-        # SAVE and restore: the previous version deleted every KLODE_* var without putting them
-        # back, contaminating later tests and the caller's environment
-        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
-        for var in self._saved:
+        super().setUp()
+        self._saved_env = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
+        for var in self._saved_env:
             os.environ.pop(var, None)
         self.addCleanup(self._restore_env)
 
     def _restore_env(self):
-        for var, val in self._saved.items():
+        for var, val in self._saved_env.items():
             if val is None:
                 os.environ.pop(var, None)
             else:
                 os.environ[var] = val
+
+
+class Precedence(_EnvIsolated):
+    """argument → environment → file → default, with the winner's origin recorded."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-settings-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / ".klode").mkdir()
+        self.file = self.tmp / ".klode" / "settings.toml"
 
     def _write(self, body: str):
         self.file.write_text(body, encoding="utf-8")
@@ -119,26 +130,13 @@ class Precedence(unittest.TestCase):
                          settings.DEFAULT)
 
 
-class InvalidInputFailsLoud(unittest.TestCase):
+class InvalidInputFailsLoud(_EnvIsolated):
     def setUp(self):
+        super().setUp()
         self.tmp = Path(tempfile.mkdtemp(prefix="klode-settings2-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / ".klode").mkdir()
         self.file = self.tmp / ".klode" / "settings.toml"
-        # These tests SET KLODE_* vars and then pop them unconditionally, which deletes a value the
-        # caller had before the suite ran. Same defect Precedence.setUp already fixed; the class
-        # boundary is not a reason for it to survive here.
-        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
-        for var in self._saved:
-            os.environ.pop(var, None)
-        self.addCleanup(self._restore_env)
-
-    def _restore_env(self):
-        for var, val in self._saved.items():
-            if val is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = val
 
     def test_an_unknown_key_is_rejected_rather_than_ignored(self):
         # silently dropping it is how a setting "does nothing" with no explanation
@@ -420,17 +418,10 @@ class JudgeHurdleActuallyReachesTheVerdict(unittest.TestCase):
         self.assertEqual(called, [], "a bad setting must stop the run, not be clamped silently")
 
 
-class SafetySettingsReachTheirConsumer(unittest.TestCase):
+class SafetySettingsReachTheirConsumer(_EnvIsolated):
     """Resolution is not consumption. These tests would all have passed with `ingest.run()` no
     longer forwarding tier/verify, or the marker request no longer sending `mode` — the resolver
     would still resolve them correctly and change nothing about what runs."""
-
-    def setUp(self):
-        self._saved = {v: os.environ.get(v) for s_ in settings.SPEC if (v := s_.env)}
-        for v in self._saved:
-            os.environ.pop(v, None)
-        self.addCleanup(lambda: [os.environ.__setitem__(k, v) if v is not None
-                                 else os.environ.pop(k, None) for k, v in self._saved.items()])
 
     def test_ingest_tier_and_verify_arrive_at_ingest(self):
         from unittest import mock

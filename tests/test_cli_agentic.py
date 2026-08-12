@@ -126,10 +126,15 @@ class CliAgentic(unittest.TestCase):
         self.assertFalse((self.tmp / "proj").exists())     # rejected before any filesystem mutation
 
     def test_cards_and_lenses_verbs(self):
-        _, cout, _ = _run(self._kb("cards"))
+        # the return codes were DISCARDED (`_, cout, _`), so this passed if either command printed
+        # partial output and then reported failure
+        rc_cards, cout, cerr = _run(self._kb("cards"))
+        self.assertEqual(rc_cards, 0, cerr)
         self.assertIn("brevity", cout)
-        _, lout, _ = _run(self._kb("lenses"))
+        rc_lenses, lout, lerr = _run(self._kb("lenses"))
+        self.assertEqual(rc_lenses, 0, lerr)
         self.assertIn("pacing", lout)
+
 
     def test_existing_prose_path_unchanged(self):
         code, out, _ = _run(["-c", str(FIX), "search", "reader"])   # no --json, single-KB via -c
@@ -364,6 +369,49 @@ class SurfacesAgreeAndFlagsDoWhatTheySay(unittest.TestCase):
         self.assertNotIn("NOTE", quiet)
 
 
+class ProseVerifyGoesThroughTheSharedService(unittest.TestCase):
+    """`zoom --level content --grep` called occurrence-only `query.verify` directly, skipping the
+    stamped-source freshness and ambiguity checks the JSON path gets through `services.execute`.
+    Stale evidence could therefore be CONFIRMED on one surface and refused on the other, for the
+    same request — the exact drift the shared service exists to prevent, in the one place the
+    guarantee matters most."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-verify-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.kb = self.tmp / "kb"
+        shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "kb-fixture", self.kb)
+        self.cfg = str(self.kb / "library.toml")
+
+    def _run(self, *argv):
+        from klode.lib.cli import main
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = main(["-c", self.cfg] + list(argv))
+        return rc, buf.getvalue() + err.getvalue()
+
+    def test_a_stale_source_is_reported_as_stale_not_as_citation_rot(self):
+        src = self.kb / "library" / "books" / "brevity.txt"
+        src.write_text(src.read_text(encoding="utf-8") + "\nA BRAND NEW SENTENCE.\n",
+                       encoding="utf-8")
+        rc, out = self._run("zoom", "brevity", "--level", "content", "--grep", "BRAND NEW")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("changed since this card was stamped", out)
+        # and NOT the wrong diagnosis, which sends the reader to fix an anchor that is fine
+        self.assertNotIn("citation rot", out)
+
+    def test_prose_and_json_agree_once_the_source_is_restamped(self):
+        src = self.kb / "library" / "books" / "brevity.txt"
+        src.write_text(src.read_text(encoding="utf-8") + "\nA BRAND NEW SENTENCE.\n",
+                       encoding="utf-8")
+        self._run("build", "--stamp")
+        rc_prose, out = self._run("zoom", "brevity", "--level", "content", "--grep", "BRAND NEW")
+        rc_json, _ = self._run("--json", "zoom", "brevity", "--level", "content",
+                               "--grep", "BRAND NEW")
+        self.assertEqual(rc_prose, 0, out)
+        self.assertEqual(rc_prose, rc_json)
+
+
 class TerminalControlSequencesAreNeutered(unittest.TestCase):
     """A corpus is whatever PDF you fed it and a card can arrive through the registry, so both are
     untrusted. Raw `\x1b[2J\x1b[H` clears the reader's screen; `\x1b]0;…\x07` sets the window title."""
@@ -377,6 +425,10 @@ class TerminalControlSequencesAreNeutered(unittest.TestCase):
         src = kb / "library" / "books" / "brevity.txt"
         src.write_text(src.read_text(encoding="utf-8")
                        + "\nNEEDLE \x1b[2J\x1b[H spoofed \x1b]0;pwned\x07\n", encoding="utf-8")
+        # re-stamp: the shared service refuses a source that changed since the card was stamped,
+        # which is the freshness guarantee the prose path previously bypassed
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["-c", str(kb / "library.toml"), "build", "--stamp"])
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             main(["-c", str(kb / "library.toml"), "zoom", "brevity",

@@ -343,14 +343,32 @@ def cmd_zoom(args) -> int:
         print(f"{src.rel} — {src.size} bytes, grep-ready. "
               f"Pass --grep \"phrase\" to verify a claim against it.")
         return 0
-    v = query.verify(cfg, args.id, args.grep, max_lines=args.max)
+    # Through the SHARED service, like the JSON path. The prose branch called occurrence-only
+    # `query.verify` directly, so it skipped the stamped-source freshness and ambiguity checks the
+    # service applies — meaning stale or ambiguous evidence could be confirmed on one surface and
+    # not the other, for the same request. That is precisely the drift `services.execute` exists to
+    # prevent, in the one place the guarantee matters most.
+    r = _run(args, "verify", {"id": args.id, "phrase": args.grep, "max_lines": args.max})
+    v = r.value
     if v.found:
         for n, ln in v.lines:      # the real source line, with terminal control sequences neutered
             print(f"{n}: {sane(ln)}")
-        if v.folded_only:
+        if v.resolution is core.Resolution.FOLDED_ONLY:
             print(f"✓ resolves in {v.rel} (matches across line/hyphenation folding "
                   f"— not on a single line)")
         return 0
+    if v.resolution is core.Resolution.SOURCE_STALE:
+        # a distinction the direct call could not make: the source CHANGED since the card was
+        # stamped, so an anchor that fails now may never have been wrong. Reporting this as
+        # citation rot sends the reader to fix the wrong thing.
+        print(f"source changed since this card was stamped: {v.rel}\n"
+              f"(re-verify the claim, then `klode build --stamp`)", file=sys.stderr)
+        return EXIT_ABSTAINED
+    if v.resolution is core.Resolution.SOURCE_NOT_INSTALLED:
+        # the shared service distinguishes "the source is not here" from "the phrase is not there";
+        # the direct call could not, so both printed the same citation-rot message
+        print(f"source not installed locally: {v.rel}", file=sys.stderr)
+        return EXIT_ABSTAINED
     print(f"✗ NOT FOUND in {v.rel} — `{args.grep}` does not resolve (citation rot?)",
           file=sys.stderr)
     return 1
@@ -560,14 +578,26 @@ def _jsonable(o):
 
 
 def _json_exit(result) -> int:
-    """Preserve the prose commands' semantic exit codes under --json (a not-found/none is nonzero,
-    so an agent can branch on $?)."""
+    """The same semantic exit code the prose path produces, so an agent can branch on `$?`.
+
+    This guessed from PYTHON CONTAINER TYPES rather than from what the operation found, and the
+    guess was wrong in both directions. A `zoom --level full` for a card with no Full section
+    returns a populated `CardContent` whose `body` is None: not None, not a `Note`, not an empty
+    list — so JSON exited 0 while prose exited 1 for the identical request. Ask each payload
+    whether it found anything instead of inferring it from its shape.
+    """
     v = result.value
     if isinstance(v, core.EvidenceHit):
         return 0 if v.found else 1
     if v is None or isinstance(v, core.Note):
         return 1
-    if isinstance(v, list) and not v:
+    if isinstance(v, core.CardContent):
+        # the requested SECTION is the answer; a card that exists without it is a miss
+        return 0 if v.body else 1
+    if isinstance(v, core.FanOut):
+        # a fan-out that found nothing anywhere is a miss; one that found something is not
+        return 0 if any(_json_exit(item) == 0 for item in v.items) else 1
+    if isinstance(v, (list, tuple)) and not v:
         return 1
     return 0
 

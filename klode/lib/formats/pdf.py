@@ -50,6 +50,11 @@ def corruption_score(text: str) -> float:
 
 
 DEFAULT_LANG = "eng"
+# Version ranges, because these adapters use specific APIs (kreuzberg's ExtractionConfig fields,
+# docling's PdfPipelineOptions). Telling users to install the unconstrained latest made the
+# optional environment irreproducible and able to break with no change in this repo.
+KREUZBERG_SPEC = "kreuzberg>=4.10,<5"
+DOCLING_SPEC = "docling>=2.0,<3"
 OCR_TIMEOUT = 1800             # seconds — a local OCR backend has no internal bound; a hostile
 #                                or merely enormous PDF must not wedge ingestion forever
 PDFTOTEXT_TIMEOUT = 120        # seconds — a hostile/wedged PDF must not hang ingestion forever
@@ -72,8 +77,8 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     try:
         from kreuzberg import extract_file_sync, ExtractionConfig
     except ImportError as e:
-        raise ImportError("xberg/kreuzberg not installed — `pipx inject klode kreuzberg` "
-                          "(needs the tesseract binary too)") from e
+        raise ImportError(f"xberg/kreuzberg not installed — `pipx inject klode "
+                          f"'{KREUZBERG_SPEC}'` (needs the tesseract binary too)") from e
     # `lang` was accepted here and by every other extractor and then used by NONE of them, while
     # `--lang` documented itself as controlling Tier 2/3 OCR. A non-English scan was silently OCR'd
     # as English. Passed through where the backend supports it; where it does not, the caller is
@@ -88,6 +93,33 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
                 "would be silently ignored. Upgrade kreuzberg, or use --tier docling.")
         r = extract_file_sync(str(pdf), config=ExtractionConfig(**cfg_kwargs))
     return r.content or ""
+
+
+def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap: int) -> dict:
+    """One bounded multipart-JSON round trip, shared by both remote backends.
+
+    They had separate copies of: build the body, POST, bounded-read, size-check, decode, and
+    top-level type-check — and the copies had ALREADY drifted (one validated nested types, the
+    other did not; one stripped a trailing slash, the other did not). Backend-specific schema
+    parsing stays with each backend; only the transport is shared.
+    """
+    boundary = uuid.uuid4().hex
+    body = _multipart(fields, "files" if "to_formats" in fields else "file",
+                      pdf.name, _read_upload(pdf), boundary)
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(cap + 1)                  # bounded read: never OOM on a huge response
+    if len(raw) > cap:
+        raise RuntimeError(f"{url}: response exceeds the {cap // 1048576} MB cap")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:     # JSONDecodeError is a ValueError
+        raise RuntimeError(f"{url}: unparseable response ({e})") from e
+    if not isinstance(data, dict):        # a valid but non-object body (e.g. `[]`) must degrade
+        raise RuntimeError(f"{url}: non-object JSON response")
+    return data
 
 
 def _read_upload(pdf: Path) -> bytes:
@@ -156,25 +188,13 @@ def _docling_structured(pdf: Path,
     `json` is requested alongside `md` so candidate page coverage can be read DIRECTLY from
     `prov[].page_no` rather than inferred from the control — the control cannot answer for the
     candidate, and inferring it was a defect in an earlier design."""
-    boundary = uuid.uuid4().hex
     # repeated field, not "md,json": docling models `to_formats` as a list of enum values, and a
     # single comma-joined value can be rejected — in which case the JSON provenance never arrives
     # and coverage silently degrades to "cannot say".
-    body = _multipart({"to_formats": ["md", "json"], "do_table_structure": "true"},
-                      "files", pdf.name, _read_upload(pdf), boundary)
-    req = urllib.request.Request(
-        f"{endpoint}/v1/convert/file", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=DOCLING_HTTP_TIMEOUT) as resp:
-        raw = resp.read(MAX_DOCLING_RESPONSE + 1)         # bounded read: never OOM on a huge response
-    if len(raw) > MAX_DOCLING_RESPONSE:
-        raise RuntimeError("docling-serve response exceeds the size cap")
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:         # JSONDecodeError is a ValueError
-        raise RuntimeError(f"docling-serve returned an unparseable response ({e})") from e
-    if not isinstance(data, dict):        # a valid but non-object body (e.g. `[]`) must degrade
-        raise RuntimeError("docling-serve returned a non-object JSON response")
+    data = _post_multipart_json(
+        pdf, f"{endpoint}/v1/convert/file",
+        {"to_formats": ["md", "json"], "do_table_structure": "true"},
+        DOCLING_HTTP_TIMEOUT, MAX_DOCLING_RESPONSE)
     doc = data.get("document") or {}
     if not isinstance(doc, dict):     # a truthy non-dict `document` reached .get and raised
         raise RuntimeError("docling-serve returned a non-object `document`")
@@ -195,11 +215,13 @@ def _docling_structured(pdf: Path,
 
 def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
     """Markdown plus page provenance. `_docling` wraps this for the text-only extractor table."""
+    # Resolved ONCE and passed down. Resolving again inside `_docling` meant a settings-file or
+    # environment change between the two lookups could send the second call to a different place
+    # than the branch decision was made on — and the wrapper would then discard its provenance.
     endpoint = docling_endpoint()
     if endpoint:
         return _docling_remote(pdf, endpoint)
-    md = _docling(pdf, lang)
-    return md, None          # the local path has a DoclingDocument but no export wired yet
+    return _docling_local(pdf, lang), None   # local has a DoclingDocument but no export wired yet
 
 
 def docling_page_text(pdf: Path) -> "dict[int, str] | None":
@@ -220,15 +242,20 @@ def _docling(pdf: Path, lang: str = "eng") -> str:
     """Markdown only — the escalation loop compares text and nothing else."""
     endpoint = docling_endpoint()
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
-        md, _pages = _docling_remote(pdf, endpoint)
-        return md
+        return _docling_remote(pdf, endpoint)[0]
+    return _docling_local(pdf, lang)
+
+
+def _docling_local(pdf: Path, lang: str = "eng") -> str:
+    """The in-process backend. Split out so the endpoint is resolved exactly once, by the caller."""
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
         from docling.datamodel.base_models import InputFormat
     except ImportError as e:
-        raise ImportError("docling not installed — set $KLODE_DOCLING_URL to a docling-serve "
-                          "endpoint, or `pipx inject klode docling` (heavy: torch + models).") from e
+        raise ImportError(f"docling not installed — set $KLODE_DOCLING_URL to a docling-serve "
+                          f"endpoint, or `pipx inject klode '{DOCLING_SPEC}'` "
+                          "(heavy: torch + models).") from e
     opts = PdfPipelineOptions()
     opts.do_ocr = True
     try:
@@ -310,23 +337,10 @@ def _marker_structured(pdf: Path,
     the visual check cannot align a page, and the backend becomes unrankable — the exact hole that
     made docling unscorable on every document until its structured result was read.
     """
-    boundary = uuid.uuid4().hex
-    body = _multipart({"paginate_output": "true", "output_format": "markdown",
-                       "mode": _marker_mode()},
-                      "file", pdf.name, _read_upload(pdf), boundary)
-    req = urllib.request.Request(
-        f"{endpoint}/marker/upload", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=MARKER_HTTP_TIMEOUT) as resp:
-        raw = resp.read(MAX_MARKER_RESPONSE + 1)
-    if len(raw) > MAX_MARKER_RESPONSE:
-        raise RuntimeError("marker_server response exceeds the size cap")
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:
-        raise RuntimeError(f"marker_server returned an unparseable response ({e})") from e
-    if not isinstance(data, dict):
-        raise RuntimeError("marker_server returned a non-object JSON response")
+    data = _post_multipart_json(
+        pdf, f"{endpoint}/marker/upload",
+        {"paginate_output": "true", "output_format": "markdown", "mode": _marker_mode()},
+        MARKER_HTTP_TIMEOUT, MAX_MARKER_RESPONSE)
     if not data.get("success"):
         # marker reports failure with HTTP 200 and `success: false`. Reading only the status code
         # would take an error payload for a document.

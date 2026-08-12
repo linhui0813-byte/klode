@@ -1,8 +1,22 @@
 """Multi-format ingestion — the `klode.lib.formats` package: the model + registry, each stdlib
 handler (txt/html/epub/docx), the PDF handler wrapping the tiered logic, the content-sniffing
-router, and the optional-tier escalation. All fixtures are real in-memory zip/html — the only
-mocks are the pdftotext subprocess and the lazy-import OCR seam (each paired with a skip-guarded
-real path). The default suite runs with ZERO optional backends installed."""
+router, and the optional-tier escalation.
+
+**What is real and what is mocked**, stated accurately — the previous version claimed the only
+mocks were the pdftotext subprocess and the OCR import seam, while this file also mocks HTTP
+transport, module constants, settings paths, and endpoint resolution:
+
+- REAL: every zip/html/docx/epub fixture is built in memory and parsed by the real handler; the
+  PDF corpus under `tests/fixtures/pdfs/` is real; `split_marker_pages` and `corruption_score` run
+  on real strings.
+- MOCKED: the `pdftotext` subprocess, the lazy `kreuzberg`/`docling` import seam,
+  `urllib.request.urlopen` for both remote backends, `MAX_*` size constants, and
+  `settings.settings_path` (so a developer's own `~/.klode/settings.toml` cannot reach into a
+  test).
+- The poppler-backed integration test is skip-guarded on the binary being present; it does not
+  convert a failure into a skip.
+
+The default suite runs with ZERO optional backends installed."""
 import importlib.util
 import io
 import json
@@ -114,6 +128,18 @@ class _FakeResp:                                            # a urlopen() contex
 class FormatsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="klode-fmt-"))
+        # A developer's real `~/.klode/settings.toml` could configure a docling/marker endpoint,
+        # so "no endpoint" tests could make a LIVE request and auto-tier mocks could be bypassed.
+        # Point settings at an absent file and clear the KLODE_* environment for every test here.
+        from klode.lib import settings as _s
+        self._sp = _s.settings_path
+        _s.settings_path = lambda *a, **k: self.tmp / "no-settings.toml"
+        self.addCleanup(setattr, _s, "settings_path", self._sp)
+        saved = {v: os.environ.get(v) for sp in _s.SPEC if (v := sp.env)}
+        for v in saved:
+            os.environ.pop(v, None)
+        self.addCleanup(lambda: [os.environ.__setitem__(k, v) if v is not None
+                                 else os.environ.pop(k, None) for k, v in saved.items()])
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -121,9 +147,17 @@ class FormatsTest(unittest.TestCase):
 
 # =========================================================== WI-1 model + registry
 class ModelRegistry(FormatsTest):
-    def test_extraction_is_frozen_with_four_fields(self):
+    def test_extraction_is_frozen_and_every_field_is_asserted(self):
+        # the name said "four fields" while the model had five; `pages` was omitted, so the stale
+        # claim stayed green and page provenance had no assertion at all
+        import dataclasses
+        names = [f.name for f in dataclasses.fields(Extraction)]
+        self.assertEqual(names, ["text", "handler", "format", "note", "pages"])
         e = Extraction(text="x", handler="txt", format="txt", note="")
-        self.assertEqual((e.text, e.handler, e.format, e.note), ("x", "txt", "txt", ""))
+        self.assertEqual((e.text, e.handler, e.format, e.note, e.pages),
+                         ("x", "txt", "txt", "", None))
+        self.assertEqual(Extraction(text="x", handler="pdf", format="pdf",
+                                    note="", pages=(1, 2)).pages, (1, 2))
         with self.assertRaises(Exception):
             e.text = "y"                                       # frozen
 
@@ -143,14 +177,30 @@ class ModelRegistry(FormatsTest):
         self.assertIsNone(formats.by_format("nope"))
 
     def test_every_handler_satisfies_protocol_surface(self):
+        # `hasattr` alone passed a handler with `sniff = None`, which is exactly the shape a
+        # half-finished handler has
+        import inspect
         for h in formats.HANDLERS:
-            self.assertTrue(hasattr(h, "sniff") and hasattr(h, "extract"))
-            self.assertTrue(isinstance(h.format, str) and h.format)
-            self.assertIsInstance(h.priority, int)
+            with self.subTest(handler=h.format):
+                self.assertTrue(callable(h.sniff), f"{h.format}.sniff is not callable")
+                self.assertTrue(callable(h.extract), f"{h.format}.extract is not callable")
+                self.assertEqual(list(inspect.signature(h.sniff).parameters)[:2], ["path", "head"])
+                sig = inspect.signature(h.extract).parameters
+                self.assertIn("path", sig)
+                self.assertTrue(isinstance(h.format, str) and h.format)
+                self.assertIsInstance(h.priority, int)
 
     def test_import_pulls_in_no_backend(self):
-        code = "import klode.lib.formats, sys; print([m for m in " \
-               "('kreuzberg','docling','trafilatura','docx') if m in sys.modules])"
+        """An ALLOW-list, not a four-package denylist.
+
+        The denylist named kreuzberg/docling/trafilatura/docx, so adding any other runtime
+        dependency — requests, pypdf, a new backend — passed. `sys.stdlib_module_names` is the
+        authoritative set, so anything outside it and outside the project namespace is foreign
+        whatever it is called."""
+        code = ("import sys; before=set(sys.modules); import klode.lib.formats; "
+                "tops={n.split('.')[0] for n in set(sys.modules)-before}; "
+                "print(sorted(t for t in tops if t!='klode' and "
+                "t not in sys.stdlib_module_names and not t.startswith('_')))")
         out = __import__("subprocess").run([sys.executable, "-c", code], cwd=REPO,
                                            capture_output=True, text=True)
         self.assertEqual(out.stdout.strip(), "[]", out.stdout + out.stderr)
@@ -255,17 +305,25 @@ class Epub(FormatsTest):
             with self.assertRaises(ZipBombError):
                 epub.EpubHandler().extract(p)
 
+    def _snapshot(self, root):
+        return {q: q.stat().st_mtime_ns for q in root.rglob("*")}
+
     def test_zip_traversal_refused_and_nothing_written(self):
         bad = io.BytesIO()
         with zipfile.ZipFile(bad, "w") as z:
             z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip",
                        compress_type=zipfile.ZIP_STORED)
             z.writestr("../evil.xhtml", "<html><body>x</body></html>")
-        sentinel = Path(tempfile.mkdtemp(dir=self.tmp))
-        before = os.listdir(sentinel)
+        # Snapshot the WHOLE temp root, not one unrelated sentinel directory: a defective
+        # extractor could write the traversal target anywhere else and then raise, and "nothing
+        # written" still passed. Taken after the epub itself is on disk, so only the extractor's
+        # own writes can move it.
+        src = _write(self.tmp, "trav.epub", bad.getvalue())
+        before = self._snapshot(self.tmp)
         with self.assertRaises(ZipTraversalError):
-            epub.EpubHandler().extract(_write(self.tmp, "trav.epub", bad.getvalue()))
-        self.assertEqual(os.listdir(sentinel), before)          # nothing extracted to disk
+            epub.EpubHandler().extract(src)
+        self.assertEqual(self._snapshot(self.tmp), before,
+                         "the extractor wrote something before raising")
 
     def test_entry_name_guard_refuses_absolute_and_dotdot(self):
         for bad in ("../evil.xhtml", "a/../../etc/passwd", "/etc/lode_evil", "\\abs", "C:evil"):
@@ -295,9 +353,6 @@ class Docx(FormatsTest):
     def test_runs_merge_paragraphs_split(self):
         self.assertEqual(self._text(make_docx([["Run1", "Run2"], ["Second"]])),
                          "Run1Run2\nSecond")
-
-    def test_namespace_resolved(self):
-        self.assertIn("Run1Run2", self._text(make_docx([["Run1", "Run2"]])))
 
     def test_br_and_empty_paragraph(self):
         t = self._text(make_docx([["A", "BR", "B"], "EMPTY", ["C"]]))
@@ -414,9 +469,14 @@ class Pdf(FormatsTest):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
              mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 160), \
-             mock.patch.object(pdf, "_docling", return_value="the regulation of information " * 120):
+             mock.patch.object(pdf, "_docling_with_pages",
+                               return_value=("the regulation of information " * 120, (1, 2, 3))):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "docling")
+        # patched at the seam production actually calls, and the PAGES are asserted: mocking
+        # `_docling` and checking only the handler passed even with page-provenance propagation
+        # deleted and production reverted to the text-only extractor
+        self.assertEqual(e.pages, (1, 2, 3))
 
     def test_auto_refuses_at_the_tier_3_gap_rather_than_returning_garbage(self):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
@@ -519,6 +579,27 @@ class Pdf(FormatsTest):
             with self.assertRaises(OSError):                # URLError is an OSError -> escalation degrades
                 pdf._docling(self._pdf())
 
+    def test_the_structured_json_is_requested_and_reaches_the_choice(self):
+        """Removing the `json` format request would leave docling unmeasurable — no page
+        provenance, no per-page text, `visual=None` on every document — while the old transport
+        test (markdown, URL, filename) and the mocked bake-off provenance test both stayed green."""
+        payload = {"document": {"md_content": "# H\n\nalpha beta",
+                                "json_content": {"texts": [
+                                    {"text": "alpha", "prov": [{"page_no": 1}]},
+                                    {"text": "beta", "prov": [{"page_no": 2}]}]}}}
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001"}), \
+             mock.patch.object(pdf.urllib.request, "urlopen",
+                               return_value=_FakeResp(payload)) as uo:
+            md, pages, text = pdf._docling_structured(self._pdf(), pdf.docling_endpoint())
+            c = pdf.choose_and_extract(self._pdf(), tier="docling")
+        body = uo.call_args[0][0].data
+        self.assertEqual(body.count(b'name="to_formats"'), 2)   # repeated field, not "md,json"
+        self.assertIn(b"\r\njson\r\n", body)
+        self.assertIn(b"\r\nmd\r\n", body)
+        self.assertEqual(pages, (1, 2))                          # provenance parsed
+        self.assertEqual(text, {1: "alpha", 2: "beta"})          # per-page text parsed
+        self.assertEqual(c.pages, (1, 2))                        # and it reaches the Choice
+
     def test_docling_remote_empty_markdown_raises(self):
         with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001"}), \
              mock.patch.object(pdf.urllib.request, "urlopen",
@@ -579,6 +660,18 @@ class Pdf(FormatsTest):
             with self.assertRaises(RuntimeError):
                 pdf._docling(self._pdf())
 
+    def test_a_wedged_pdftotext_becomes_a_runtimeerror_at_the_documented_timeout(self):
+        # only a non-zero exit was covered, so removing the timeout — the guard against a hostile
+        # or wedged PDF hanging ingestion forever — would not have been caught
+        import subprocess as sp
+        with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+             mock.patch.object(pdf.subprocess, "run",
+                               side_effect=sp.TimeoutExpired("pdftotext", pdf.PDFTOTEXT_TIMEOUT)) as run:
+            with self.assertRaises(RuntimeError) as cm:
+                pdf._pdftotext(self._pdf())
+        self.assertIn("timed out", str(cm.exception))
+        self.assertEqual(run.call_args.kwargs.get("timeout"), pdf.PDFTOTEXT_TIMEOUT)
+
     def test_docling_endpoint_scheme_validated(self):          # audit r1: no file:// etc.
         # Now rejected at the SETTINGS boundary (ValueError), not at first use. That is the louder
         # placement: `klode ingest` resolves settings before it extracts anything, so a typo'd
@@ -619,16 +712,18 @@ class Pdf(FormatsTest):
 
     @unittest.skipUnless(shutil.which("pdftotext"), "poppler not installed")
     def test_real_pdftotext_integration(self):
-        # a real (if trivial) PDF path — only runs where poppler is present
-        p = _write(self.tmp, "r.pdf", b"%PDF-1.7\n%%EOF\n")
-        try:
-            e = pdf.PdfHandler().extract(p, tier="pdftotext")
-            self.assertEqual(e.format, "pdf")
-        except RuntimeError:
-            self.skipTest("pdftotext rejected the trivial fixture")
+        """A REAL document with KNOWN text, and a failure is a failure.
+
+        The previous version fed a trivial two-line stub that poppler rejects and turned any
+        RuntimeError into a skip — so a completely broken `_pdftotext` that always raised passed
+        the suite while appearing to have integration coverage. Skip only on the binary's absence,
+        which the decorator already handles."""
+        corpus = REPO / "tests" / "fixtures" / "pdfs" / "three-pages.pdf"
+        text = pdf._pdftotext(corpus)
+        self.assertIn("p30w0", text, "the known fixture text did not come back")
+        self.assertEqual(text.count("\f"), 3)         # real page separators from real poppler
 
 
-# =========================================================== WI-7 router
 class MarkerPagination(unittest.TestCase):
     """marker's page boundary, parsed rather than guessed at.
 
