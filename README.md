@@ -96,9 +96,11 @@ measuring better than the one it would displace, not by being installed.
 
 Backends are chosen by measurement, never by intuition — `eval/extract_bakeoff.py` ranks them
 against the *rendered page* (`pdftoppm` + `tesseract`), the one signal not downstream of another
-extractor. On the fixture corpus, docling and `pdftotext` tie on recall while docling is the only
-one that reads a two-column page in the right order; that gap is what the reading-order column
-exists to show.
+extractor. The committed result over 20 two-column academic papers
+(`eval/results/extract-bakeoff-2026-08-11.json`): docling and `pdftotext` tie on recall (0.931 vs
+0.945), and docling wins decisively on **reading order** — median 1.000 against 0.697, better on 10
+documents of 17 and worse on 1. That is what earns it the tier-3 slot. marker failed 16 of the same
+20 documents on the deployment tested, so it has no paired basis to be ranked at all.
 
 ## Architecture
 
@@ -109,7 +111,7 @@ machine-readable operation table.
 
 ## Status
 
-`0.3.0` — beta. The engine (`klode.lib`) is solid: **600 tests**, a stable public-API facade, an AST
+`0.4.0` — beta. The engine (`klode.lib`) is solid: **867 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed

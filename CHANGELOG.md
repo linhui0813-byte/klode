@@ -3,53 +3,6 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
-## 0.4.1 — 2026-08-12
-
-The remainder of a 115-finding audit: correctness, security, surface parity, and the three
-functions whose length had demonstrably caused the defects found in them.
-
-### Breaking
-
-- **`--tier auto` now REFUSES a result that meets none of auto's own criteria.** It was
-  returning `best` even when every tier failed the corruption threshold it judges by, and
-  verification then abstained (the control tier IS pdftotext), so garbage was promoted with no
-  check having run. Force a tier to accept such text deliberately.
-- **An explicitly empty `KLODE_*` variable is an error, not absence.** `FOO=$TYPO klode …` fell
-  through to the default while the operator believed the override was in force. Use `env -u`.
-- **Plaintext `http://` endpoints are allowed only to a private destination** (loopback, RFC1918,
-  tailnet 100.64/10, or a reserved name). klode uploads whole documents to them.
-- **`--json` on a command that does not implement it now exits 2** instead of printing prose,
-  which a machine consumer reads as valid output.
-- **`--limit`/`--max` reject values below 1**; `--apply` and `--check` are mutually exclusive;
-  `--grep`/`--max` are refused where they would be silently ignored; `--entail-model` and
-  `--entail-threshold` require `--entail`.
-
-### Fixed
-
-- **Terminal control sequences from corpus and card text** were printed verbatim, so a source line
-  could clear the reader's screen or set the window title. Prose output is sanitised; JSON is not,
-  because a machine consumer wants the real bytes.
-- **`init` wrote THROUGH a pre-existing symlink** at `library`, `library.toml`, or `.gitignore`.
-- **`_json_exit` inferred success from Python container types**, so `zoom --level full` on a card
-  with no Full section exited 0 under `--json` and 1 in prose.
-- **Prose `zoom --grep` bypassed the shared service**, skipping the stamped-source freshness and
-  ambiguity checks. A changed source is now reported as stale rather than as citation rot.
-- **An unknown settings key read as "unset"**, a missing explicit settings path read as "defaults",
-  an empty typo'd `[section]` was dropped, and file values were validated only when they won.
-- **The bake-off's median-of-medians** could hide a backend corrupting half its pages; the worst
-  document and the full distribution now survive aggregation. One global seed gave every
-  equal-length document identical page positions.
-- Marker page-id collisions, unvalidated nested response fields, an unbounded upload body, a
-  blanket `except Exception` around docling's OCR options, and `--lang` accepted by every extractor
-  and used by none.
-
-### Testing
-
-Roughly thirty tests that asserted less than their names claimed: a denylist standing in for a
-zero-dependency check, a "real poppler integration" that converted any failure into a skip, a
-marker-not-in-`auto` gate implemented as a source-text search, a parity gate comparing only
-subcommand names, and assertions on echoed inputs rather than on what the code under test received.
-
 ## 0.4.0 — 2026-08-12
 
 Extraction integrity: an ingest can now say whether the text it wrote actually represents the
@@ -128,9 +81,12 @@ backends reachable from it.
 - **Remote layout backends.** `[ingest].docling_url` and `[ingest].marker_url` (or
   `$KLODE_DOCLING_URL` / `$KLODE_MARKER_URL`) point at a `docling-serve` or `marker_server`
   endpoint — the GPU runs server-side, so klode keeps zero runtime dependencies. `--tier marker`
-  joins `--tier docling`. **Neither is in the `auto` escalation ladder**: a backend earns a ladder
-  slot by measuring better than the one it would displace, and `eval/extract_bakeoff.py` is what
-  decides that.
+  joins `--tier docling`. **`marker` is not in the `auto` escalation ladder**; docling is, and has
+  now earned that place by measurement — median reading order 1.000 against pdftotext's 0.697 on
+  20 two-column papers (`eval/results/extract-bakeoff-2026-08-11.json`). marker failed 16 of those
+  20 documents on the deployment tested, so no paired basis to rank it exists. A backend earns a
+  ladder slot by measuring better than the one it would displace, and `eval/extract_bakeoff.py` is
+  what decides that.
 - **`eval/extract_bakeoff.py`** — ranks backends by fidelity to the *rendered page*. Anchor
   resolution is reported as a migration statistic and never ranked on: it is biased toward whichever
   backend authored the anchors and blind to reading order, and `tests/test_bakeoff.py` demonstrates
@@ -181,6 +137,51 @@ backends reachable from it.
 - **The control was normalized page-at-a-time**, a different pipeline from the candidate's: a
   running head repeated on six pages is stripped from a whole document and kept on every page in
   isolation, so a faithful extraction lost containment.
+
+<!-- the remainder of the same audit, released together -->
+
+### Breaking
+
+- **`--tier auto` now REFUSES a result that meets none of auto's own criteria.** It was
+  returning `best` even when every tier failed the corruption threshold it judges by, and
+  verification then abstained (the control tier IS pdftotext), so garbage was promoted with no
+  check having run. Force a tier to accept such text deliberately.
+- **An explicitly empty `KLODE_*` variable is an error, not absence.** `FOO=$TYPO klode …` fell
+  through to the default while the operator believed the override was in force. Use `env -u`.
+- **Plaintext `http://` endpoints are allowed only to a private destination** (loopback, RFC1918,
+  tailnet 100.64/10, or a reserved name). klode uploads whole documents to them.
+- **`--json` on a command that does not implement it now exits 2** instead of printing prose,
+  which a machine consumer reads as valid output.
+- **`--limit`/`--max` reject values below 1**; `--apply` and `--check` are mutually exclusive;
+  `--grep`/`--max` are refused where they would be silently ignored; `--entail-model` and
+  `--entail-threshold` require `--entail`.
+
+### Fixed
+
+- **Terminal control sequences from corpus and card text** were printed verbatim, so a source line
+  could clear the reader's screen or set the window title. Prose output is sanitised; JSON is not,
+  because a machine consumer wants the real bytes.
+- **`init` wrote THROUGH a pre-existing symlink** at `library`, `library.toml`, or `.gitignore`.
+- **`_json_exit` inferred success from Python container types**, so `zoom --level full` on a card
+  with no Full section exited 0 under `--json` and 1 in prose.
+- **Prose `zoom --grep` bypassed the shared service**, skipping the stamped-source freshness and
+  ambiguity checks. A changed source is now reported as stale rather than as citation rot.
+- **An unknown settings key read as "unset"**, a missing explicit settings path read as "defaults",
+  an empty typo'd `[section]` was dropped, and file values were validated only when they won.
+- **The bake-off's median-of-medians** could hide a backend corrupting half its pages; the worst
+  document and the full distribution now survive aggregation. One global seed gave every
+  equal-length document identical page positions.
+- Marker page-id collisions, unvalidated nested response fields, an unbounded upload body, a
+  blanket `except Exception` around docling's OCR options, and `--lang` accepted by every extractor
+  and honoured by none — it now reaches xberg, docling (remote and local) and marker, so a
+  non-English scan is no longer silently OCR'd as English.
+
+### Testing
+
+Roughly thirty tests that asserted less than their names claimed: a denylist standing in for a
+zero-dependency check, a "real poppler integration" that converted any failure into a skip, a
+marker-not-in-`auto` gate implemented as a source-text search, a parity gate comparing only
+subcommand names, and assertions on echoed inputs rather than on what the code under test received.
 
 ## 0.3.0 — 2026-08-09
 
