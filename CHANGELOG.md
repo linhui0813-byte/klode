@@ -3,6 +3,26 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
+## 0.4.2 — 2026-08-13
+
+Documentation only — no behaviour change. Cut as its own release because the thing it fixes is a
+discoverability defect in the previous one: the warning below did not exist in any tagged artifact.
+
+### Changed
+
+- **The upgrade warning is now in the release that carries the change.** `v0.4.1` shipped the
+  exit-code break, but documented it in the `0.4.0` section — and `0.4.0` was never tagged. Anyone
+  upgrading from `0.3.0` read the `0.4.1` notes and never saw the one change likely to turn their
+  CI red. A breaking change nobody can find is an undocumented breaking change. The `0.4.1` section
+  now opens with it, and the GitHub release notes lead with it, because that is where release notes
+  are actually read.
+- **Remote layout backends are documented as the recommended path**, not a convenience for
+  machines without a GPU. A remote conversion has a deadline that scales with the document; the
+  in-process backends have no wall-clock bound at all, which is the known limit this project
+  declined to close with an untestable worker process. Choosing the bounded path avoids the gap
+  rather than papering over it, and keeps the client dependency-free — which is the project's own
+  headline claim. Verified end to end on a machine with neither kreuzberg nor docling installed.
+
 ## 0.4.1 — 2026-08-13
 
 > ### ⚠️ Upgrading from 0.3.0? Read the 0.4.0 section too.
