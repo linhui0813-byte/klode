@@ -3,13 +3,47 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
-## Unreleased — 0.4.0
+## 0.4.0 — 2026-08-12
 
 Extraction integrity: an ingest can now say whether the text it wrote actually represents the
 document, and refuse the shelf when it does not. Plus a settings file, and two remote layout
 backends reachable from it.
 
 ### Breaking
+
+- 🔴 **Commands that could not do their work now exit 2 instead of 0.** This will turn a green CI
+  red, and that is the point: each of these previously certified something that had not happened.
+  **If your CI runs `klode check` on a machine without the corpus installed, it will now fail.**
+
+  | command | condition | was | now |
+  |---|---|---:|---:|
+  | `check` | corpus absent, or ANY card's source not installed | `OK`, 0 | `ABSTAINED`, 2 |
+  | `check --entail` | the entailment backend could not load | `OK`, 0 | `ABSTAINED`, 2 |
+  | `build` | nothing to build | 0 | 2 |
+  | `normalize --check` | no file matched, or files were unreadable | 0 | 2 |
+  | `zoom --level content` | the source is not installed | 0 | 2 |
+  | `eval/extract_bakeoff.py` | nothing could be ranked | 0 | 2 |
+
+  The convention is now uniform: **1 = measured and failed · 2 = could not measure · 0 = the work
+  happened.** Pass `--allow-unmeasured` to `check`, `build`, or `normalize` to accept a gap
+  knowingly — which is the difference between an accepted limitation and a silent one.
+
+  Why this is worth breaking: `klode check --strict` printed `OK: 0 errors` and exited 0 on a
+  library whose citation-rot check never ran. A fresh clone has no corpus (it is git-ignored), so
+  every anchor could have rotted and the build stayed green. CI reads exit codes, not notes.
+
+- 🔴 **A card's `file:` is confined to `<lib>/<shelf>/<name>.txt`.** It was confined only to the
+  library root, so a card could point at `library/.env`, `library.toml`, or `books/../.env` and
+  `zoom --grep` would print the matching lines. Cards travel — the registry exists so klode can be
+  pointed at someone else's knowledge base — so that field is untrusted input. Any card whose
+  source sits outside a configured shelf now reports "not installed" instead of being read.
+
+- **`normalize(stamp=...)` rejects anything but one safe path component.** `../../tmp/x` escaped
+  the backup root, where copies of a copyrighted corpus land.
+
+- **`klode init` replaces its managed `.gitignore` block rather than appending it once.** A new
+  shelf's copyrighted `.txt`/`.pdf` previously stayed unignored on re-init. Rules outside the
+  `# >>> klode managed` markers are preserved untouched.
 
 - **`klode ingest` refuses to promote a measured integrity FAILURE.** A candidate that drops,
   duplicates, or scrambles material relative to the control raises `VerificationError` and writes
@@ -54,6 +88,13 @@ backends reachable from it.
   resolution is reported as a migration statistic and never ranked on: it is biased toward whichever
   backend authored the anchors and blind to reading order, and `tests/test_bakeoff.py` demonstrates
   the ranking reversing when the anchors change origin.
+- **`klode settings --explain`** — describes every setting: what it does, its allowed values, its
+  environment variable, and its built-in default. Each `Spec` already carried that text and nothing
+  printed it, so a setting nobody could discover did not exist for them.
+- **A committed backend measurement** (`eval/results/extract-bakeoff-2026-08-11.json`) — 20 real
+  academic PDFs. docling keeps its tier-3 slot on reading order (median 1.000 vs pdftotext's 0.697
+  on two-column papers; recall is a tie). marker does not earn one: it failed 16 of 20 documents on
+  the deployment tested, so no paired basis to rank it exists.
 - **A labeled PDF corpus** (`tests/fixtures/pdfs/`) — hand-built, so ground truth is true by
   construction rather than by another extractor's say-so, byte-reproducible from its generator, and
   `GROUND-TRUTH.json` names what it does **not** cover.
@@ -72,6 +113,24 @@ backends reachable from it.
   artifact when the provenance log was unwritable; recording before promoting left a row for an
   artifact that never landed. Every fallible step now runs before either side is mutated.
 - **A predictable `<dest>.tmp` name** was followed through a planted symlink, truncating the target.
+- **The bake-off could crown a backend it had measured on half the corpus.** Failed
+  (document, tier) pairs were dropped from the report, so the denominator counted only successes
+  and a backend scored on 4 of 20 documents was printed as "scored 4/4" and ranked first. Ranking
+  is now a paired comparison over the documents the ranked backends share, and refuses rather than
+  ordering on an insufficient basis. This was caught on a real run, where it had ranked marker
+  first.
+- **`--resume` merged incompatible experiments** — it compared only seed and sample size, so adding
+  a tier or editing a PDF silently mixed old measurements with new. It now validates a manifest
+  (tiers, sample, seed, per-document content hashes, anchor hash) and refuses a mismatch, a missing
+  checkpoint, or a corrupt one, instead of silently restarting and overwriting the evidence.
+- **A one-word OCR result could displace a whole document.** It scores corruption 0.0 — there are
+  no corruption markers in one word to find — so it looked cleaner than 320 garbled words.
+  `corruption_score` is a ratio and cannot see loss, so candidates must also retain a share of the
+  incumbent's words.
+- **Endpoint URLs were validated by string prefix**, so `http://user:password@host` was accepted —
+  a credential in `settings.toml` and therefore in every backup. Endpoints are now parsed
+  structurally; userinfo, query, fragment, missing hosts, bad ports, and control characters are all
+  refused, on every source.
 - **The control was normalized page-at-a-time**, a different pipeline from the candidate's: a
   running head repeated on six pages is stripped from a whole document and kept on every page in
   isolation, so a faithful extraction lost containment.
