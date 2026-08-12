@@ -196,6 +196,59 @@ class Ranking(unittest.TestCase):
         self.assertIn("half", rep["unrankable"])
         self.assertIn("too few shared", rep["unrankable"]["half"])
 
+    def test_the_largest_comparable_group_is_found_not_the_greedy_one(self):
+        """A defect an owner-proxy review found in my own fix.
+
+        The greedy rule dropped the backend with the FEWEST total measurements, which is not the
+        same as the backend blocking the intersection. A covers documents 1-3, B covers 1-4, C
+        covers 4-7: A and B share three documents and are perfectly comparable, but greedy dropped
+        A (fewest), then B, and returned an empty ranking over C alone. Selection is exhaustive now
+        — there are at most a handful of tiers.
+        """
+        def report(cover, n):
+            docs = {f"d{i}": {"name": f"d{i}.pdf", "tiers": {}} for i in range(1, n + 1)}
+            for t, ds in cover.items():
+                for i in range(1, n + 1):
+                    docs[f"d{i}"]["tiers"][t] = (
+                        {"visual": 0.9, "visual_order": 1.0} if i in ds
+                        else {"visual": None, "visual_order": None, "extraction_error": "x"})
+            return {"pdfs": docs}
+
+        out = bake._aggregate(report({"A": [1, 2, 3], "B": [1, 2, 3, 4], "C": [4, 5, 6, 7]}, 7),
+                              ["A", "B", "C"])
+        self.assertEqual(out["ranking"], ["A", "B"])
+        self.assertEqual(len(out["paired_documents"]), 3)
+        self.assertIn("C", out["unrankable"])
+
+    def test_the_exhaustive_selection_agrees_with_a_brute_force_oracle(self):
+        # the falsifier the review named: if greedy and exhaustive always agreed, the diagnosis
+        # was wrong. Check every coverage mask over four tiers and three documents.
+        from itertools import combinations, product
+        def report(cover, n):
+            docs = {f"d{i}": {"name": f"d{i}.pdf", "tiers": {}} for i in range(1, n + 1)}
+            for t, ds in cover.items():
+                for i in range(1, n + 1):
+                    docs[f"d{i}"]["tiers"][t] = ({"visual": 0.9} if i in ds
+                                                 else {"visual": None, "extraction_error": "x"})
+            return {"pdfs": docs}
+        tiers, n = ["A", "B", "C", "D"], 3
+        docs_ids = [f"d{i}" for i in range(1, n + 1)]
+        for masks in product(range(1 << n), repeat=len(tiers)):
+            cover = {t: [i + 1 for i in range(n) if masks[k] >> i & 1]
+                     for k, t in enumerate(tiers)}
+            out = bake._aggregate(report(cover, n), tiers)
+            # oracle: the largest subset (>=2 tiers) sharing >= MIN_PAIRED_DOCUMENTS documents
+            best = 0
+            for size in range(len(tiers), 1, -1):
+                for combo in combinations(tiers, size):
+                    shared = set.intersection(*({f"d{i}" for i in cover[t]} for t in combo))
+                    if len(shared) >= bake.MIN_PAIRED_DOCUMENTS:
+                        best = max(best, size)
+                if best:
+                    break
+            self.assertEqual(len(out["ranking"]), best,
+                             f"masks={masks} cover={cover} ranking={out['ranking']}")
+
     def test_full_coverage_is_still_ranked_normally(self):
         # the fix must not refuse a legitimate comparison — that would be a different fail-closed
         bake.visual.check_pages = self._fake
@@ -251,10 +304,28 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
         real_ex = bake.pdfmod._EXTRACTORS
         self.addCleanup(setattr, bake.pdfmod, "_EXTRACTORS", real_ex)
         bake.pdfmod._EXTRACTORS = dict(real_ex)
-        bake.pdfmod._EXTRACTORS["docling"] = lambda p, l: "# Heading\n\nalpha beta gamma"  # no \f
-        real_vis, real_pt = bake.visual.check_pages, bake.pdfmod.docling_page_text
+        real_vis, real_se = bake.visual.check_pages, bake.pdfmod.structured_extract
         self.addCleanup(setattr, bake.visual, "check_pages", real_vis)
-        self.addCleanup(setattr, bake.pdfmod, "docling_page_text", real_pt)
+        self.addCleanup(setattr, bake.pdfmod, "structured_extract", real_se)
+        # ONE invocation now returns text AND page text, so the seam to mock is that one call —
+        # which is the point of the change: they can no longer describe different conversions.
+        self.md = "# Heading\n\nalpha beta gamma"                              # no form feeds
+        self._real_structured = real_se
+        self.seen = {}
+
+        def capture(pdf, candidate_page_text, *, pages, seed):
+            self.seen.update(candidate_page_text)
+            return bake.visual.VisualReport(
+                seed=seed, sampled=pages,
+                checks=(bake.visual.PageCheck(1, 10, 9, order=1.0),))
+        bake.visual.check_pages = capture
+
+    def _only_docling(self, fn):
+        """Intercept ONLY docling; every other tier (the pdftotext control) runs for real, so a
+        call count is a count of the backend under test."""
+        def dispatch(pdf, tier):
+            return fn(pdf) if tier == "docling" else self._real_structured(pdf, tier)
+        return dispatch
         self.seen = {}
 
         def fake(pdf, candidate_page_text, *, pages, seed):
@@ -265,7 +336,8 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
         bake.visual.check_pages = fake
 
     def test_structured_provenance_supplies_the_pages_markdown_lost(self):
-        bake.pdfmod.docling_page_text = lambda pdf: {1: "alpha beta gamma"}
+        bake.pdfmod.structured_extract = self._only_docling(
+            lambda pdf: (self.md, (1,), {1: "alpha beta gamma"}, ""))
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
         row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
         self.assertIsNotNone(row["visual"], "docling was scored, not skipped")
@@ -286,26 +358,36 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
                          f"a document was converted more than once: {calls}")
 
     def test_a_backend_that_cannot_supply_pages_is_still_reported_not_guessed_at(self):
-        bake.pdfmod.docling_page_text = lambda pdf: None
+        bake.pdfmod.structured_extract = self._only_docling(
+            lambda pdf: (self.md, None, None, ""))
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
         row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
         self.assertIsNone(row["visual"])
-        self.assertIn("no page separators", row["visual_note"])
+        self.assertIn("no page provenance", row["visual_note"])
 
-    def test_an_unreachable_endpoint_is_an_unscored_row_not_a_crash(self):
-        # `visual is None` alone passed even with the structured-page lookup deleted entirely, and
-        # the row then blamed "no page separators" for what was actually an endpoint failure
-        called = []
-
-        def boom(pdf):
-            called.append(pdf.name)
-            raise OSError("connection refused")
-        bake.pdfmod.docling_page_text = boom
+    def test_an_unreachable_endpoint_reports_the_endpoint_error_not_a_pagination_guess(self):
+        # the row blamed "no page separators" for what was actually a connection failure, sending
+        # the reader to inspect a document that was never fetched
+        bake.pdfmod.structured_extract = self._only_docling(
+            lambda pdf: ("", None, None, "failed (connection refused)"))
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
         row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
-        self.assertEqual(called, ["single-page.pdf"], "the lookup was never attempted")
         self.assertIsNone(row["visual"])
-        self.assertIn("visual_note", row)
+        self.assertIn("connection refused", row.get("extraction_error", ""))
+        self.assertIn("docling", rep["skipped"])
+
+    def test_the_text_and_the_page_text_come_from_ONE_invocation(self):
+        # two calls meant two independent nondeterministic conversions, so `words` could describe a
+        # different run than `visual` — and the "cache" never held the first result
+        calls = []
+
+        def once(pdf):
+            calls.append(pdf.name)
+            return (self.md, (1,), {1: "alpha beta gamma"}, "")
+        bake.pdfmod.structured_extract = self._only_docling(once)
+        bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
+        # the docling backend, once — not once for the text and again for the page text
+        self.assertEqual(len(calls), 1, f"the backend ran {len(calls)} times: {calls}")
 
 
 class SurvivesACrashOnTheLastDocument(unittest.TestCase):

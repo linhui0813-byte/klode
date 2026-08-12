@@ -113,42 +113,35 @@ def _median(vals) -> float | None:
     return v[mid] if len(v) % 2 else (v[mid - 1] + v[mid]) / 2
 
 
-def _extract(pdf: Path, tier: str) -> tuple[str, str]:
-    """(text, error). A missing backend is an error string, not an exception — the harness must
-    report which backends it could not test rather than quietly testing fewer."""
-    try:
-        fn = pdfmod._EXTRACTORS[tier]
-    except KeyError:
-        return "", f"unknown tier {tier}"
-    try:
-        return fn(pdf, "eng"), ""
-    except ImportError as e:
-        return "", f"not installed ({e})"
-    except (RuntimeError, OSError) as e:
-        return "", f"failed ({e})"
+def _extract(pdf: Path, tier: str, cache: dict | None = None) -> tuple[str, str]:
+    """(text, error), from ONE backend invocation whose page text is cached alongside.
 
-
-def _structured_pages(pdf: Path, tier: str, cache: dict) -> "dict[int, str] | None":
-    """Per-page text from a backend that carries structure instead of form feeds. None when the
-    backend cannot say — never inferred from the markdown, which is the guess this whole harness
-    exists to avoid.
-
-    CACHED per (document, tier). Without it the remote backends were converted TWICE per document:
-    once by `_extract` for the text, once here for the page text. That doubles the most expensive
-    work in the harness — marker is minutes per document — and worse, the two calls are separate
-    nondeterministic executions, so `words`/`containment` could describe a different conversion
-    than `visual`. A metric and its explanation must come from the same run.
+    A missing backend is an error string, not an exception — the harness reports which backends it
+    could not test rather than quietly testing fewer.
     """
-    fn = {"docling": pdfmod.docling_page_text, "marker": pdfmod.marker_page_text}.get(tier)
-    if fn is None:
-        return None
+    key = (_doc_id(pdf), tier)
+    if cache is not None and key in cache:
+        return cache[key][0], cache[key][3]
+    text, pages, page_text, err = pdfmod.structured_extract(pdf, tier)
+    if cache is not None:
+        cache[key] = (text, pages, page_text, err)
+    return text, err
+
+
+def _structured_pages(pdf: Path, tier: str, cache: dict) -> "tuple[dict[int, str] | None, str]":
+    """`(page_text, why_not)` from the SAME invocation that produced the text.
+
+    The previous version ran the backend a second time, so the cache never held the first result
+    and the two conversions could differ. It also discarded the reason on failure, after which the
+    row blamed "no page separators" for what was actually an endpoint error.
+    """
     key = (_doc_id(pdf), tier)
     if key not in cache:
-        try:
-            cache[key] = fn(pdf)
-        except (RuntimeError, OSError, ImportError):
-            cache[key] = None             # unavailable is `visual=None` with a note, not a crash
-    return cache[key]
+        return None, "not extracted"
+    _text, _pages, page_text, err = cache[key]
+    if err:
+        return None, err
+    return page_text, "" if page_text else "backend supplied no page provenance"
 
 
 def _load_anchors(path: Path) -> dict:
@@ -271,12 +264,13 @@ def _measure_document(pdf: Path, tiers: list[str], *, sample: int, seed: int,
     """Every requested tier against one document. Extracted from `bake_off`, which had grown to 96
     lines mixing resume bookkeeping, per-document measurement, checkpointing and aggregation."""
     declared, declared_err = _declared(pdf)
-    control_raw, control_err = _extract(pdf, CONTROL_TIER)
+    control_raw, control_err = _extract(pdf, CONTROL_TIER, cache)
     per_tier: dict = {}
     for tier in tiers:
         # the control IS pdftotext; running it again as a candidate paid for the same subprocess
         # twice per document
-        text, err = (control_raw, control_err) if tier == CONTROL_TIER else _extract(pdf, tier)
+        text, err = ((control_raw, control_err) if tier == CONTROL_TIER
+                     else _extract(pdf, tier, cache))
         if err:
             skipped.setdefault(tier, err)
             # Record the FAILED pair too. Dropping it made `pdfs` count only successes, so a
@@ -296,14 +290,18 @@ def _measure_tier(pdf: Path, tier: str, text: str, control_raw: str, declared: i
 
     # fidelity — the ranking signal
     pages = {i: t for i, t in enumerate(coverage.split_pages(text), start=1)} if "\f" in text else {}
+    why_no_pages = ""
     if not pages:
         # A markdown-only backend has no form feeds, so docling — the backend this harness exists
         # to evaluate — scored `visual=None` on every document and could never be ranked. Its
-        # STRUCTURED result does carry the boundary; ask for it.
-        pages = _structured_pages(pdf, tier, cache) or {}
+        # STRUCTURED result does carry the boundary, from the same invocation.
+        structured, why_no_pages = _structured_pages(pdf, tier, cache)
+        pages = structured or {}
     if not pages and control_raw:
         row["visual"] = None
-        row["visual_note"] = "no page separators — cannot align pages for visual check"
+        # the ACTUAL reason, not a guess: "no page separators" was reported even when the real
+        # cause was an endpoint failure
+        row["visual_note"] = why_no_pages or "no page separators — cannot align pages"
     else:
         # per-DOCUMENT seed: one global seed gave every equal-length document identical page
         # positions, so a shared structure was systematically included or excluded corpus-wide
@@ -362,71 +360,57 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
     _checkpoint(report, out)                 # the final write carries the ranking too
     return report
 
-def _aggregate(report: dict, tiers: list[str]) -> dict:
-    """Rank by a PAIRED comparison, and refuse to rank when the pairing is empty.
-
-    The defect this replaces, reproduced: a backend that scored 1.0 on one document and failed on
-    the other outranked a backend that scored 0.9 on BOTH — and was printed as `scored 1/1`, which
-    reads as complete coverage. Two independent auditors found it. Its cause was that failures were
-    dropped from the report entirely, so the denominator counted only successes.
-
-    Two changes make that unrepresentable:
-
-    1. **Every requested (document, tier) pair is a row**, extraction failures included, so
-       `attempted` is the corpus size and `measured/attempted` is visible.
-    2. **The ranking runs over the documents EVERY ranked backend measured** — the paired set. A
-       backend compared on a different subset is not being compared; that is the whole finding.
-       Backends that measured nothing in the paired set are reported, unranked, with a reason.
-
-    Per-tier medians over the *full* corpus are still reported as `median_visual_all`, clearly
-    separated from the paired number the ranking uses, because they answer a different question
-    ("how did it do on what it could do") and confusing the two is what caused this.
-    """
-    docs = report["pdfs"]
+def _tier_totals(docs: dict, tiers: list[str]) -> dict:
+    """Per-tier coverage over the WHOLE corpus, before any pairing. Every requested (document,
+    tier) pair is a row — including extraction failures — so `attempted` is the corpus size and
+    `measured/attempted` is visible. Dropping failures is what let a backend measured on 4 of 20
+    documents be reported as `scored 4/4`."""
     agg: dict = {}
     for tier in tiers:
         rows = [d["tiers"].get(tier) for d in docs.values()]
         scored = {k: d["tiers"][tier]["visual"] for k, d in docs.items()
                   if tier in d["tiers"] and d["tiers"][tier].get("visual") is not None}
-        agg[tier] = {
-            "attempted": len(docs),
-            "measured": len(scored),
-            "extraction_failures": sum(1 for r in rows if r and r.get("extraction_error")),
-            "unscored": len(docs) - len(scored),
-            "median_visual_all": _median(list(scored.values())),
-            "_scored_by_doc": scored,
-        }
-    # The paired set: documents scored by every tier that is a CANDIDATE for ranking — not by every
-    # tier that was requested. Intersecting over all requested tiers meant one unavailable backend
-    # (`--tiers a,b,marker` with marker not installed) emptied the set and suppressed the perfectly
-    # good a-vs-b comparison. An independent verification caught that: the fix for a fail-OPEN had
-    # become a fail-CLOSED, which is a different way of returning the wrong answer.
-    #
-    # A candidate is a tier that measured at least one document. A tier that measured nothing is
-    # reported as unrankable with its reason and does not constrain anyone else's pairing.
-    # A backend with too little shared coverage is DROPPED from the ranking and named, rather than
-    # shrinking everyone else's basis. Intersecting over all candidates meant one half-measured
-    # backend reduced the paired set below the threshold and suppressed a comparison between two
-    # backends that had each measured everything — the same over-correction as intersecting over
-    # unavailable tiers, one step subtler.
-    #
-    # Greedy and explainable: keep dropping the least-covered candidate until the survivors share
-    # enough documents. Each exclusion is reported with its coverage, so "why isn't X ranked" always
-    # has an answer in the report.
+        agg[tier] = {"attempted": len(docs), "measured": len(scored),
+                     "extraction_failures": sum(1 for r in rows if r and r.get("extraction_error")),
+                     "unscored": len(docs) - len(scored),
+                     "median_visual_all": _median(list(scored.values())),
+                     "_scored_by_doc": scored}
+    return agg
+
+
+def _best_comparable_subset(agg: dict, tiers: list[str]) -> tuple[list[str], set]:
+    """The LARGEST set of backends sharing at least `MIN_PAIRED_DOCUMENTS` documents.
+
+    Exhaustive, because there are at most a handful of tiers and the greedy version was WRONG.
+    It dropped the backend with the fewest total measurements, which is not the same as the
+    backend that blocks the intersection. Reproduced: A covers documents 1-3, B covers 1-4, C
+    covers 4-7. A and B share three documents and are perfectly comparable — greedy dropped A
+    (fewest), then B, and returned an empty ranking over C alone.
+
+    Ties are broken by the larger shared-document set, then alphabetically, so the choice is
+    deterministic and reproducible from the report alone.
+    """
+    from itertools import combinations
     candidates = [t for t in tiers if agg[t]["_scored_by_doc"]]
-    excluded: dict[str, str] = {}
-    while candidates:
-        paired = set(docs)
-        for tier in candidates:
-            paired &= set(agg[tier]["_scored_by_doc"])
-        if len(paired) >= MIN_PAIRED_DOCUMENTS or len(candidates) < 2:
+    best: tuple[list[str], set] = ([], set())
+    for size in range(len(candidates), 1, -1):
+        options = []
+        for combo in combinations(candidates, size):
+            shared = set.intersection(*(set(agg[t]["_scored_by_doc"]) for t in combo))
+            if len(shared) >= MIN_PAIRED_DOCUMENTS:
+                options.append((sorted(combo), shared))
+        if options:
+            # largest shared set wins; then alphabetical, for a stable answer
+            options.sort(key=lambda o: (-len(o[1]), o[0]))
+            best = options[0]
             break
-        worst = min(candidates, key=lambda t: (len(agg[t]["_scored_by_doc"]), t))
-        excluded[worst] = (f"measured {agg[worst]['measured']}/{agg[worst]['attempted']} documents "
-                           "— too few shared with the other backends to compare fairly")
-        candidates.remove(worst)
-    else:
-        paired = set()
+    return best
+
+
+def _paired_metrics(docs: dict, agg: dict, tiers: list[str], paired: set) -> None:
+    """Fill in every tier's paired numbers, in place. A tier outside `paired` still gets its
+    corpus-wide figures — they answer a different question and must not be confused with the
+    comparison, which is what caused the original defect."""
     for tier in tiers:
         a = agg[tier]
         vals = [a["_scored_by_doc"][k] for k in paired if k in a["_scored_by_doc"]]
@@ -435,42 +419,46 @@ def _aggregate(report: dict, tiers: list[str]) -> dict:
         a["median_visual"] = _median(vals)
         a["median_order"] = _median(orders)
         # A median over pages and then over documents lets a backend wreck almost half of both and
-        # still score perfectly. The distribution is kept so the tail is visible, and the WORST
-        # document is reported beside the median rather than being averaged out of existence.
+        # still score perfectly, so the tail survives aggregation.
         a["worst_visual"] = min(vals) if vals else None
-        a["p10_visual"] = (sorted(vals)[max(0, int(0.10 * (len(vals) - 1)))] if vals else None)
+        a["p10_visual"] = sorted(vals)[max(0, int(0.10 * (len(vals) - 1)))] if vals else None
         a["worst_order"] = min(orders) if orders else None
         a["scores"] = sorted(round(v, 4) for v in vals)
-        # Actively inverted reading order is not a lower score on the same axis — it is a different
-        # failure, and recall cannot see it. A backend measured as inverted sorts below every
-        # backend that is not, whatever its recall. Same line the integrity gate draws
-        # (`Thresholds.min_median_order`).
+        # Actively inverted reading order is a different failure from a lower recall, and recall
+        # cannot see it — same line `Thresholds.min_median_order` draws for the integrity gate.
         a["order_inverted"] = a["median_order"] is not None and a["median_order"] < 0.0
-        a["rankable"] = a["median_visual"] is not None and tier in candidates
-        a.pop("_scored_by_doc")
-    # A single shared document cannot order two backends, and more than one tier must exist for
-    # "ranking" to mean anything. Below that bar `ranking` is EMPTY — not an order plus a caveat in
-    # a neighbouring field. A caller reading `report["ranking"]` gets the refusal itself, because a
-    # warning that only appears in the printed output is a warning the programmatic consumer never
-    # sees. Same rule as `Integrity.abstained`: the unknown answer must not be shaped like a result.
-    enough = len(paired) >= MIN_PAIRED_DOCUMENTS and len(candidates) >= 2
-    rankable = [t for t in tiers if agg[t]["rankable"]] if enough else []
-    if enough:
+
+
+def _aggregate(report: dict, tiers: list[str]) -> dict:
+    """Rank by a PAIRED comparison, and refuse to rank when no viable pairing exists.
+
+    The defect this replaces, reproduced twice by independent auditors: a backend that scored 1.0
+    on one document and failed on the other outranked a backend that scored 0.9 on BOTH, and was
+    printed as `scored 1/1` — which reads as complete coverage.
+    """
+    docs = report["pdfs"]
+    agg = _tier_totals(docs, tiers)
+    ranked, paired = _best_comparable_subset(agg, tiers)
+    _paired_metrics(docs, agg, tiers, paired)
+    for tier in tiers:
+        agg[tier]["rankable"] = tier in ranked
+        agg[tier].pop("_scored_by_doc")
+
+    if ranked:
         note = ""
-        unrankable = {t: excluded.get(
-            t, f"measured {agg[t]['measured']}/{agg[t]['attempted']} documents; none in the "
-               f"{len(paired)}-document set the ranked backends share")
-            for t in tiers if not agg[t]["rankable"]}
+        unrankable = {t: (f"measured {agg[t]['measured']}/{agg[t]['attempted']} documents; too few "
+                          f"shared with the {len(ranked)} ranked backend(s) to compare fairly")
+                      for t in tiers if t not in ranked}
     else:
-        note = (f"NOT RANKED — {len(candidates)} backend(s) measured anything, sharing "
-                f"{len(paired)} document(s); a comparison needs at least "
-                f"{MIN_PAIRED_DOCUMENTS} shared documents and 2 measuring backends.")
-        unrankable = {t: excluded.get(t, note) for t in tiers}
-    ranking = sorted(rankable, key=lambda t: (agg[t]["order_inverted"],
-                                              -(agg[t]["median_visual"] or 0.0), t))
+        note = (f"NOT RANKED — no {MIN_PAIRED_DOCUMENTS}+ backends share at least "
+                f"{MIN_PAIRED_DOCUMENTS} measured documents.")
+        unrankable = {t: note for t in tiers}
+    # Below the bar `ranking` is EMPTY, not an order plus a caveat in a neighbouring field: a
+    # warning that only appears in printed output is one the programmatic caller never sees.
+    ranking = sorted(ranked, key=lambda t: (agg[t]["order_inverted"],
+                                            -(agg[t]["median_visual"] or 0.0), t))
     return {"aggregate": agg, "ranking": ranking, "unrankable": unrankable,
             "paired_documents": sorted(paired), "ranking_note": note}
-
 
 def _parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__,

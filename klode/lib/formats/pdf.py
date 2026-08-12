@@ -224,6 +224,41 @@ def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, 
     return _docling_local(pdf, lang), None   # local has a DoclingDocument but no export wired yet
 
 
+def structured_extract(pdf: Path, tier: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None, str]":
+    """`(text, pages, page_text, error)` from ONE backend invocation.
+
+    The harness previously called `_extract()` for the text and then `*_page_text()` for the page
+    text — two separate remote conversions of the same document. Beyond paying twice for the most
+    expensive step (marker is minutes per document), the two calls are independent nondeterministic
+    executions, so `words`/`containment` could describe a different conversion than `visual`. A
+    metric and the evidence explaining it must come from the same run.
+
+    Returns an error string rather than raising, because the caller reports which backends it could
+    not test rather than quietly testing fewer.
+    """
+    try:
+        if tier == "docling":
+            ep = docling_endpoint()
+            if ep:
+                md, pages, text = _docling_structured(pdf, ep)
+                return md, pages, text, ""
+            return _docling_local(pdf, DEFAULT_LANG), None, None, ""
+        if tier == "marker":
+            ep = marker_endpoint()
+            if not ep:
+                return _marker(pdf, DEFAULT_LANG), None, None, ""    # raises the config error
+            md, pages, text = _marker_structured(pdf, ep)
+            return md, pages, text, ""
+        fn = _EXTRACTORS.get(tier)
+        if fn is None:
+            return "", None, None, f"unknown tier {tier}"
+        return fn(pdf, DEFAULT_LANG), None, None, ""
+    except ImportError as e:
+        return "", None, None, f"not installed ({e})"
+    except (RuntimeError, OSError) as e:
+        return "", None, None, f"failed ({e})"
+
+
 def docling_page_text(pdf: Path) -> "dict[int, str] | None":
     """Per-page candidate text from docling's structured result, or None when it cannot say.
 
@@ -497,6 +532,7 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
     best, done = _tier1(pdf, lang)
     if done:
         return best
+    _tier1_text = best.text          # kept: it is the only corroboration a short result can have
     best = _escalate(best, pdf, lang)
 
     # `auto` used to return `best` even when EVERY tier failed the criteria `auto` itself judges
@@ -505,9 +541,22 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
     # the garbage was promoted with no check having run. Gated on CORRUPTION only: MIN_WORDS
     # belongs to the tier-1 fast path and cannot mean "this document is too short to be real".
     words = len(best.text.split())
-    if not words or best.score >= CLEAN_THRESHOLD:
+    # Two independent conditions, because `corruption_score` is a RATIO and a short clean-looking
+    # result scores 0.0 for the same reason an empty one does — there are no markers to find.
+    #
+    #   corruption  — the text is garbled
+    #   substance   — there is not enough of it to have measured anything
+    #
+    # The substance floor applies ONLY when no control corroborates the result. `_better`'s
+    # retention rule is relative to an incumbent, so with pdftotext failed (`cur_words == 0`) a
+    # single clean token became `best` and cleared the corruption gate. A short document extracted
+    # by a WORKING control is still fine — that case has corroboration and is not refused.
+    corroborated = bool(_tier1_text and len(_tier1_text.split()) >= words * RETENTION_FLOOR)
+    if not words or best.score >= CLEAN_THRESHOLD or (words < MIN_WORDS and not corroborated):
+        why = ("garbled" if words and best.score >= CLEAN_THRESHOLD
+               else "empty" if not words else "too little text, and no control to corroborate it")
         raise ExtractionError(
-            f"{pdf.name}: no extraction tier reached usable quality "
+            f"{pdf.name}: no extraction tier reached usable quality — {why} "
             f"(best: {best.tier}, {words} words, corruption {best.score:.1f}, "
             f"needs < {CLEAN_THRESHOLD}). {best.note}. "
             f"Install an OCR tier, point --tier at a remote backend, or force "
