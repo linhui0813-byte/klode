@@ -24,6 +24,10 @@ _spec.loader.exec_module(bake)
 
 PDFS = REPO / "tests" / "fixtures" / "pdfs"
 HAVE_POPPLER = bool(shutil.which("pdftotext") and shutil.which("pdfinfo"))
+# The corpus SCORE also needs pdftoppm + tesseract (visual.py). Guarding on poppler alone meant a
+# partial install ran the class and failed it instead of skipping accurately.
+from klode.lib import visual as _visual                                   # noqa: E402
+CAN_SCORE = HAVE_POPPLER and _visual.available()[0]
 
 
 class AnchorCompatibilityIsBiased(unittest.TestCase):
@@ -200,6 +204,37 @@ class Ranking(unittest.TestCase):
         self.assertEqual(rep["ranking_note"], "")
         self.assertEqual(len(rep["paired_documents"]), 2)
 
+    def test_the_worst_document_is_reported_beside_the_median(self):
+        """A median over pages and then over documents lets a backend wreck almost half of both and
+        still score perfectly. The tail has to survive the aggregation to be actionable."""
+        bake.pdfmod._EXTRACTORS["mixed"] = lambda p, l: (
+            self.GOOD if p.name == "single-page.pdf" else self.POOR)
+        bake.visual.check_pages = self._fake
+        rep = bake.bake_off(self.DOCS, ["mixed", "good"], sample=1)
+        a = rep["aggregate"]["mixed"]
+        self.assertEqual(a["worst_visual"], 0.2)              # the bad document is visible
+        self.assertEqual(a["scores"], [0.2, 1.0])             # and so is the distribution
+        self.assertGreater(a["median_visual"], a["worst_visual"])
+
+    def test_each_document_gets_its_own_sampled_pages(self):
+        # one global seed gave every equal-length document identical page positions, so a common
+        # structure was systematically included or excluded across the whole corpus
+        seeds = {bake._doc_seed(1618, p) for p in self.DOCS}
+        self.assertEqual(len(seeds), len(self.DOCS), "two documents share a sampling seed")
+        # ...and it stays reproducible from (seed, document) alone
+        self.assertEqual(bake._doc_seed(1618, self.DOCS[0]), bake._doc_seed(1618, self.DOCS[0]))
+        self.assertNotEqual(bake._doc_seed(1618, self.DOCS[0]), bake._doc_seed(99, self.DOCS[0]))
+
+    def test_the_control_is_not_extracted_twice(self):
+        # pdftotext is the control AND a candidate tier; it ran as both, paying for the same
+        # subprocess twice per document
+        calls = []
+        real = bake.pdfmod._EXTRACTORS["pdftotext"]
+        bake.pdfmod._EXTRACTORS["pdftotext"] = lambda p, l: (calls.append(p.name), real(p, l))[1]
+        bake.visual.check_pages = self._fake
+        bake.bake_off([PDFS / "single-page.pdf"], ["pdftotext"], sample=1)
+        self.assertEqual(len(calls), 1, f"the control ran {len(calls)} times")
+
     def test_the_reported_median_is_a_median_not_the_upper_of_two(self):
         # `sorted(v)[len(v)//2]` reported 1.0 for [0.0, 1.0] — the better score presented as the
         # midpoint of the pair, which flatters a backend that failed half its documents.
@@ -258,11 +293,19 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
         self.assertIn("no page separators", row["visual_note"])
 
     def test_an_unreachable_endpoint_is_an_unscored_row_not_a_crash(self):
+        # `visual is None` alone passed even with the structured-page lookup deleted entirely, and
+        # the row then blamed "no page separators" for what was actually an endpoint failure
+        called = []
+
         def boom(pdf):
+            called.append(pdf.name)
             raise OSError("connection refused")
         bake.pdfmod.docling_page_text = boom
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
-        self.assertIsNone(rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]["visual"])
+        row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
+        self.assertEqual(called, ["single-page.pdf"], "the lookup was never attempted")
+        self.assertIsNone(row["visual"])
+        self.assertIn("visual_note", row)
 
 
 class SurvivesACrashOnTheLastDocument(unittest.TestCase):
@@ -420,15 +463,26 @@ class HarnessBehaviour(unittest.TestCase):
         # assertion behind `if visual is not None`, so in exactly the environment that needed
         # checking (no render tooling) it executed nothing and passed.
         real = bake.visual.check_pages
-        bake.visual.check_pages = (
-            lambda pdf, candidate_page_text, *, pages, seed: bake.visual.VisualReport(
+        seen = {}
+
+        def capture(pdf, candidate_page_text, *, pages, seed):
+            seen.update(pages=pages, seed=seed)
+            return bake.visual.VisualReport(
                 seed=seed, sampled=pages,
-                checks=(bake.visual.PageCheck(page=1, ocr_tokens=10, matched=10),)))
+                checks=(bake.visual.PageCheck(page=1, ocr_tokens=10, matched=10),))
+        bake.visual.check_pages = capture
         self.addCleanup(setattr, bake.visual, "check_pages", real)
         rep = bake.bake_off([PDFS / "three-pages.pdf"], ["pdftotext"], sample=2, seed=99)
         self.assertEqual(rep["seed"], 99)
         row = rep["pdfs"][bake._doc_id(PDFS / "three-pages.pdf")]["tiers"]["pdftotext"]
-        self.assertEqual(len(row["visual_sampled"]), 2)
+        # the EXACT seed and pages measurement received, not just the count. Checking only
+        # `len(...) == 2` passed with any two fabricated page numbers, and checking the echoed
+        # top-level seed passed even if measurement used a different one.
+        want_seed = bake._doc_seed(99, PDFS / "three-pages.pdf")
+        self.assertEqual(seen["seed"], want_seed)
+        self.assertEqual(tuple(row["visual_sampled"]),
+                         bake.visual.sample_pages(3, 2, want_seed))
+        self.assertEqual(tuple(seen["pages"]), tuple(row["visual_sampled"]))
         self.assertIsNotNone(row["visual"])
 
     def test_a_run_that_could_not_rank_exits_nonzero(self):
@@ -449,15 +503,21 @@ class HarnessBehaviour(unittest.TestCase):
         json.dumps(rep)          # a report nobody can persist is not a measurement
 
 
-@unittest.skipUnless(HAVE_POPPLER, "poppler not installed")
+@unittest.skipUnless(CAN_SCORE, "needs poppler + pdftoppm + tesseract to score")
 class AgainstTheCorpus(unittest.TestCase):
     def test_it_runs_and_scores_the_corpus(self):
-        rep = bake.bake_off(sorted(PDFS.glob("*.pdf")), ["pdftotext"], sample=1)
-        self.assertEqual(len(rep["pdfs"]), 5)
-        scored = [r["tiers"]["pdftotext"]["visual"] for r in rep["pdfs"].values()
-                  if "pdftotext" in r["tiers"] and r["tiers"]["pdftotext"].get("visual") is not None]
-        self.assertTrue(scored, "no PDF produced a visual score")
-        self.assertGreater(min(scored), 0.9)          # the control is faithful on a clean corpus
+        pdfs = sorted(PDFS.glob("*.pdf"))
+        rep = bake.bake_off(pdfs, ["pdftotext"], sample=1)
+        self.assertEqual(len(rep["pdfs"]), len(pdfs))
+        # EVERY document, not "at least one": asserting `scored` is truthy still passed with
+        # scoring broken for four of five
+        scored = {d["name"]: d["tiers"]["pdftotext"].get("visual") for d in rep["pdfs"].values()}
+        self.assertEqual(sorted(scored), sorted(p.name for p in pdfs))
+        unscored = [n for n, v in scored.items() if v is None]
+        self.assertEqual(unscored, [], f"unscored: {unscored}")
+        self.assertEqual(rep["skipped"], {})
+        self.assertGreater(min(scored.values()), 0.9)  # the control is faithful on a clean corpus
+        self.assertEqual(rep["aggregate"]["pdftotext"]["measured"], len(pdfs))
 
     def test_the_cli_names_its_ranking_column_and_its_caveat(self):
         buf = io.StringIO()

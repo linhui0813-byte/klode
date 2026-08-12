@@ -9,7 +9,7 @@ which one invited the reading that this harness scores against those labels; it 
 works on any PDF, labeled or not.
 
 
-    python3 eval/extract_bakeoff.py --pdfs tests/fixtures/pdfs [--tiers pdftotext,docling]
+    python3 eval/extract_bakeoff.py --pdfs DIR [--tiers pdftotext,docling] [--out r.json]
 
 This is what decides whether `marker` (or any new backend) earns a place in the tier ladder. It is
 deliberately a measurement rather than a recommendation: the project already refused to adopt BM25
@@ -65,6 +65,7 @@ from klode.lib import agreement, coverage, visual                          # noq
 from klode.lib.formats import pdf as pdfmod                                # noqa: E402
 
 TIERS = ("pdftotext", "xberg", "docling", "marker")
+CONTROL_TIER = "pdftotext"
 REPORT_SCHEMA = "klode.extract-bakeoff/v2"
 EXIT_NOT_RANKED = 2        # could-not-compare is not success; CI reads the exit code
 MIN_PAIRED_DOCUMENTS = 2   # one shared document cannot order two backends; it is an anecdote
@@ -91,6 +92,14 @@ def _declared(pdf: Path) -> tuple[int, str]:
             except (IndexError, ValueError):
                 return 0, f"pdfinfo reported an unparseable page count: {line.strip()[:60]}"
     return 0, "pdfinfo reported no page count"
+
+
+def _doc_seed(seed: int, pdf: Path) -> int:
+    """A deterministic per-document seed derived from the global one. Reproducible from
+    (seed, document) alone, which is what makes the sample re-runnable, without giving every
+    document the same page positions."""
+    h = hashlib.sha256(f"{seed}:{_doc_id(pdf)}".encode()).digest()
+    return int.from_bytes(h[:8], "big")
 
 
 def _median(vals) -> float | None:
@@ -281,7 +290,10 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
         control_raw, control_err = _extract(pdf, "pdftotext")
         per_tier: dict = {}
         for tier in tiers:
-            text, err = _extract(pdf, tier)
+            # the control IS pdftotext; running it again as a candidate paid for the same
+            # subprocess twice per document
+            text, err = ((control_raw, control_err) if tier == CONTROL_TIER
+                         else _extract(pdf, tier))
             if err:
                 report["skipped"].setdefault(tier, err)
                 # Record the FAILED pair too. Dropping it made `pdfs` count only successes, so a
@@ -306,8 +318,13 @@ def bake_off(pdfs: list[Path], tiers: list[str], *, sample: int = 3, seed: int =
                 row["visual"] = None
                 row["visual_note"] = "no page separators — cannot align pages for visual check"
             else:
-                sel = visual.sample_pages(declared, sample, seed)
-                vr = visual.check_pages(pdf, pages, pages=sel, seed=seed)
+                # per-DOCUMENT seed, not one global seed reused for every document: with a single
+                # seed, every equal-length document sampled identical page positions, so a common
+                # structure (title page, references) was systematically included or excluded across
+                # the whole corpus. That is not a random sample of pages, it is the same slice of
+                # every book.
+                sel = visual.sample_pages(declared, sample, _doc_seed(seed, pdf))
+                vr = visual.check_pages(pdf, pages, pages=sel, seed=_doc_seed(seed, pdf))
                 # `vr.measured`, not `vr.ran`: rendering can run while every sampled page errors,
                 # which produced `visual: None` with no note and threw the per-page errors away.
                 row["visual"] = vr.quantile(0.5) if vr.measured else None
@@ -420,6 +437,13 @@ def _aggregate(report: dict, tiers: list[str]) -> dict:
                   if docs[k]["tiers"].get(tier, {}).get("visual_order") is not None]
         a["median_visual"] = _median(vals)
         a["median_order"] = _median(orders)
+        # A median over pages and then over documents lets a backend wreck almost half of both and
+        # still score perfectly. The distribution is kept so the tail is visible, and the WORST
+        # document is reported beside the median rather than being averaged out of existence.
+        a["worst_visual"] = min(vals) if vals else None
+        a["p10_visual"] = (sorted(vals)[max(0, int(0.10 * (len(vals) - 1)))] if vals else None)
+        a["worst_order"] = min(orders) if orders else None
+        a["scores"] = sorted(round(v, 4) for v in vals)
         # Actively inverted reading order is not a lower score on the same axis — it is a different
         # failure, and recall cannot see it. A backend measured as inverted sorts below every
         # backend that is not, whatever its recall. Same line the integrity gate draws
@@ -517,7 +541,8 @@ def main(argv=None) -> int:
             a = rep["aggregate"][tier]
             mv = "n/a" if a["median_visual"] is None else f"{a['median_visual']:.3f}"
             mo = "n/a" if a["median_order"] is None else f"{a['median_order']:.3f}"
-            print(f"  {i}. {tier:<12} paired_visual={mv:<7} order={mo:<7} "
+            wv = "n/a" if a["worst_visual"] is None else f"{a['worst_visual']:.3f}"
+            print(f"  {i}. {tier:<12} paired_visual={mv:<7} worst={wv:<7} order={mo:<7} "
                   f"measured {a['measured']}/{a['attempted']} docs"
                   + (f"  ({a['extraction_failures']} extraction failures)"
                      if a["extraction_failures"] else "")
