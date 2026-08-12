@@ -352,13 +352,40 @@ class Pdf(FormatsTest):
         self.assertIn("ZZCLEAN", e.text)
         self.assertEqual(e.note, "text layer clean")
 
-    def test_auto_degrades_when_ocr_absent(self):
+    def test_auto_refuses_when_no_tier_reaches_quality(self):
+        """This test previously asserted the fail-open: that a KNOWN-GARBLED pdftotext result
+        SUCCEEDS when OCR is missing. An audit named it — `auto` means "pick the cheapest tier that
+        reaches quality", and returning text that fails the very thresholds `auto` judges by is a
+        choice it did not make. Worse, verification then abstains (the control tier IS pdftotext,
+        so there is nothing to compare against) and the garbage is promoted unchecked."""
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
-             mock.patch.object(pdf, "_xberg", side_effect=ImportError("no kreuzberg")):
+             mock.patch.object(pdf, "_xberg", side_effect=ImportError("no kreuzberg")), \
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")), \
+             self.assertRaises(ExtractionError) as cm:
+            pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        msg = str(cm.exception)
+        self.assertIn("no extraction tier reached usable quality", msg)
+        self.assertIn("WANTED OCR but", msg)          # the reason still travels
+        self.assertIn("--tier pdftotext", msg)        # and so does the deliberate override
+
+    def test_a_forced_tier_still_returns_whatever_it_produced(self):
+        # the refusal is `auto`'s alone: only `auto` claims to have chosen on quality
+        with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+             mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)):
+            e = pdf.PdfHandler().extract(self._pdf(), tier="pdftotext")
+        self.assertEqual(e.handler, "pdftotext")
+        self.assertTrue(e.text.split())
+
+    def test_a_short_but_clean_document_is_not_refused(self):
+        # MIN_WORDS guards the tier-1 fast path; it cannot mean "this document is too short to be
+        # real". Including it in the refusal rejected a legitimate 120-word PDF.
+        with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+             mock.patch.object(pdf.subprocess, "run",
+                               return_value=_fake_run(stdout="clean short text here " * 30)):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "pdftotext")
-        self.assertIn("WANTED OCR but", e.note)
+        self.assertLess(len(e.text.split()), pdf.MIN_WORDS)
 
     def test_auto_escalates_to_xberg(self):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
@@ -391,16 +418,17 @@ class Pdf(FormatsTest):
             e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
         self.assertEqual(e.handler, "docling")
 
-    def test_auto_degrades_when_docling_absent(self):          # WI-12: no crash at Tier 3 gap
+    def test_auto_refuses_at_the_tier_3_gap_rather_than_returning_garbage(self):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
              mock.patch.object(pdf, "_xberg", return_value="t~e regulatIOn " * 160), \
-             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
-            e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
-        # the EXACT winner, not "either": `assertIn(..., ("pdftotext", "xberg"))` still passed
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")), \
+             self.assertRaises(ExtractionError) as cm:
+            pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        # the EXACT incumbent, not "either": `assertIn(..., ("pdftotext", "xberg"))` still passed
         # with the score comparison in `_better` deleted, which is the whole behaviour here.
         # xberg's output is as garbled as pdftotext's, so it must NOT displace it.
-        self.assertEqual(e.handler, "pdftotext")
+        self.assertIn("best: pdftotext", str(cm.exception))
 
     def test_a_fragment_never_replaces_a_whole_document(self):
         """A one-word OCR result scores corruption 0.0 — there are no corruption markers in one
@@ -414,9 +442,11 @@ class Pdf(FormatsTest):
                  mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
                  mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
                  mock.patch.object(pdf, "_xberg", return_value=fragment), \
-                 mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
-                e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
-            self.assertEqual(e.handler, "pdftotext", f"a {label} fragment displaced the document")
+                 mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")), \
+                 self.assertRaises(ExtractionError) as cm:
+                pdf.PdfHandler().extract(self._pdf(), tier="auto")
+            self.assertIn("best: pdftotext", str(cm.exception),
+                          f"a {label} fragment displaced the document")
 
     def test_a_short_document_can_still_be_recovered_by_ocr(self):
         """A REGRESSION my own fragment guard introduced, caught by an independent verification.
@@ -443,18 +473,21 @@ class Pdf(FormatsTest):
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=same)), \
              mock.patch.object(pdf, "_xberg", return_value=same), \
-             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
-            e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
-        self.assertEqual(e.handler, "pdftotext")
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")), \
+             self.assertRaises(ExtractionError) as cm:
+            pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        self.assertIn("best: pdftotext", str(cm.exception))
 
     def test_empty_ocr_never_replaces_text(self):          # audit: empty result must not win on score 0
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
              mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=self.GARBLED)), \
              mock.patch.object(pdf, "_xberg", return_value=""), \
-             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")):
-            e = pdf.PdfHandler().extract(self._pdf(), tier="auto")
-        self.assertEqual(e.handler, "pdftotext")
-        self.assertTrue(e.text.split())                    # kept usable text, not the empty OCR
+             mock.patch.object(pdf, "_docling", side_effect=ImportError("no docling")), \
+             self.assertRaises(ExtractionError) as cm:
+            pdf.PdfHandler().extract(self._pdf(), tier="auto")
+        # the empty OCR did not become the incumbent — the refusal names pdftotext and its words
+        self.assertIn("best: pdftotext", str(cm.exception))
+        self.assertIn("320 words", str(cm.exception))
 
     def test_auto_tolerates_pdftotext_failure(self):       # audit: Tier-1 failure escalates, not aborts
         with mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
@@ -506,6 +539,38 @@ class Pdf(FormatsTest):
                                return_value=_FakeResp(raw=b"<html>500 oops</html>")):
             with self.assertRaises(RuntimeError):               # not an uncaught JSONDecodeError
                 pdf._docling(self._pdf())
+
+    def test_an_oversized_INPUT_is_refused_before_the_body_is_built(self):
+        # only the RESPONSE was bounded. The request path read the whole PDF and then built a
+        # second complete copy of it as a multipart body, so a hostile or merely enormous file
+        # cost several times its size in RAM before the response guard could ever apply.
+        big = _write(self.tmp, "big.pdf", b"%PDF-1.7\n" + b"x" * 4096)
+        for env, fn in ((pdf.DOCLING_ENV, pdf._docling_structured),
+                        (pdf.MARKER_ENV, pdf._marker_structured)):
+            with self.subTest(env=env), \
+                 mock.patch.dict(os.environ, {env: "http://x.test:1"}), \
+                 mock.patch.object(pdf, "MAX_UPLOAD_BYTES", 1024), \
+                 mock.patch.object(pdf.urllib.request, "urlopen") as uo:
+                with self.assertRaises(RuntimeError) as cm:
+                    fn(big, "http://x.test:1")
+                self.assertIn("upload cap", str(cm.exception))
+                uo.assert_not_called()      # refused BEFORE any request was constructed
+
+    def test_a_truthy_non_object_nested_field_degrades_to_runtimeerror(self):
+        # `document`/`metadata`/`md_content` were consumed without type checks, so a truthy
+        # non-dict reached .get() and a non-string reached .strip(), raising AttributeError
+        # instead of the documented RuntimeError the escalation loop catches
+        cases = [(pdf.DOCLING_ENV, pdf._docling_structured, {"document": ["not", "a", "dict"]}),
+                 (pdf.DOCLING_ENV, pdf._docling_structured, {"document": {"md_content": 42}}),
+                 (pdf.MARKER_ENV, pdf._marker_structured, {"success": True, "output": 42}),
+                 (pdf.MARKER_ENV, pdf._marker_structured,
+                  {"success": True, "output": "x", "metadata": ["nope"]})]
+        for env, fn, payload in cases:
+            with self.subTest(payload=payload), \
+                 mock.patch.dict(os.environ, {env: "http://x.test:1"}), \
+                 mock.patch.object(pdf.urllib.request, "urlopen", return_value=_FakeResp(payload)):
+                with self.assertRaises(RuntimeError):
+                    fn(self._pdf(), "http://x.test:1")
 
     def test_docling_remote_oversized_response_refused(self):  # audit r1: OOM guard
         with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://docling.test:15001"}), \
@@ -591,6 +656,12 @@ class MarkerPagination(unittest.TestCase):
         self.assertIsNone(pdf.split_marker_pages(md, [0, 1, 2]))
         self.assertIsNone(pdf.split_marker_pages(md, [0]))
 
+    def test_two_separators_claiming_the_same_page_cannot_say(self):
+        # the later silently overwrote the earlier, so contradictory pagination was reported as
+        # valid page provenance
+        md = f"\n\n{{0}}{'-' * 48}\n\nfirst\n\n{{0}}{'-' * 48}\n\nsecond"
+        self.assertIsNone(pdf.split_marker_pages(md))
+
     def test_a_blank_page_is_still_a_page(self):
         got = pdf.split_marker_pages(self._md("alpha", "", "gamma"))
         self.assertEqual(sorted(got), [1, 2, 3])
@@ -609,6 +680,7 @@ class MarkerPagination(unittest.TestCase):
 
 class MarkerTransport(FormatsTest):
     ENDPOINT = {pdf.MARKER_ENV: "http://marker.test:15002"}
+    GARBLED = "the~ regulatIOn mfonnafion t~e " * 80
 
     def _pdf(self):
         return _write(self.tmp, "m.pdf", b"%PDF-1.7\n%%EOF\n")
@@ -677,12 +749,43 @@ class MarkerTransport(FormatsTest):
         self.assertIn("marker_url", str(e.exception))
 
     def test_marker_is_selectable_but_not_in_the_auto_ladder(self):
-        # a backend earns a ladder slot by measuring better, not by being installed
+        """A backend earns a ladder slot by measuring better, not by being installed.
+
+        Asserted BEHAVIOURALLY, not by searching the source for `_marker`: auto could reach marker
+        through `_EXTRACTORS[name]`, an alias, or a wrapper and a source search would never know —
+        and the search is brittle under harmless renaming besides. Every marker seam raises if
+        called, and every auto escalation branch is driven."""
         self.assertIn("marker", pdf._EXTRACTORS)
-        import inspect
-        ladder = inspect.getsource(pdf.choose_and_extract).split('if tier != "auto"')[1]
-        ladder = ladder.split("# Tier 1")[1]
-        self.assertNotIn("_marker", ladder, "marker must not be reachable from `auto`")
+        calls = []
+
+        def tripwire(*a, **k):
+            calls.append(a)
+            raise AssertionError("auto reached marker")
+
+        branches = [
+            ("pdftotext garbled, no OCR", self.GARBLED, ImportError("no xberg"), ImportError("no docling")),
+            ("xberg also garbled", self.GARBLED, "t~e regulatIOn " * 160, ImportError("no docling")),
+            ("docling recovers", self.GARBLED, ImportError("no xberg"), "clean words here " * 200),
+        ]
+        for label, t1, xb, dl in branches:
+            with self.subTest(label), \
+                 mock.patch.object(pdf, "_marker", tripwire), \
+                 mock.patch.object(pdf, "_marker_with_pages", tripwire), \
+                 mock.patch.object(pdf, "_marker_structured", tripwire), \
+                 mock.patch.dict(pdf._EXTRACTORS, {"marker": tripwire}), \
+                 mock.patch.object(pdf.shutil, "which", return_value="/x/pdftotext"), \
+                 mock.patch.object(pdf.subprocess, "run", return_value=_fake_run(stdout=t1)), \
+                 mock.patch.object(pdf, "_xberg",
+                                   side_effect=xb if isinstance(xb, Exception) else None,
+                                   return_value=None if isinstance(xb, Exception) else xb), \
+                 mock.patch.object(pdf, "_docling_with_pages",
+                                   side_effect=dl if isinstance(dl, Exception) else None,
+                                   return_value=None if isinstance(dl, Exception) else (dl, None)):
+                try:
+                    pdf.choose_and_extract(self._pdf(), tier="auto")
+                except ExtractionError:
+                    pass                     # a refusal is fine; reaching marker is not
+        self.assertEqual(calls, [], "`auto` invoked marker")
 
     def test_a_forced_marker_tier_carries_its_pages_onto_the_choice(self):
         with mock.patch.dict(os.environ, self.ENDPOINT), \
