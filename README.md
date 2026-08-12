@@ -81,9 +81,15 @@ server-side, so klode stays dependency-free — and pass `--tier docling`:
 ```toml
 # ~/.klode/settings.toml
 [ingest]
-docling_url = "http://<host>:15001"
-tier = "docling"          # or leave at "auto" and escalate only when the text layer is bad
+docling_url = "http://<host>:15001"   # docling-serve
+marker_url  = "http://<host>:15002"   # marker_server, for --tier marker
+tier = "auto"                          # escalate only when the measured text layer is bad
 ```
+
+**Prefer a remote endpoint over a local install.** A remote conversion has a deadline that scales
+with the document; the in-process backends have no wall-clock bound, so a pathological PDF can
+wedge a local ingest indefinitely. It also keeps this client dependency-free, which is the point of
+the project.
 
 `KLODE_DOCLING_URL` overrides the file, and `klode settings` prints every value with the source
 that won. The URL is topology, not a credential: **bind docling-serve to a private interface**, and

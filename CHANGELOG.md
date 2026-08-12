@@ -5,6 +5,21 @@ a **minor** bump may carry breaking changes.
 
 ## 0.4.1 — 2026-08-13
 
+> ### ⚠️ Upgrading from 0.3.0? Read the 0.4.0 section too.
+>
+> **0.4.0 was prepared but never published**, so `v0.4.1` is the first tag of this line and
+> carries *everything* since `v0.3.0` — including the change most likely to break you, which is
+> documented one section down rather than here:
+>
+> **Commands that could not do their work now exit 2 instead of 0.** If your CI runs `klode check`
+> on a machine without the corpus installed, it will now fail. That is deliberate: `klode check
+> --strict` used to print `OK: 0 errors` and exit 0 on a library whose citation-rot check never
+> ran, and a fresh clone has no corpus — so every anchor could have rotted while the build stayed
+> green. Pass `--allow-unmeasured` to accept the gap knowingly.
+>
+> The full table of moved exit codes, the card `file:` confinement, and the other breaking changes
+> are in [0.4.0](#040--2026-08-12).
+
 A second audit, of the code written to close the first one. 1,515 lines had been reviewed by
 nobody but their author; an independent pass plus an owner-proxy review of three deferred decisions
 returned 22 findings, five of which were rows the first audit had already marked `fixed`.

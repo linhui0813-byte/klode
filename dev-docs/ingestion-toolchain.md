@@ -61,6 +61,19 @@ Tier 3  docling             (layout models · torch)        — complex multi-co
 
 ### 2.1 The remote backends, and why `marker` is not a tier
 
+**Prefer the remote path.** It is not merely a convenience for machines without a GPU — it is the
+configuration with the better failure behaviour, for three reasons:
+
+1. **It is bounded.** A remote conversion has a deadline that scales with the document
+   (`_deadline`). The in-process backends have **no wall-clock bound at all**: a hostile or merely
+   enormous PDF wedges a local ingest indefinitely, and bounding them properly needs a worker
+   process that re-imports torch in the child (see the note beside the timeout constants).
+2. **It keeps the promise.** klode's headline claim is zero runtime dependencies, checked in CI. A
+   1.2 GB torch tree on the machine that runs `klode check` is the thing that claim exists to
+   prevent.
+3. **The GPU is usually elsewhere.** Layout models are slow on a laptop and fast on the box with
+   the accelerator.
+
 docling and marker both pull torch and layout models — roughly 1.2 GB and up — which klode does not
 depend on and will not. Both are therefore reachable **over HTTP**, with the GPU on the server:
 
@@ -239,10 +252,16 @@ one file).
 [ingest]
 tier        = "auto"                       # auto | pdftotext | xberg | docling | marker
 verify      = true                         # measure integrity before promoting
-docling_url = "http://<host>:15001"        # docling-serve endpoint
-marker_url  = "http://<host>:15002"        # marker_server endpoint
+docling_url = "http://<host>:15001"        # docling-serve endpoint  (recommended)
+marker_url  = "http://<host>:15002"        # marker_server endpoint  (--tier marker only)
 marker_mode = "fast"                       # fast | balanced — see §2.1
 ```
+
+With those two endpoints set, `--tier docling` and `--tier marker` never touch a local backend, and
+`auto` escalates to the remote docling rather than looking for an in-process one. Nothing needs to
+be installed on the client: verified end to end on a machine with neither kreuzberg nor docling
+present, ingesting a two-column PDF at `integrity: verified`, containment 1.0, in about two
+seconds. `klode settings --lint` checks the file, including values an override shadows.
 
 Unknown keys, wrong types, and out-of-domain values are **rejected loudly**: silently dropping a key
 the user wrote is how a setting appears to have no effect. Credentials are never settings.
