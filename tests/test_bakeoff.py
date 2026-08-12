@@ -358,8 +358,11 @@ class MarkdownOnlyBackendsCanStillBeRanked(unittest.TestCase):
                          f"a document was converted more than once: {calls}")
 
     def test_a_backend_that_cannot_supply_pages_is_still_reported_not_guessed_at(self):
-        bake.pdfmod.structured_extract = self._only_docling(
-            lambda pdf: (self.md, None, None, ""))
+        # A CONTROL is supplied explicitly rather than relying on poppler being installed: without
+        # it the branch under test is never reached, so this passed on a developer machine and
+        # failed in CI. The behaviour asserted is "no page provenance", not "poppler is here".
+        bake.pdfmod.structured_extract = lambda pdf, tier: (
+            (self.md, None, None, "") if tier == "docling" else ("control text\f", None, None, ""))
         rep = bake.bake_off([PDFS / "single-page.pdf"], ["docling"], sample=1)
         row = rep["pdfs"][bake._doc_id(PDFS / "single-page.pdf")]["tiers"]["docling"]
         self.assertIsNone(row["visual"])
@@ -567,6 +570,11 @@ class HarnessBehaviour(unittest.TestCase):
                 checks=(bake.visual.PageCheck(page=1, ocr_tokens=10, matched=10),))
         bake.visual.check_pages = capture
         self.addCleanup(setattr, bake.visual, "check_pages", real)
+        # the control is supplied, so the measurement runs whether or not poppler is installed —
+        # in CI it is not, `_extract` failed, and `_measure_tier` was never called at all
+        real_se = bake.pdfmod.structured_extract
+        self.addCleanup(setattr, bake.pdfmod, "structured_extract", real_se)
+        bake.pdfmod.structured_extract = lambda pdf, tier: ("p1\fp2\fp3\f", None, None, "")
         rep = bake.bake_off([PDFS / "three-pages.pdf"], ["pdftotext"], sample=2, seed=99)
         self.assertEqual(rep["seed"], 99)
         row = rep["pdfs"][bake._doc_id(PDFS / "three-pages.pdf")]["tiers"]["pdftotext"]
@@ -576,7 +584,7 @@ class HarnessBehaviour(unittest.TestCase):
         want_seed = bake._doc_seed(99, PDFS / "three-pages.pdf")
         self.assertEqual(seen["seed"], want_seed)
         self.assertEqual(tuple(row["visual_sampled"]),
-                         bake.visual.sample_pages(3, 2, want_seed))
+                         bake.visual.sample_pages(row["declared_pages"], 2, want_seed))
         self.assertEqual(tuple(seen["pages"]), tuple(row["visual_sampled"]))
         self.assertIsNotNone(row["visual"])
 

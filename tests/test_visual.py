@@ -56,7 +56,11 @@ class Sampling(unittest.TestCase):
 
 class Abstention(unittest.TestCase):
     def test_a_missing_pdf_is_skipped_loudly(self):
-        r = visual.check_pages(Path("/nonexistent.pdf"), {}, pages=(1,), seed=1)
+        # `available()` is checked FIRST, so without pdftoppm/tesseract this asserted the toolchain
+        # message instead of the behaviour under test — green on a developer machine, red in CI
+        from unittest import mock
+        with mock.patch.object(visual, "available", return_value=(True, "")):
+            r = visual.check_pages(Path("/nonexistent.pdf"), {}, pages=(1,), seed=1)
         self.assertFalse(r.ran)
         self.assertIn("no such pdf", r.skipped)
         self.assertEqual(r.recalls, ())
