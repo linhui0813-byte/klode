@@ -660,6 +660,38 @@ class Pdf(FormatsTest):
             with self.assertRaises(RuntimeError):
                 pdf._docling(self._pdf())
 
+    def test_the_conversion_deadline_scales_with_the_document(self):
+        """A fixed timeout cannot serve both ends of the range.
+
+        Measured on a real corpus: a 222-page scanned book exceeded BOTH the 300 s docling floor
+        and the 900 s marker floor, so klode could not ingest it through a remote backend at all —
+        while a 12-page paper finished in under three seconds. Raising the constant globally would
+        leave a wedged request hanging for hours on a small file.
+        """
+        floor = pdf.DOCLING_HTTP_TIMEOUT
+        self.assertEqual(pdf._deadline(1024, floor), floor)          # small file: the floor
+        big = 60 * 1024 * 1024
+        self.assertGreater(pdf._deadline(big, floor), floor * 4)     # 60 MB: much longer
+        self.assertLessEqual(pdf._deadline(10 ** 12, floor), pdf.MAX_HTTP_TIMEOUT)   # still bounded
+        self.assertGreater(pdf._deadline(big, floor), pdf._deadline(big // 10, floor))
+
+    def test_the_deadline_is_what_urlopen_actually_receives(self):
+        # asserting the helper alone would pass with the call site still using the raw constant
+        payload = {"document": {"md_content": "x"}}
+        # a low floor so the FIXTURE's size is what drives the deadline
+        with mock.patch.dict(os.environ, {pdf.DOCLING_ENV: "http://x.test:1"}), \
+             mock.patch.object(pdf, "BYTES_PER_SECOND", 1), \
+             mock.patch.object(pdf, "DOCLING_HTTP_TIMEOUT", 1), \
+             mock.patch.object(pdf.urllib.request, "urlopen",
+                               return_value=_FakeResp(payload)) as uo:
+            pdf._docling_structured(self._pdf(), "http://x.test:1")
+        sent = uo.call_args.kwargs["timeout"]
+        body = len(uo.call_args[0][0].data)
+        self.assertGreater(sent, 1, "the call site is still passing the raw constant")
+        # BYTES_PER_SECOND=1 and floor=1, so the deadline IS the body size. Recomputing with
+        # `_deadline` outside the patch context would use the real constant and prove nothing.
+        self.assertEqual(sent, float(body))
+
     def test_the_ocr_language_reaches_every_remote_backend(self):
         """`--lang` was accepted by every extractor and used by ONE. A non-English scan was OCR'd
         as English while the CLI and CHANGELOG both said this flag controlled it."""

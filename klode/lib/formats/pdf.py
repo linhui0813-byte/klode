@@ -34,7 +34,9 @@ MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a
 RETENTION_FLOOR = 0.5          # a candidate keeping <50% of the incumbent's words is a
                                # fragment; corruption_score is a ratio and cannot see loss
 DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001
-DOCLING_HTTP_TIMEOUT = 300
+DOCLING_HTTP_TIMEOUT = 300     # floor; the real deadline scales with the document — see _deadline
+BYTES_PER_SECOND = 24_000      # observed floor for a layout backend on an image-heavy scan
+MAX_HTTP_TIMEOUT = 3 * 3600
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024      # cap the INPUT too: the body is read whole and then copied
 #                                           into a second full multipart buffer, so a hostile or
@@ -111,6 +113,21 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     return _xberg_convert(str(pdf), lang)
 
 
+def _deadline(body_bytes: int, floor: float) -> float:
+    """A conversion deadline proportional to the document.
+
+    A FIXED timeout is wrong for a backend whose cost scales with page count. Measured: a 222-page
+    scanned book exceeded both the 300 s docling floor and the 900 s marker floor, so klode could
+    not ingest it at all through a remote backend — while a 12-page paper finished in under three
+    seconds. One constant cannot serve both, and raising it globally would leave a wedged request
+    hanging for hours on a small file.
+
+    Derived from bytes because that is what is available at this call site without another
+    subprocess; page count would be better and needs `pdfinfo`, which is not guaranteed present.
+    """
+    return min(MAX_HTTP_TIMEOUT, max(floor, body_bytes / BYTES_PER_SECOND))
+
+
 def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap: int) -> dict:
     """One bounded multipart-JSON round trip, shared by both remote backends.
 
@@ -125,7 +142,7 @@ def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap:
     req = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=_deadline(len(body), timeout)) as resp:
         raw = resp.read(cap + 1)                  # bounded read: never OOM on a huge response
     if len(raw) > cap:
         raise RuntimeError(f"{url}: response exceeds the {cap // 1048576} MB cap")
