@@ -32,12 +32,12 @@ anyone who prefers to keep it ephemeral.
 "provider" abstraction — there is exactly one judge transport (Anthropic). Calling it provider
 configuration would promise a contract that does not exist.
 
-**`judge.model` and `judge.permutations` are still not consumed.** `klode review` builds its own
-fixture judge, so setting them changes nothing. They are declared here so the resolver and its
-diagnostics are testable ahead of that wiring. That caveat now lives in each key's `help`, not only
-in this docstring: a user reads `klode settings --explain`, not a module header, and a caveat only
-the source states is a caveat nobody sees. `tests/test_settings.py` asserts the marker is present
-on every unconsumed key, so wiring one without removing its warning fails.
+**The judge settings are consumed only under `klode review --live-judge`.** That split is
+deliberate. A persistent config file is an adequate consent surface for CHOOSING a model; it is not
+adequate consent for BILLED network calls, because `ANTHROPIC_API_KEY` is commonly ambient for
+other tools and this command advertises a stub judge. Without the flag klode makes no network call
+whatever these values say; with it, both a model and a key are required and the cost is stated
+before the call.
 
 `judge.hurdle` IS consumed. It was in the same inert state — declared, printed by `klode settings`,
 and read by nothing, while the review service hardcoded `60`. A setting that cannot change
@@ -76,12 +76,13 @@ class Spec:
 
 SPEC: tuple[Spec, ...] = (
     Spec("judge", "model", "KLODE_JUDGE_MODEL", None, str,
-         "NOT YET CONSUMED — `klode review` still builds its own fixture judge, so setting this "
-         "changes nothing today. Model id for the rubric judge; no default on purpose "
-         "(self-enhancement bias: it must differ from whatever produced the draft)"),
+         "model id for the rubric judge, used by `klode review --live-judge`. Nothing happens "
+         "without that flag: a config file is consent to CHOOSE a model, not to spend money. No "
+         "default on purpose (self-enhancement bias: it must differ from whatever produced the "
+         "draft)"),
     Spec("judge", "permutations", "KLODE_JUDGE_PERMUTATIONS", 2, int,
-         "NOT YET CONSUMED — see judge.model. How many opposed level orders to average over, "
-         "against position bias", lo=1, hi=16),
+         "how many opposed level orders to average over, against position bias. Each costs an API "
+         "call under --live-judge: 1 + permutations per criterion", lo=1, hi=16),
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
          "Go/Recycle threshold, 0..100 — the mean criterion percentage a draft must reach",
          lo=0, hi=100),
@@ -201,11 +202,15 @@ def _from_env(spec: Spec):
     if raw is None:
         return None, False
     if raw == "":
-        # PRESENT and empty. Treating it as absence meant `FOO=$UNSET_VAR klode ...` — the classic
-        # deployment bug — silently fell through to the file or the default while the operator
-        # believed they had set it. Use `env -u` to actually unset.
+        # An OPTIONAL setting (no built-in default) has "absent" as a real state, and `FOO=` is the
+        # ordinary way to express it — refusing that broke `KLODE_MARKER_URL=` as a way to disable
+        # an endpoint, and because resolution visits every setting, it broke unrelated commands
+        # too. A setting WITH a default is different: blanking it is ambiguous, and the classic
+        # deployment bug `FOO=$TYPO` must not fall through silently.
+        if spec.default is None:
+            return None, False
         raise ValueError(f"{spec.env} is set but empty — unset it with `env -u {spec.env}` if you "
-                         "meant no override")
+                         f"meant no override, or give it one of {spec.choices or 'its valid values'}")
     return _from_env_value(spec, raw)
 
 
@@ -283,11 +288,18 @@ def _validate_url(spec: Spec, value: str, where: str) -> None:
         # 0x7f is DEL — a control character the `< 0x20` test misses, and it was accepted in a
         # hostname
         raise ValueError(f"{label} contains whitespace or control characters, got {value!r}")
-    if u.scheme.lower() == "http" and not _is_private_host(u.hostname):
+    if u.scheme.lower() == "http" and not _is_private_host(u.hostname) \
+            and not _insecure_http_allowed():
         raise ValueError(
-            f"{label} uses plaintext http to a non-private host ({u.hostname}). klode uploads "
-            "whole documents to this endpoint, so use https, or point it at a private address "
-            "(loopback, RFC1918, tailnet 100.64/10, or a .local/.internal name).")
+            f"{label} uses plaintext http to a host that may be public ({u.hostname}). klode "
+            "uploads whole documents to this endpoint. Use https, point it at an address that "
+            "cannot be public (loopback, RFC1918, tailnet 100.64/10, or a single-label name like "
+            "`docling`), or set [ingest].allow_insecure_http = true to accept the risk knowingly.")
+
+
+def _insecure_http_allowed() -> bool:
+    raw = os.environ.get("KLODE_ALLOW_INSECURE_HTTP", "")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _is_private_host(host: str | None) -> bool:
@@ -299,6 +311,13 @@ def _is_private_host(host: str | None) -> bool:
     # one leaks nothing. `.test` in particular is what a test suite is supposed to use.
     if h == "localhost" or h.endswith((".local", ".internal", ".lan", ".home.arpa",
                                        ".test", ".example", ".invalid", ".localhost")):
+        return True
+    # A SINGLE-LABEL name (`docling`, `docling-serve`) has no public DNS answer — it can only be
+    # resolved by a container network, a hosts file, or a local search domain. Rejecting these
+    # broke the ordinary Docker and Kubernetes deployment, which was the point of the setting.
+    # Note the limit, stated rather than hidden: a lexical rule cannot prove where a name RESOLVES;
+    # `[ingest].allow_insecure_http` exists for the cases it cannot classify.
+    if "." not in h:
         return True
     import ipaddress
     try:
@@ -325,6 +344,30 @@ def _coerce(spec: Spec, value, where: str):
     return _validate(spec, value, where)
 
 
+def lint(explicit=None, *, home=None) -> list[str]:
+    """Validate EVERY value in the settings file, including ones an override shadows.
+
+    Separate from `resolve` on purpose. Validating the whole file during ordinary resolution meant
+    an obsolete `[ingest]` entry — correctly overridden and never used — aborted unrelated commands
+    like `review`. That is a diagnostic, not a runtime failure, so it gets its own mode:
+    `klode settings --lint`. A shadowed-but-broken value is still worth knowing about, because it
+    becomes live the moment the override is removed.
+    """
+    problems: list[str] = []
+    try:
+        fv = load(explicit, home=home)
+    except ValueError as e:
+        return [str(e)]
+    by_name = {f"{sp.section}.{sp.key}": sp for sp in SPEC}
+    where = str(settings_path(explicit, home=home))
+    for name, val in sorted(fv.items()):
+        try:
+            _coerce(by_name[name], val, where)
+        except ValueError as e:
+            problems.append(str(e))
+    return problems
+
+
 def resolve(args=None, *, file_values: dict | None = None, explicit=None, home=None) -> Settings:
     """Apply the precedence chain and record which source won for every setting.
 
@@ -334,13 +377,6 @@ def resolve(args=None, *, file_values: dict | None = None, explicit=None, home=N
     """
     if file_values is None:
         fv = load(explicit, home=home)
-        # Validate EVERY file value now, not only the ones that go on to win. A malformed entry
-        # shadowed by an environment override was silently accepted, so a broken settings file
-        # passed today and failed the moment the override was removed.
-        by_name = {f"{sp.section}.{sp.key}": sp for sp in SPEC}
-        where = str(settings_path(explicit, home=home))
-        for name, val in fv.items():
-            _coerce(by_name[name], val, where)
     else:
         # An injected mapping must face the SAME unknown-key check as a file on disk, or the
         # documented guarantee ("unknown keys are rejected") holds only for one of two paths.

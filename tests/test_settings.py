@@ -221,14 +221,39 @@ class InvalidInputFailsLoud(_EnvIsolated):
             with self.subTest(key=f"{spec.section}.{spec.key}"):
                 settings._coerce(spec, spec.default, "built-in default")
 
-    def test_a_malformed_file_value_is_rejected_even_when_shadowed(self):
-        # validated only when it WON precedence, so a broken file passed today and failed the
-        # moment the environment override was removed
+    def test_a_shadowed_malformed_file_value_is_a_LINT_finding_not_a_runtime_failure(self):
+        """Both halves matter, and getting one of them wrong broke the other.
+
+        Validating every file value during ordinary resolution meant an obsolete `[ingest]` entry
+        — correctly overridden, never used — aborted unrelated commands like `review`. But a
+        shadowed broken value is still worth knowing about: it goes live the moment the override
+        is removed. So resolution validates the winners and `settings --lint` validates the file.
+        """
         self.file.write_text('[ingest]\nverify = "not-a-boolean"\n', encoding="utf-8")
         os.environ["KLODE_INGEST_VERIFY"] = "true"
         self.addCleanup(os.environ.pop, "KLODE_INGEST_VERIFY", None)
-        with self.assertRaises(ValueError):
-            settings.resolve(None, home=self.tmp)
+        r = settings.resolve(None, home=self.tmp)              # the override wins; no failure
+        self.assertIs(r.value("ingest.verify"), True)
+        problems = settings.lint(home=self.tmp)                # ...but lint still finds it
+        self.assertEqual(len(problems), 1)
+        self.assertIn("must be a boolean", problems[0])
+
+    def test_lint_reports_every_invalid_file_value_at_once(self):
+        self.file.write_text('[ingest]\ntier = "bogus"\nverify = "maybe"\n', encoding="utf-8")
+        self.assertEqual(len(settings.lint(home=self.tmp)), 2)
+
+    def test_lint_is_silent_on_a_good_file(self):
+        self.file.write_text('[ingest]\ntier = "docling"\n', encoding="utf-8")
+        self.assertEqual(settings.lint(home=self.tmp), [])
+
+    def test_an_empty_OPTIONAL_variable_means_unset_not_broken(self):
+        # `KLODE_MARKER_URL=` is the ordinary way to disable an endpoint, and because resolution
+        # visits every setting, refusing it broke unrelated commands too
+        os.environ["KLODE_MARKER_URL"] = ""
+        self.addCleanup(os.environ.pop, "KLODE_MARKER_URL", None)
+        r = settings.resolve(None, home=self.tmp)
+        self.assertIsNone(r.value("ingest.marker_url"))
+        self.assertEqual(r.source("ingest.marker_url"), settings.UNSET)
 
     def test_an_empty_typoed_section_is_rejected(self):
         # no keys to iterate, so the unknown-key check never fired
@@ -353,23 +378,20 @@ class EverySettingIsDiscoverable(unittest.TestCase):
     def test_a_deliberately_unset_default_says_so_rather_than_printing_None(self):
         self.assertIn("unset on purpose", self._explain())
 
-    def test_an_unconsumed_setting_says_so_where_a_user_will_read_it(self):
-        # `judge.model` had its "changes nothing today" caveat in a module docstring only, so
-        # `--explain` described it as if it worked. A caveat only the source states is not a caveat.
+    def test_the_judge_settings_name_the_flag_that_consumes_them(self):
+        """They WERE inert and labelled "NOT YET CONSUMED". An owner-proxy review ruled that a
+        labelled dead setting is still a dead setting, and that a config file is consent to choose
+        a model but not to spend money — so they are consumed, behind an explicit
+        `--live-judge`. The help must now name that flag rather than deny consumption."""
         out = self._explain()
-        for key in ("judge.model", "judge.permutations"):
-            with self.subTest(key=key):
-                spec = next(s for s in settings.SPEC if f"{s.section}.{s.key}" == key)
-                self.assertIn("NOT YET CONSUMED", spec.help,
-                              "wiring this up? remove the marker in the same change")
-        self.assertIn("NOT YET CONSUMED", out)
-
-    def test_a_consumed_setting_does_not_carry_the_warning(self):
-        for key in ("judge.hurdle", "ingest.tier", "ingest.verify",
-                    "ingest.docling_url", "ingest.marker_url", "ingest.marker_mode"):
-            with self.subTest(key=key):
-                spec = next(s for s in settings.SPEC if f"{s.section}.{s.key}" == key)
+        self.assertNotIn("NOT YET CONSUMED", out, "a setting is still advertising itself as inert")
+        for spec in settings.SPEC:
+            with self.subTest(key=f"{spec.section}.{spec.key}"):
                 self.assertNotIn("NOT YET CONSUMED", spec.help)
+        model = next(s_ for s_ in settings.SPEC if s_.key == "model")
+        self.assertIn("--live-judge", model.help)
+        perms = next(s_ for s_ in settings.SPEC if s_.key == "permutations")
+        self.assertIn("API call", perms.help)   # the cost is stated where the value is set
 
     def test_the_terse_listing_points_at_the_explanation(self):
         import io
@@ -416,6 +438,65 @@ class JudgeHurdleActuallyReachesTheVerdict(unittest.TestCase):
         rc = cli.cmd_review(cli.build_parser().parse_args(["review", "d", "pacing"]))
         self.assertEqual(rc, 1)
         self.assertEqual(called, [], "a bad setting must stop the run, not be clamped silently")
+
+
+class LiveJudgeRequiresExplicitConsent(_EnvIsolated):
+    """A config file is consent to CHOOSE a model, not to spend money.
+
+    `ANTHROPIC_API_KEY` is commonly ambient for other tools, and `klode review` advertises a stub
+    judge — so turning the same invocation into billed network calls on the strength of stored
+    values would break the contract the command states. An owner-proxy review decided the flag.
+    """
+
+    def _run(self, argv, **env):
+        from unittest import mock
+        from klode.lib.cli import build_parser, cmd_review
+        import contextlib, io
+        cfg = str(Path(__file__).resolve().parent / "fixtures" / "kb-fixture" / "library.toml")
+        buf, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env), \
+             contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = cmd_review(build_parser().parse_args(["-c", cfg] + argv))
+        return rc, buf.getvalue() + err.getvalue()
+
+    def test_without_the_flag_a_configured_model_makes_no_network_call(self):
+        from unittest import mock
+        from klode.lib.formats import pdf                      # any module with urlopen imported
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=AssertionError("a network call was made")):
+            rc, out = self._run(["review", "draft", "pacing"],
+                                KLODE_JUDGE_MODEL="claude-opus-5", ANTHROPIC_API_KEY="sk-fake")
+        self.assertEqual(rc, 0)
+        self.assertIn("FixtureJudge", out)
+
+    def test_the_flag_requires_a_model(self):
+        rc, out = self._run(["review", "draft", "pacing", "--live-judge"],
+                            ANTHROPIC_API_KEY="sk-fake")
+        self.assertEqual(rc, 2)
+        self.assertIn("needs a model", out)
+
+    def test_the_flag_requires_a_key_and_says_keys_are_never_settings(self):
+        rc, out = self._run(["review", "draft", "pacing", "--live-judge"],
+                            KLODE_JUDGE_MODEL="claude-opus-5")
+        self.assertEqual(rc, 2)
+        self.assertIn("ANTHROPIC_API_KEY", out)
+        self.assertIn("never be settings", out)
+
+    def test_the_cost_is_stated_before_any_call_is_made(self):
+        from unittest import mock
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("no network in tests")):
+            _rc, out = self._run(["review", "draft", "pacing", "--live-judge"],
+                                 KLODE_JUDGE_MODEL="claude-opus-5", ANTHROPIC_API_KEY="sk-fake",
+                                 KLODE_JUDGE_PERMUTATIONS="4")
+        self.assertIn("BILLED", out)
+        self.assertIn("5 per criterion", out)          # 1 + permutations
+        self.assertIn("uncalibrated", out)
+
+    def test_the_verdict_label_names_the_judge_that_actually_ran(self):
+        # it was hardcoded to "stub judge", which would have stayed there for a real one
+        rc, out = self._run(["review", "draft", "pacing"])
+        self.assertIn("FixtureJudge", out)
+        self.assertNotIn("stub judge", out)
 
 
 class SafetySettingsReachTheirConsumer(_EnvIsolated):

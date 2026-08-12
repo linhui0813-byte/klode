@@ -676,6 +676,13 @@ def cmd_settings(args) -> int:
     except ValueError as e:
         print(f"settings error: {e}", file=sys.stderr)
         return 1
+    if getattr(args, "lint", False):
+        problems = _settings.lint(home=None)
+        for msg in problems:
+            print(f"  INVALID  {msg}", file=sys.stderr)
+        print(f"\n{'FAIL' if problems else 'OK'}: {len(problems)} invalid value(s) in "
+              f"{_settings.settings_path()}")
+        return 1 if problems else 0
     show_sources = not getattr(args, "values_only", False)
     print(f"settings file: {_settings.settings_path()}"
           f"{'' if _settings.settings_path().is_file() else '  (absent — not an error)'}")
@@ -734,21 +741,56 @@ def cmd_review(args) -> int:
         # `judge.hurdle` was declared, printed by `klode settings`, and read by nothing — the
         # service hardcoded 60. A setting that cannot change behaviour is worse than no setting:
         # it invites a change and then silently ignores it.
-        hurdle = _settings.resolve(args).value("judge.hurdle")
+        resolved = _settings.resolve(args)
+        hurdle = resolved.value("judge.hurdle")
     except ValueError as e:
         print(f"settings error: {e}", file=sys.stderr)
         return 1
+    judge = None
+    if getattr(args, "live_judge", False):
+        # A config file is an adequate consent surface for CHOOSING a model. It is not adequate
+        # consent for SPENDING: `ANTHROPIC_API_KEY` is commonly ambient for other tools, and this
+        # command advertises a stub, so turning the same invocation into billed network calls on
+        # the strength of a stored value would break the contract it currently states.
+        # `1 + permutations` calls per criterion, so the default is three per criterion.
+        from klode import gate
+        from klode.gate.llm_judge import anthropic_transport
+        model = resolved.value("judge.model")
+        if not model:
+            print("--live-judge needs a model: set [judge].model or $KLODE_JUDGE_MODEL. It has no "
+                  "default on purpose — it must differ from whatever produced the draft "
+                  "(self-enhancement bias).", file=sys.stderr)
+            return 2
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("--live-judge needs $ANTHROPIC_API_KEY. Keys are environment-only and can never "
+                  "be settings.", file=sys.stderr)
+            return 2
+        perms = resolved.value("judge.permutations")
+        print(f"live judge: {model}, {perms} permutation(s) — this makes BILLED API calls "
+              f"({1 + perms} per criterion). The verdict remains uncalibrated.", file=sys.stderr)
+        judge = gate.LLMJudge(anthropic_transport(model), model=model, permutations=perms)
     try:
-        r = _run(args, "review", {"draft": draft, "dimension": args.dimension, "hurdle": hurdle})
+        r = _run(args, "review", {"draft": draft, "dimension": args.dimension,
+                                  "hurdle": hurdle, "judge": judge})
     except ValueError as e:      # the stub gate raises ValueError when nothing grounds (corpus absent)
         print(f"review unavailable: {e}", file=sys.stderr)
         return 1
+    except Exception as e:       # a live judge's transport failure is a message, not a traceback
+        from klode.gate import JudgeError
+        if not isinstance(e, JudgeError):
+            raise
+        print(f"judge unavailable: {e}", file=sys.stderr)
+        return EXIT_ABSTAINED
     if args.json:
         return _emit_json(r)
     rv = r.value
     print(f"[{rv.capability.value}] judge={rv.judge_identity} non_production={rv.non_production}")
     if rv.decision:
-        print(f"VERDICT (NOT AUTHORITATIVE — stub judge): {rv.decision}  score {rv.score}/100")
+        # the label must track the judge that actually ran, not be hardcoded to the stub
+        why = ("uncalibrated — no measured agreement with humans on this rubric"
+               if rv.non_production else "calibrated")
+        print(f"VERDICT (NOT AUTHORITATIVE — {rv.judge_identity}, {why}): "
+              f"{rv.decision}  score {rv.score}/100")
     else:
         print("no verdict — capability unavailable")
     return 0
@@ -963,6 +1005,10 @@ def build_parser() -> argparse.ArgumentParser:
     # saying effective values were the default, and `--sources` was a no-op unless it did.
     pset.add_argument("--values-only", action="store_true",
                       help="print only the effective values, omitting where each came from")
+    pset.add_argument("--lint", action="store_true",
+                      help="validate EVERY value in the settings file, including ones an "
+                           "override shadows — a shadowed broken value goes live the moment the "
+                           "override is removed")
     pset.add_argument("--explain", action="store_true",
                       help="describe every setting: what it does, its allowed values, its "
                            "environment variable, and its built-in default")
@@ -971,6 +1017,11 @@ def build_parser() -> argparse.ArgumentParser:
     prv = sub.add_parser("review", help="[experimental] supervise a draft against a dimension (stub judge)")
     prv.add_argument("draft", help="the draft text, or - to read stdin")
     prv.add_argument("dimension", help="the craft dimension to review against")
+    prv.add_argument("--live-judge", action="store_true",
+                     help="use the real rubric judge from [judge].model instead of the fixture "
+                          "judge. Makes BILLED API calls (1 + permutations per criterion) and "
+                          "needs $ANTHROPIC_API_KEY. Without this flag klode makes no network "
+                          "call, whatever the settings say")
     prv.set_defaults(func=cmd_review)
     return p
 

@@ -23,6 +23,13 @@ from .. import coverage
 from ._base import Extraction, ExtractionError
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
+MIN_CORRUPTION_MARKERS = 3
+"""Markers required before the RATE is believed as evidence of systematic corruption.
+
+The rate is per 10k words, so one marker in a document under 2000 words clears the threshold on its
+own — and `testIDs`, `sortBY`, or `fileIOhandler` are ordinary tokens, not OCR damage. The metric
+was calibrated on documents scoring 12-51 against clean ones scoring 0-4; those are MANY markers.
+Using a single hit to hard-refuse an extraction reads a ratio as a count."""
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
 RETENTION_FLOOR = 0.5          # a candidate keeping <50% of the incumbent's words is a
                                # fragment; corruption_score is a ratio and cannot see loss
@@ -35,6 +42,11 @@ MAX_UPLOAD_BYTES = 512 * 1024 * 1024      # cap the INPUT too: the body is read 
 #                                           before the response guard can ever apply.
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
+
+
+def corruption_markers(text: str) -> int:
+    """How many corruption markers, absolutely — the count `corruption_score` divides away."""
+    return len(_TILDE.findall(text)) + len(_MISCAP.findall(text))
 
 
 def corruption_score(text: str) -> float:
@@ -552,8 +564,13 @@ def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choi
     # single clean token became `best` and cleared the corruption gate. A short document extracted
     # by a WORKING control is still fine — that case has corroboration and is not refused.
     corroborated = bool(_tier1_text and len(_tier1_text.split()) >= words * RETENTION_FLOOR)
-    if not words or best.score >= CLEAN_THRESHOLD or (words < MIN_WORDS and not corroborated):
-        why = ("garbled" if words and best.score >= CLEAN_THRESHOLD
+    # BOTH the rate and the count: one ordinary identifier in a short document clears the rate by
+    # itself, and refusing a correct extraction over a single `testIDs` is the same over-correction
+    # the MIN_WORDS gate already made once.
+    garbled = (best.score >= CLEAN_THRESHOLD
+               and corruption_markers(best.text) >= MIN_CORRUPTION_MARKERS)
+    if not words or garbled or (words < MIN_WORDS and not corroborated):
+        why = ("garbled" if garbled
                else "empty" if not words else "too little text, and no control to corroborate it")
         raise ExtractionError(
             f"{pdf.name}: no extraction tier reached usable quality — {why} "
