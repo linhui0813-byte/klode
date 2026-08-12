@@ -126,3 +126,37 @@ signal in this file.
 | 113 | klode/lib/cli.py | 470 | Low | dim9 | `_run` claims it “emit[s] JSON,” but it only returns an `OpResult`; callers emit it separately. | Correct the docstring. | fixed | 3 |
 | 114 | klode/lib/cli.py | 618 | Low | dim9 | `--quiet` promises “only problems + summary,” but `cmd_check` still prints every note, including non-problem informational notes. | Suppress notes in quiet mode or update the help text. | fixed | 3 |
 | 115 | tests/test_cli_agentic.py | 128 | Low | dim7 | The cards/lenses CLI test ignores both return codes, so it passes if either command prints partial output and then reports failure. | Assert exit 0 and validate empty/error cases separately. | fixed | 3 |
+
+## Round 4 — a second audit of the fixes themselves (2026-08-12/13)
+
+The 1515 lines written to close findings 1-115 had never been reviewed by anything but their
+author. A full 9-dimension audit of `0391de9..HEAD` plus an owner-proxy review of three deferred
+decisions returned 22 further findings and 3 decisions. Recorded here because two rows above were
+marked `fixed` while the behaviour was incomplete — an audit trail that overstates closure is worse
+than one that admits a gap.
+
+| Corrected row | What was still wrong | Now |
+|---|---|---|
+| 96 (`_json_exit`) | marked fixed; empty `kbs.list` still exited 1 in JSON and 0 in prose | fixed — an empty CATALOG is a successful answer, an empty SEARCH is a miss, and the op says which |
+| 104 (terminal sanitisation) | marked fixed; applied at four call sites, and `cmd_verify` still printed raw source lines | fixed — the module shadows `print`, so there is one boundary and an AST guard against reaching around it |
+| 5 / 28 (double conversion) | marked fixed; the cache never held `_extract`'s result, so both backends still ran twice | fixed — `structured_extract()` returns text, pages and page text from one invocation |
+| 32 (`--lang`) | marked fixed; reached xberg only, of four backends | fixed — reaches xberg, docling (remote + local) and marker, asserted on the request body |
+| 33 (`OCR_TIMEOUT`) | marked fixed; the constant was declared and wired to nothing | **not fixed, deliberately** — see below |
+
+**Newly found, and fixed:** the paired-ranking greedy heuristic dropped the wrong backend (A covers
+1-3, B covers 1-4, C covers 4-7: A and B are comparable, greedy returned nothing); `auto` accepted a
+single clean token when pdftotext had failed; four of my own guards refused legitimate input
+(Docker service names over http, an empty optional env var, a shadowed file value, one identifier
+in a short document); the upload cap raced between `stat()` and `read_bytes()`; the symlink guard
+covered three paths of eight.
+
+**Declined, with reasons rather than silence:**
+
+- **`OCR_TIMEOUT` / local OCR has no wall-clock bound.** The fix was built and rejected: a worker
+  process re-imports torch in the child, roughly doubling docling's cost, breaks under `python -`
+  and embedded interpreters, and could not be tested — neither backend is installed here. The
+  constant is removed, because a name implying a guarantee that does not exist is worse than the
+  gap, and the limit is documented beside the timeouts that DO work.
+- **`judge.model` unconsumed** — reversed on the owner-proxy ruling: a labelled dead setting is
+  still dead. Now consumed behind `klode review --live-judge`, which requires a model and a key and
+  states the cost before spending. A config file is consent to choose a model, not to spend money.
