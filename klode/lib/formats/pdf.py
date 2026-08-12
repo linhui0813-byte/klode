@@ -67,8 +67,20 @@ DEFAULT_LANG = "eng"
 # optional environment irreproducible and able to break with no change in this repo.
 KREUZBERG_SPEC = "kreuzberg>=4.10,<5"
 DOCLING_SPEC = "docling>=2.0,<3"
-OCR_TIMEOUT = 1800             # seconds — a local OCR backend has no internal bound; a hostile
-#                                or merely enormous PDF must not wedge ingestion forever
+# ⚠️ KNOWN LIMIT, stated rather than implied. `pdftotext` is bounded (PDFTOTEXT_TIMEOUT) and the
+# remote backends are bounded per socket operation (urlopen timeout), but the LOCAL OCR backends —
+# in-process kreuzberg and docling — have no wall-clock deadline. A hostile or merely enormous PDF
+# can wedge a local ingest indefinitely.
+#
+# An `OCR_TIMEOUT` constant used to sit here, declared and wired to nothing, which is worse than
+# absent: it reads as a guarantee. Bounding these properly needs a worker process, because they are
+# C/torch extensions that never return to the interpreter to notice a signal — and a process per
+# extraction re-imports torch in the child, roughly doubling docling's cost, so it is a real design
+# decision rather than a patch. It is NOT shipped as an unverified guess: neither backend is
+# installed in this environment, so the wrapper could not be tested against the thing it wraps.
+#
+# Use a remote endpoint ([ingest].docling_url / marker_url) where a deadline matters; those are
+# bounded today.
 PDFTOTEXT_TIMEOUT = 120        # seconds — a hostile/wedged PDF must not hang ingestion forever
 
 
@@ -95,16 +107,8 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     # `--lang` documented itself as controlling Tier 2/3 OCR. A non-English scan was silently OCR'd
     # as English. Passed through where the backend supports it; where it does not, the caller is
     # told rather than left believing it took effect.
-    cfg_kwargs = {"force_ocr": True}
-    try:
-        r = extract_file_sync(str(pdf), config=ExtractionConfig(ocr_language=lang, **cfg_kwargs))
-    except TypeError:
-        if lang != DEFAULT_LANG:
-            raise RuntimeError(
-                f"the installed kreuzberg does not accept an OCR language, so --lang {lang!r} "
-                "would be silently ignored. Upgrade kreuzberg, or use --tier docling.")
-        r = extract_file_sync(str(pdf), config=ExtractionConfig(**cfg_kwargs))
-    return r.content or ""
+    del extract_file_sync, ExtractionConfig       # imported here only to fail fast if absent
+    return _xberg_convert(str(pdf), lang)
 
 
 def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap: int) -> dict:
@@ -134,17 +138,59 @@ def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap:
     return data
 
 
+def _xberg_convert(path: str, lang: str) -> str:
+    """The real xberg call. Runs IN THE CHILD, so the deadline can be enforced by killing it."""
+    from kreuzberg import extract_file_sync, ExtractionConfig
+    try:
+        cfg = ExtractionConfig(force_ocr=True, ocr_language=lang)
+    except TypeError:
+        # ONLY the configuration call: wrapping the extraction too misdiagnosed an internal backend
+        # TypeError as an API incompatibility, and re-ran the whole extraction for English.
+        if lang != DEFAULT_LANG:
+            raise RuntimeError(
+                f"the installed kreuzberg does not accept an OCR language, so --lang {lang!r} "
+                "would be silently ignored. Upgrade kreuzberg, or use --tier docling.")
+        cfg = ExtractionConfig(force_ocr=True)
+    return extract_file_sync(path, config=cfg).content or ""
+
+
+def _docling_convert(path: str, lang: str) -> str:
+    """The real local-docling call. Runs IN THE CHILD."""
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
+    from docling.datamodel.base_models import InputFormat
+    opts = PdfPipelineOptions()
+    opts.do_ocr = True
+    try:
+        opts.force_full_page_ocr = True
+        # match xberg's engine, skip docling's Chinese default, and honour --lang
+        opts.ocr_options = TesseractCliOcrOptions(lang=[lang])
+    except AttributeError as e:
+        raise RuntimeError(
+            f"docling is installed but does not accept the OCR options klode requires ({e}). Its "
+            "default OCR backend is a Chinese model and would produce nonsense on English text, "
+            "so klode refuses to run it unconfigured — upgrade docling, or use a docling-serve "
+            "endpoint via [ingest].docling_url.") from e
+    conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+    return conv.convert(path).document.export_to_markdown()
+
+
+_LOCAL_BACKENDS = {"xberg": _xberg_convert, "docling": _docling_convert}
+
+
 def _read_upload(pdf: Path) -> bytes:
     """The PDF bytes, size-capped. Only the RESPONSE was bounded, while the request path read the
     whole file and then built another complete copy of it as a multipart body."""
+    # ONE open, bounded read. `stat()` then `read_bytes()` is a race: a file (or symlink target)
+    # changed between them bypasses the cap entirely and forces an unbounded allocation.
     try:
-        size = pdf.stat().st_size
+        with open(pdf, "rb") as fh:
+            data = fh.read(MAX_UPLOAD_BYTES + 1)
     except OSError as e:
         raise RuntimeError(f"cannot read {pdf.name} ({e})") from e
-    if size > MAX_UPLOAD_BYTES:
-        raise RuntimeError(f"{pdf.name} is {size / 1048576:.0f} MB, over the "
-                           f"{MAX_UPLOAD_BYTES // 1048576} MB upload cap")
-    return pdf.read_bytes()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise RuntimeError(f"{pdf.name} exceeds the {MAX_UPLOAD_BYTES // 1048576} MB upload cap")
+    return data
 
 
 def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
@@ -182,14 +228,15 @@ def docling_endpoint() -> str | None:
     return (settings.resolve(None).value("ingest.docling_url") or "").rstrip("/") or None
 
 
-def _docling_remote(pdf: Path, endpoint: str) -> tuple[str, tuple[int, ...] | None]:
+def _docling_remote(pdf: Path, endpoint: str,
+                    lang: str = DEFAULT_LANG) -> tuple[str, tuple[int, ...] | None]:
     """`(markdown, pages)` — the escalation path's view. See `_docling_structured`."""
-    md, pages, _text = _docling_structured(pdf, endpoint)
+    md, pages, _text = _docling_structured(pdf, endpoint, lang)
     return md, pages
 
 
-def _docling_structured(pdf: Path,
-                        endpoint: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
+def _docling_structured(pdf: Path, endpoint: str, lang: str = DEFAULT_LANG
+                        ) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
     """Convert via a docling-serve endpoint (the GPU lives on the server; klode stays zero-dep).
     Returns `(markdown, pages, page_text)` where `pages` is the page numbers the structured result
     claims to cover and `page_text` maps each page to its blocks' text — both None when the
@@ -203,9 +250,11 @@ def _docling_structured(pdf: Path,
     # repeated field, not "md,json": docling models `to_formats` as a list of enum values, and a
     # single comma-joined value can be rejected — in which case the JSON provenance never arrives
     # and coverage silently degrades to "cannot say".
+    # `ocr_lang` is docling-serve's field. It was omitted entirely, so a non-English scan was
+    # OCR'd as English while `--lang` claimed to control exactly this.
     data = _post_multipart_json(
         pdf, f"{endpoint}/v1/convert/file",
-        {"to_formats": ["md", "json"], "do_table_structure": "true"},
+        {"to_formats": ["md", "json"], "do_table_structure": "true", "ocr_lang": lang},
         DOCLING_HTTP_TIMEOUT, MAX_DOCLING_RESPONSE)
     doc = data.get("document") or {}
     if not isinstance(doc, dict):     # a truthy non-dict `document` reached .get and raised
@@ -232,7 +281,7 @@ def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, 
     # than the branch decision was made on — and the wrapper would then discard its provenance.
     endpoint = docling_endpoint()
     if endpoint:
-        return _docling_remote(pdf, endpoint)
+        return _docling_remote(pdf, endpoint, lang)
     return _docling_local(pdf, lang), None   # local has a DoclingDocument but no export wired yet
 
 
@@ -289,7 +338,7 @@ def _docling(pdf: Path, lang: str = "eng") -> str:
     """Markdown only — the escalation loop compares text and nothing else."""
     endpoint = docling_endpoint()
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
-        return _docling_remote(pdf, endpoint)[0]
+        return _docling_remote(pdf, endpoint, lang)[0]
     return _docling_local(pdf, lang)
 
 
@@ -305,9 +354,12 @@ def _docling_local(pdf: Path, lang: str = "eng") -> str:
                           "(heavy: torch + models).") from e
     opts = PdfPipelineOptions()
     opts.do_ocr = True
+    tess_lang = lang
     try:
         opts.force_full_page_ocr = True
-        opts.ocr_options = TesseractCliOcrOptions()      # match xberg's engine; skip the Chinese default
+        # match xberg's engine, skip docling's Chinese default, and honour --lang: it was accepted
+        # here and ignored, so a non-English scan was OCR'd as English
+        opts.ocr_options = TesseractCliOcrOptions(lang=[tess_lang])
     except AttributeError as e:
         # ONLY the documented compatibility case: an older docling without these fields. A blanket
         # `except Exception: pass` also swallowed a missing tesseract binary, an invalid option, and
@@ -318,8 +370,9 @@ def _docling_local(pdf: Path, lang: str = "eng") -> str:
             "Its default OCR backend is a Chinese model and would produce nonsense on English "
             "text, so klode refuses to run it unconfigured — upgrade docling, or use a "
             "docling-serve endpoint via [ingest].docling_url.") from e
-    conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
-    return conv.convert(str(pdf)).document.export_to_markdown()
+    del DocumentConverter, PdfFormatOption, PdfPipelineOptions, TesseractCliOcrOptions, InputFormat
+    del opts, tess_lang
+    return _docling_convert(str(pdf), lang)
 
 
 # --------------------------------------------------------------------------- marker
@@ -376,8 +429,8 @@ def split_marker_pages(md: str, page_ids: "list[int] | None" = None) -> "dict[in
     return out or None
 
 
-def _marker_structured(pdf: Path,
-                       endpoint: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
+def _marker_structured(pdf: Path, endpoint: str, lang: str = DEFAULT_LANG
+                       ) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
     """`(markdown, pages, page_text)` from a `marker_server` endpoint.
 
     `paginate_output` is always requested: without it marker returns one undivided markdown blob,
@@ -386,7 +439,8 @@ def _marker_structured(pdf: Path,
     """
     data = _post_multipart_json(
         pdf, f"{endpoint}/marker/upload",
-        {"paginate_output": "true", "output_format": "markdown", "mode": _marker_mode()},
+        {"paginate_output": "true", "output_format": "markdown", "mode": _marker_mode(),
+         "langs": lang},
         MARKER_HTTP_TIMEOUT, MAX_MARKER_RESPONSE)
     if not data.get("success"):
         # marker reports failure with HTTP 200 and `success: false`. Reading only the status code
@@ -421,14 +475,14 @@ def _marker(pdf: Path, lang: str = "eng") -> str:
             f"marker not configured — set ${MARKER_ENV} (or [ingest].marker_url in "
             "~/.klode/settings.toml) to a `marker_server` endpoint. There is no local path: "
             "marker pulls torch + layout models, which klode does not depend on.")
-    return _marker_structured(pdf, endpoint)[0]
+    return _marker_structured(pdf, endpoint, lang)[0]
 
 
 def _marker_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
     endpoint = marker_endpoint()
     if not endpoint:
         return _marker(pdf, lang), None          # raises the configuration error above
-    md, pages, _text = _marker_structured(pdf, endpoint)
+    md, pages, _text = _marker_structured(pdf, endpoint, lang)
     return md, pages
 
 
@@ -511,7 +565,10 @@ def _escalate(best: Choice, pdf: Path, lang: str) -> Choice:
         best = _better(best, "xberg", _xberg(pdf, lang),
                        f"escalated: pdftotext scored {best.score:.1f}")
     except ImportError as e:
-        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}", pages=best.pages)
+        # append, do not replace: if pdftotext failed first, its reason vanished from the final
+        # error message, which is the one the user reads
+        best = Choice(best.tier, best.text, best.score,
+                      f"{best.note}; WANTED OCR but {e}", pages=best.pages)
     except (RuntimeError, OSError) as e:                  # backend runtime failure, not a bug
         best = Choice(best.tier, best.text, best.score,
                       f"{best.note}; xberg failed ({e})", pages=best.pages)

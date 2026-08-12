@@ -330,6 +330,31 @@ class SurfacesAgreeAndFlagsDoWhatTheySay(unittest.TestCase):
                 self.assertEqual(rc, 2)
                 self.assertIn("only to --level content", out)
 
+    def test_an_explicit_max_is_distinguishable_from_the_default(self):
+        # `--max` defaulted to 10, so an explicit `--max 10` looked like omission and the
+        # dependency check could not tell "asked for and ignored" from "not asked for"
+        rc, out = self._rc("zoom", "brevity", "--level", "thin", "--max", "10")
+        self.assertEqual(rc, 2)
+        self.assertIn("only to --level content", out)
+        rc, out = self._rc("zoom", "brevity", "--level", "content", "--max", "10")
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing without --grep", out)
+
+    def test_an_empty_registry_is_a_successful_answer_on_both_surfaces(self):
+        # "no KBs are registered" is the true state of a fresh install; an empty SEARCH result is
+        # a miss. Both are an empty list, so shape cannot tell them apart and the op must.
+        import tempfile as _t
+        home = Path(_t.mkdtemp()); (home / ".klode").mkdir()
+        (home / ".klode" / "registry.toml").write_text("", encoding="utf-8")
+        from unittest import mock
+        from klode.lib.cli import main
+        for flag in ([], ["--json"]):
+            with self.subTest(json=bool(flag)), \
+                 mock.patch.dict(os.environ, {"HOME": str(home)}), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(flag + ["kbs"]), 0)
+
     def test_an_explicitly_blank_grep_is_not_read_as_no_verification(self):
         rc, out = self._rc("zoom", "brevity", "--level", "content", "--grep", "")
         self.assertEqual(rc, 2)

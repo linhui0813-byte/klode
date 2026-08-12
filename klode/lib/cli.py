@@ -105,7 +105,10 @@ def cmd_init(args) -> int:
     # directory, a pre-existing `library` / `library.toml` / `.gitignore` symlink made init create
     # and overwrite files somewhere else entirely — verified: `init` wrote a shelf into the
     # symlink's target outside the requested root.
-    for managed in (cfg_path, root / "library", root / ".gitignore"):
+    managed_paths = [cfg_path, root / ".gitignore", root / "library",
+                     root / "library" / "cards", root / "library" / "BIBLIOGRAPHY.md"]
+    managed_paths += [root / "library" / sh for sh in shelves]
+    for managed in managed_paths:
         if managed.is_symlink():
             print(f"refusing to write through the symlink {managed} -> "
                   f"{os.readlink(managed)}; remove it or choose another directory", file=sys.stderr)
@@ -298,12 +301,15 @@ def _validate_zoom_args(args) -> str:
     never asked. An explicitly blank `--grep ""` was likewise treated as "no verification
     requested" and exited 0."""
     if args.level != "content":
-        for flag, val, default in (("--grep", args.grep, None), ("--max", args.max, 10)):
-            if val != default:
+        for flag, val in (("--grep", args.grep), ("--max", args.max)):
+            if val is not None:
                 return (f"{flag} applies only to --level content (got --level {args.level}); "
                         "it would have been silently ignored")
-    elif args.grep is not None and not args.grep.strip():
-        return "--grep was given an empty phrase; pass a phrase, or omit --grep entirely"
+    else:
+        if args.grep is not None and not args.grep.strip():
+            return "--grep was given an empty phrase; pass a phrase, or omit --grep entirely"
+        if args.max is not None and args.grep is None:
+            return "--max limits the lines --grep shows; it does nothing without --grep"
     return ""
 
 
@@ -350,7 +356,8 @@ def cmd_zoom(args) -> int:
     # service applies — meaning stale or ambiguous evidence could be confirmed on one surface and
     # not the other, for the same request. That is precisely the drift `services.execute` exists to
     # prevent, in the one place the guarantee matters most.
-    r = _run(args, "verify", {"id": args.id, "phrase": args.grep, "max_lines": args.max})
+    r = _run(args, "verify", {"id": args.id, "phrase": args.grep,
+                              "max_lines": args.max or 10})
     v = r.value
     if v.found:
         for n, ln in v.lines:      # the real source line, with terminal control sequences neutered
@@ -612,7 +619,10 @@ def _json_exit(result) -> int:
         # a fan-out that found nothing anywhere is a miss; one that found something is not
         return 0 if any(_json_exit(item) == 0 for item in v.items) else 1
     if isinstance(v, (list, tuple)) and not v:
-        return 1
+        # An empty CATALOG is a successful answer to "what is registered?" — prose says so and
+        # exits 0. An empty SEARCH RESULT is a miss. Guessing from emptiness alone conflated them,
+        # so `--json kbs` exited 1 on a fresh install while `klode kbs` exited 0.
+        return 0 if result.op_id in _EMPTY_IS_AN_ANSWER else 1
     return 0
 
 
@@ -969,8 +979,10 @@ def build_parser() -> argparse.ArgumentParser:
     pz.add_argument("id", help="card id (filename stem)")
     pz.add_argument("--level", choices=["meta", "thin", "full", "content"], default="thin")
     pz.add_argument("--grep", help="with --level content: verify a phrase against the source .txt")
-    pz.add_argument("--max", type=_positive_int, default=10,
-                    help="max matching lines to show (default 10)")
+    # default None, not 10: an explicit `--max 10` was indistinguishable from omission, so the
+    # dependency check could not tell "asked for and ignored" from "not asked for"
+    pz.add_argument("--max", type=_positive_int, default=None,
+                    help="max matching lines to show (default 10; needs --grep)")
     pz.set_defaults(func=cmd_zoom)
 
     pco = sub.add_parser("consult", help="read a craft lens — by dimension, thinker, author, or book title")
@@ -1025,6 +1037,12 @@ def build_parser() -> argparse.ArgumentParser:
     prv.set_defaults(func=cmd_review)
     return p
 
+
+_EMPTY_IS_AN_ANSWER = frozenset({"kbs.list", "cards.list", "lenses.list"})
+"""Ops whose empty result is a complete, successful answer rather than a failed lookup.
+
+"No KBs are registered" is the true state of a fresh install; "no card matched" is a miss. Both are
+an empty list, so shape cannot distinguish them and the op must."""
 
 JSON_COMMANDS = frozenset({"search", "zoom", "consult", "diagnose", "verify", "cards",
                            "lenses", "kbs", "review"})

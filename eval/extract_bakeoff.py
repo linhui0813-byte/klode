@@ -498,7 +498,12 @@ def _parse_args(argv):
     if not pdfs:
         raise SystemExit(f"no PDF files found in {root}")
     # a text file happily passed as a PDF and produced a confident empty report
-    bad = [p for p in pdfs if p.read_bytes()[:5] != b"%PDF-"]
+    # read the HEADER, not the file: `read_bytes()[:5]` allocated every input in full merely to
+    # inspect five bytes, so a large corpus could exhaust memory before measurement began
+    def _header(q: Path) -> bytes:
+        with open(q, "rb") as fh:
+            return fh.read(5)
+    bad = [p for p in pdfs if _header(p) != b"%PDF-"]
     if bad:
         raise SystemExit(f"not a PDF: {', '.join(p.name for p in bad[:3])}")
     return args, tiers, pdfs

@@ -660,6 +660,61 @@ class Pdf(FormatsTest):
             with self.assertRaises(RuntimeError):
                 pdf._docling(self._pdf())
 
+    def test_the_ocr_language_reaches_every_remote_backend(self):
+        """`--lang` was accepted by every extractor and used by ONE. A non-English scan was OCR'd
+        as English while the CLI and CHANGELOG both said this flag controlled it."""
+        for env, fn, field in ((pdf.DOCLING_ENV, pdf._docling_structured, b"ocr_lang"),
+                               (pdf.MARKER_ENV, pdf._marker_structured, b"langs")):
+            payload = {"document": {"md_content": "x"}, "success": True, "output": "y"}
+            with self.subTest(field=field), \
+                 mock.patch.dict(os.environ, {env: "http://x.test:1"}), \
+                 mock.patch.object(pdf.urllib.request, "urlopen",
+                                   return_value=_FakeResp(payload)) as uo:
+                try:
+                    fn(self._pdf(), "http://x.test:1", "deu")
+                except RuntimeError:
+                    pass                       # the response shape is not what is under test
+                body = uo.call_args[0][0].data
+                self.assertIn(field, body)
+                self.assertIn(b"deu", body)
+
+    def test_the_upload_cap_is_enforced_by_a_single_bounded_read(self):
+        """BEHAVIOURAL, not a source search — a source search is the brittle pattern this audit
+        criticised elsewhere, and my first version of this test failed on the fix's own comment.
+
+        `stat()` then `read_bytes()` is a race: a file (or symlink target) swapped between the two
+        bypasses the cap entirely. One bounded read cannot be raced, and never allocates more than
+        the cap plus one byte however large the file is.
+        """
+        big = _write(self.tmp, "big.pdf", b"%PDF-1.7\n" + b"x" * 4096)
+        with mock.patch.object(pdf, "MAX_UPLOAD_BYTES", 1024):
+            with self.assertRaises(RuntimeError) as cm:
+                pdf._read_upload(big)
+        self.assertIn("upload cap", str(cm.exception))
+
+        # under the cap: the exact bytes, nothing truncated
+        small = _write(self.tmp, "small.pdf", b"%PDF-1.7\nhello")
+        self.assertEqual(pdf._read_upload(small), b"%PDF-1.7\nhello")
+
+        # and the read itself is bounded — never "load it all, then measure"
+        asked = []
+        real_open = open
+
+        def spy(path, mode="r", *a, **k):
+            fh = real_open(path, mode, *a, **k)
+            orig = fh.read
+
+            def counted(n=-1):
+                asked.append(n)
+                return orig(n)
+            fh.read = counted
+            return fh
+        with mock.patch.object(pdf, "MAX_UPLOAD_BYTES", 1024), \
+             mock.patch("builtins.open", spy):
+            with self.assertRaises(RuntimeError):
+                pdf._read_upload(big)
+        self.assertEqual(asked, [1025], f"the read was not bounded: {asked}")
+
     def test_a_wedged_pdftotext_becomes_a_runtimeerror_at_the_documented_timeout(self):
         # only a non-zero exit was covered, so removing the timeout — the guard against a hostile
         # or wedged PDF hanging ingestion forever — would not have been caught
