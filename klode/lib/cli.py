@@ -17,6 +17,8 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 
+from builtins import print as _builtin_print
+
 from . import console, core, query, services
 from .config import Config, ConfigError
 from .pool import KBPool
@@ -283,7 +285,7 @@ def cmd_search(args) -> int:
     for h in hits:
         line = f"{h.id}  [{h.zoom}·{h.shelf}]  {h.score:.1f}"
         if h.gist:
-            line += f"  — {sane(h.gist[:110])}"
+            line += f"  — {h.gist[:110]}"
         print(line)
     if total > len(hits):
         print(f"… {total - len(hits)} more (raise --limit)")
@@ -327,8 +329,8 @@ def cmd_zoom(args) -> int:
         if not body:
             print(f"[{level}] section not found in {args.id}", file=sys.stderr)
             return 1
-        print(f"# {sane(query.card_title(cfg, args.id))}  ({level})\n")
-        print(sane(body))
+        print(f"# {query.card_title(cfg, args.id)}  ({level})\n")
+        print(body)
         return 0
     # content (L3): the source .txt itself
     src = query.source_of(cfg, args.id)
@@ -352,7 +354,7 @@ def cmd_zoom(args) -> int:
     v = r.value
     if v.found:
         for n, ln in v.lines:      # the real source line, with terminal control sequences neutered
-            print(f"{n}: {sane(ln)}")
+            print(f"{n}: {ln}")
         if v.resolution is core.Resolution.FOLDED_ONLY:
             print(f"✓ resolves in {v.rel} (matches across line/hyphenation folding "
                   f"— not on a single line)")
@@ -455,7 +457,7 @@ def _render_framework(fw: dict, section: str | None, full: bool) -> int:
 
 def _render_source(cfg: Config, cid: str, full: bool) -> int:
     """A source-only book (no framework lens): show its L1 (and L2 with --full)."""
-    print(f"# {sane(query.card_title(cfg, cid))}   (source card)")
+    print(f"# {query.card_title(cfg, cid)}   (source card)")
     thin = query.body(cfg, cid, "thin")
     fullb = query.body(cfg, cid, "full")
     if thin:
@@ -752,7 +754,30 @@ def cmd_review(args) -> int:
     return 0
 
 
-_CTRL_SAFE = {0x09}      # tab is legitimate layout in a source line
+_CTRL_SAFE = {0x09, 0x0a}
+"""Tab and newline only.
+
+Tab is real layout in a source line and newline is how every multi-line message this module prints
+is built — stripping it turned `print("\n" + body)` into one run-on line, which the sanitiser's own
+test caught. Carriage return is NOT here on purpose: `\r` without `\n` returns the cursor to the
+start of the line so the next text overwrites what was printed, which is a spoofing primitive
+rather than layout."""
+
+
+def print(*args, **kwargs):                                            # noqa: A001
+    """Every prose line this module writes, with terminal control sequences neutered.
+
+    Shadowing the builtin ON PURPOSE. The first version of this fix sanitised four print sites by
+    hand, and immediately missed a fifth — `cmd_verify` printed raw source lines exactly as
+    `cmd_zoom` had, the same vector in a different command. Per-site vigilance is what produced
+    that gap and would keep producing it for every print added later.
+
+    So the boundary is the module's output function, not a list of call sites. klode's own literals
+    contain no control characters, making this a no-op for them; only file-derived text is changed.
+    JSON is unaffected — `_emit_json` hands `json.dumps` output through, which is already escaped,
+    and a machine consumer wants the real bytes.
+    """
+    _builtin_print(*(sane(a) if isinstance(a, str) else a for a in args), **kwargs)
 
 
 def sane(text: str) -> str:
