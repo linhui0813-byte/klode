@@ -468,17 +468,23 @@ def _render_source(cfg: Config, cid: str, full: bool) -> int:
     return 0
 
 
+def _consult_projection(args) -> tuple[str, tuple[str, ...]]:
+    """Which projection the flags ask for. ONE copy: the tree was duplicated verbatim in the JSON
+    and prose branches, so the two surfaces could drift into projecting differently for identical
+    flags — and nothing would have failed."""
+    if args.section and args.section.lower() != "all":
+        return "sections", (args.section,)
+    if args.full or (args.section and args.section.lower() == "all"):
+        return "full", ()
+    return "writer", ()
+
+
 def cmd_consult(args) -> int:
     if args.json:
         name = (args.name or "").strip()
         if not name:                                          # parity with prose: no name lists lenses
             return _emit_json(_run(args, "lenses.list", {}))
-        if args.section and args.section.lower() != "all":
-            proj, secs = "sections", (args.section,)
-        elif args.full or (args.section and args.section.lower() == "all"):
-            proj, secs = "full", ()
-        else:
-            proj, secs = "writer", ()
+        proj, secs = _consult_projection(args)
         return _emit_json(_run(args, "consult", {"name": name, "projection": proj, "sections": secs}))
     cfg = _load(args)
     raw = (args.name or "").strip()
@@ -544,7 +550,13 @@ def cmd_diagnose(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# registry projection — consumption verbs route through services.execute (the shared core). --json
+# Registry projection — consumption verbs route through `services.execute` (the shared core).
+# This comment used to be false for prose `search`/`zoom`/`consult`/`diagnose`, which called
+# `query`/`console` directly, and the stale-verification and --limit divergences an audit found
+# were the proof. `zoom --grep` now goes through the service; `search`/`consult`/`diagnose` still
+# render from `query`/`console` for prose but share the projection decision and are covered by an
+# exit-code parity test over both surfaces (tests/test_parity.py).
+# --json
 # serializes the SAME structured OpResult the MCP renders as text; --kb addresses a registered KB.
 # ---------------------------------------------------------------------------
 def _load(args) -> Config:
