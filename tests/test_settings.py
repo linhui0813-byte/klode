@@ -687,5 +687,43 @@ class SecretsStayOut(unittest.TestCase):
         self.assertFalse(settings._is_private_host("0300.0250.0010.0010"))
 
 
+class ARemedyMustBeRunnableAsPrinted(_EnvIsolated):
+    """The plaintext-http refusal told the user to set `[ingest].allow_insecure_http = true`. That
+    key is not in SPEC, unknown keys are rejected, so following the instruction made the whole
+    settings file fail to load — every settings-resolving command broken, by the documented fix.
+
+    It also could not have worked as a setting: `_validate_url` reads the environment directly, so
+    adding the key would have resolved it and changed nothing about transport. And a value in the
+    file is a WIDER grant than the variable — it covers every URL setting, including ones added in
+    a later release, with no re-consent. So the message was wrong, not the schema.
+    """
+
+    def test_the_named_escape_hatch_actually_permits_the_endpoint(self):
+        url = "http://docling.example.com:15001"
+        with self.assertRaises(ValueError) as cm:
+            settings.resolve(None, file_values={"ingest.docling_url": url})
+        self.assertIn("KLODE_ALLOW_INSECURE_HTTP", str(cm.exception))
+        os.environ["KLODE_ALLOW_INSECURE_HTTP"] = "1"
+        self.addCleanup(os.environ.pop, "KLODE_ALLOW_INSECURE_HTTP", None)
+        r = settings.resolve(None, file_values={"ingest.docling_url": url})
+        self.assertEqual(r.value("ingest.docling_url"), url)
+
+    def test_no_message_or_help_text_names_a_setting_that_does_not_exist(self):
+        """The generic guard. Any `[section].key` token appearing in SPEC help or in a message this
+        module raises must be a real setting — otherwise the tool is documenting a remedy it will
+        reject, which is how the original defect got written and stayed."""
+        import pathlib
+        import re
+        known = {f"{s.section}.{s.key}" for s in settings.SPEC}
+        sections = {s.section for s in settings.SPEC}
+        src = pathlib.Path(settings.__file__).read_text(encoding="utf-8")
+        offenders = sorted({
+            f"[{sec}].{key}" for sec, key in re.findall(r"\[(\w+)\]\.(\w+)", src)
+            if sec in sections and f"{sec}.{key}" not in known
+        })
+        self.assertEqual(offenders, [], "settings.py names setting(s) that do not exist: "
+                                        + ", ".join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

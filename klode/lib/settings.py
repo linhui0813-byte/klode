@@ -297,7 +297,10 @@ def _validate_url(spec: Spec, value: str, where: str) -> None:
             f"{label} uses plaintext http to a host that may be public ({u.hostname}). klode "
             "uploads whole documents to this endpoint. Use https, point it at an address that "
             "cannot be public (loopback, RFC1918, tailnet 100.64/10, or a single-label name like "
-            "`docling`), or set [ingest].allow_insecure_http = true to accept the risk knowingly.")
+            "`docling`), or export KLODE_ALLOW_INSECURE_HTTP=1 to accept the risk knowingly. "
+            "That opt-out is an environment variable and NOT a setting on purpose: a value "
+            "in this file would go on authorising cleartext uploads for every URL setting, "
+            "including ones added in a later release, long after the session that needed it.")
 
 
 def _insecure_http_allowed() -> bool:
