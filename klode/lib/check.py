@@ -413,7 +413,20 @@ def _check_copyright_leak(cfg: Config, r: Report) -> None:
         return
     try:
         tracked = subprocess.run(
-            ["git", "-C", str(cfg.root), "ls-files", "-z", *cfg.guard_relpaths],   # -z: no C-quoting of non-ASCII names
+            # -z: no C-quoting of non-ASCII names.
+            # --literal-pathspecs: a shelf name is a NAME, not a pattern. It is a MAIN git option
+            #   and must precede the subcommand — after it, `ls-files` exits 129 and the guard
+            #   errors on every run. Measured effect: with a shelf literally named `books*`, the
+            #   pathspec also matched a sibling `booksOTHER/`, so unrelated tracked files were
+            #   reported as copyright leaks. A guard that cries wolf gets ignored, which is how it
+            #   eventually fails open in practice.
+            # --: everything after this is a path, never an option. Config validation rejects only
+            #   `/`, `""`, `.` and `..`, so `shelves = ["--others"]` loads; with `[library].dir`
+            #   empty the relpath IS `--others`, git consumed it as an OPTION, and the guard
+            #   listed untracked files instead of the tracked corpus it exists to catch — rc 0,
+            #   no leak reported, a copyrighted source sitting in the index.
+            ["git", "-C", str(cfg.root), "--literal-pathspecs", "ls-files", "-z", "--",
+             *cfg.guard_relpaths],
             capture_output=True, text=True, check=True).stdout.split("\0")
     except Exception as e:
         r.errors.append(f"[E] could not run git ls-files ({e}); the copyright-leak guard must not fail open")

@@ -141,6 +141,12 @@ class Config:
         for s in shelves:
             if not isinstance(s, str) or "/" in s or s in ("", ".", ".."):
                 raise ConfigError(f"[library].shelves entry {s!r} must be a simple directory name")
+            # A shelf name reaches `git ls-files` as a pathspec. `--` at the call site stops it
+            # being read as an option; refusing the shape here means the guard is not the only
+            # thing standing between a shelf called `--others` and a silent copyright leak.
+            if s.startswith("-"):
+                raise ConfigError(f"[library].shelves entry {s!r} must not begin with '-' — it is "
+                                  "passed to git as a path, where a leading dash reads as a flag")
 
         bib_section = _table("bibliography")
         bib_enabled = bool(bib_section.get("enabled", True))
@@ -172,6 +178,10 @@ class Config:
         for d in extra:
             if not isinstance(d, str) or "/" in d or d in ("", ".", ".."):
                 raise ConfigError(f"[copyright].extra_guard_dirs entry {d!r} must be a simple directory name")
+            if d.startswith("-"):                     # same pathspec rule as [library].shelves
+                raise ConfigError(f"[copyright].extra_guard_dirs entry {d!r} must not begin with "
+                                  "'-' — it is passed to git as a path, where a leading dash "
+                                  "reads as a flag")
         guard = list(shelves) + [str(d) for d in extra]
         try:
             guard_relpaths = tuple((lib / g).resolve().relative_to(root).as_posix() for g in guard)
