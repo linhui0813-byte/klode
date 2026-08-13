@@ -58,9 +58,14 @@ jobs:
 
       # The rubric is the gate's sole input; a fixture rubric that stopped validating would break
       # the gate silently everywhere else.
+      # `mixed-scale` is the one fixture whose criteria use DIFFERENT behavioral scales (0..3 and
+      # 0..7). The other two are uniform, and a uniform rubric's mean always lands on an integer
+      # percentage — which is why the verdict-rounding defect survived the whole suite. It is
+      # checked here so it cannot quietly drift back to uniform and stop being able to catch it.
       - name: CriterionSpec validates
         run: |
           python -m klode.gate -c tests/fixtures/kb-fixture/library.toml check pacing
+          python -m klode.gate -c tests/fixtures/kb-fixture/library.toml check mixed-scale
           python -m klode.gate -c tests/fixtures/kb-fixture-2/library.toml check cadence --no-stamp
 
       - name: Gate demo runs end to end

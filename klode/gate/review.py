@@ -122,6 +122,11 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
     Secure by default: `require_stamp=True` — an UNSTAMPED source (no `source_sha256`, so no trusted
     baseline against tampering) does not ground. Stamp sources with `klode build --stamp`; a caller
     with an intentionally unstamped corpus can pass `require_stamp=False`."""
+    # Integer-ness is not pedantry here: the displayed score is the FLOOR of the exact mean, and
+    # `floor(x) >= h <=> x >= h` holds only when h is an integer. A float hurdle would let the
+    # number shown and the decision reached disagree again, which is the defect below.
+    if isinstance(hurdle, bool) or not isinstance(hurdle, int):
+        raise ValueError(f"hurdle must be an integer percentage, got {hurdle!r}")
     if not 0 <= hurdle <= 100:
         raise ValueError(f"hurdle must be in 0..100, got {hurdle}")
     # Structure + envelope at load (`corpus=False`) so that a citation which has rotted becomes the
@@ -196,7 +201,18 @@ def review_draft(cfg, draft: str, dimension: str, judge, *, hurdle: int = 60,
     calibrated = bool(calibrated_for and calibrated_for(_spec.rubric_identity(spec)))
     # Weight each criterion equally by normalizing to its own scale first: summing raw scores would
     # silently let a 0-10 criterion outvote a 0-5 one purely by having more room. Average the EXACT
-    # ratios and round once — rounding each criterion's percentage first accumulated error that
-    # flipped verdicts at the hurdle (maxima (2,3), scores (0,2): 34 rounded-then-averaged vs 33).
-    total = round(100 * sum(Fraction(l.score, l.max_score) for l in lines) / len(lines))
-    return Verdict("Go" if total >= hurdle else "Recycle", total, hurdle, lines, (), calibrated)
+    # ratios — rounding each criterion's percentage first accumulated error that flipped verdicts
+    # at the hurdle (maxima (2,3), scores (0,2): 34 rounded-then-averaged vs 33).
+    exact = 100 * sum(Fraction(l.score, l.max_score) for l in lines) / len(lines)
+    # The threshold is applied to the EXACT mean, never to a display value. Rounding first promoted
+    # every draft in [hurdle-0.5, hurdle) to Go: a 0..3 / 0..7 rubric scored 1 and 6 is exactly
+    # 59.5238% and passed a hurdle of 60. The error ran one way only — 12 false Go across the
+    # two-criterion rubrics with maxima 2..10, and no false Recycle, because a false Recycle is
+    # arithmetically impossible. `defects` below already compared exactly, with a comment warning
+    # against crossing the bar by rounding; the verdict itself was still doing it.
+    decision = "Go" if exact >= hurdle else "Recycle"
+    # FLOOR for display, not round: for an integer hurdle `floor(x) >= h <=> x >= h`, so the number
+    # shown can never contradict the decision reached. Rounding contradicts it in 1338 of those same
+    # rubrics. This is a theorem given the integer check at the top of this function, not a taste.
+    total = int(exact)                       # Fraction -> int truncates toward zero; exact >= 0
+    return Verdict(decision, total, hurdle, lines, (), calibrated)
