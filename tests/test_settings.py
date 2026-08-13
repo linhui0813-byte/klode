@@ -648,6 +648,44 @@ class SecretsStayOut(unittest.TestCase):
         self.assertEqual(spec.env, "KLODE_DOCLING_URL")     # the env override still wins
         self.assertIsNone(spec.default)                     # absent, never a guessed localhost
 
+    def test_an_integer_spelling_of_a_public_address_is_not_a_container_name(self):
+        """`http://134744072` resolves to 8.8.8.8 and was ACCEPTED: it carries no dot, so the
+        single-label rule that exists to allow `http://docling` classified it as a container name
+        before `ipaddress` was ever consulted. Whole documents were uploadable in cleartext to a
+        public address with no opt-in at all."""
+        for host in ("134744072", "0x08080808", "0xd8ef2601", "3627734529"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_the_container_name_allowance_survives_the_fix(self):
+        """Over-tightening breaks the documented Docker/k8s deployment, which is the whole reason
+        the loose single-label rule was written. A name that cannot be an address still passes."""
+        for host in ("docling", "docling-serve", "marker", "svc1"):
+            with self.subTest(host=host):
+                url = f"http://{host}:15001"
+                r = settings.resolve(None, file_values={"ingest.docling_url": url})
+                self.assertEqual(r.value("ingest.docling_url"), url)
+
+    def test_host_classification_agrees_with_ipaddress_for_every_spelling(self):
+        """The assertion, not just the fix: whatever spelling a host wears, if it names an address
+        then `_is_private_host` must answer for that ADDRESS, never for its shape."""
+        import ipaddress
+        for n in (0x08080808, 0x0A000005, 0x7F000001, 0xC0A80001, 0x64400001, 1, 0xFFFFFFFF):
+            ip = ipaddress.IPv4Address(n)
+            expected = settings._is_private_ip(ip)
+            for spelling in (str(ip), str(n), hex(n)):
+                with self.subTest(spelling=spelling, ip=str(ip)):
+                    self.assertEqual(settings._is_private_host(spelling), expected,
+                                     f"{spelling} spells {ip}, classified inconsistently")
+
+    def test_an_ambiguous_dotted_spelling_fails_closed(self):
+        """A resolver reads `010.010.010.010` as octal (8.8.8.8); Python's `ipaddress` refuses the
+        leading zeros outright. An ambiguous spelling must be treated as public, not guessed."""
+        self.assertFalse(settings._is_private_host("010.010.010.010"))
+        self.assertFalse(settings._is_private_host("0300.0250.0010.0010"))
+
 
 if __name__ == "__main__":
     unittest.main()

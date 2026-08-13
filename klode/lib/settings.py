@@ -302,6 +302,45 @@ def _insecure_http_allowed() -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _numeric_host(h: str):
+    """The address a host SPELLS, for any spelling a resolver accepts — or None when it names
+    nothing numeric.
+
+    `ipaddress` parses only the canonical forms, and the single-label rule below reads anything
+    without a dot as a container name. A bare integer has no dot, so `http://134744072` took that
+    branch and was classified private — while resolving, in fact, to 8.8.8.8. Same for the hex
+    literal `0x08080808`. Whole documents were uploadable in cleartext to a public address with no
+    opt-in, past the one guard that exists to stop it.
+
+    Non-canonical DOTTED forms (`010.010.010.010`, where a resolver reads leading zeros as octal
+    but Python refuses them) deliberately return None: they fall through to the dotted branch and
+    are treated as a public name. That is the fail-closed reading of an ambiguous spelling.
+    """
+    import ipaddress
+    try:
+        return ipaddress.ip_address(h)
+    except ValueError:
+        pass
+    try:
+        n = int(h, 0) if h[:2] in ("0x", "0o", "0b") else int(h)
+    except ValueError:
+        return None
+    if 0 <= n <= 0xFFFFFFFF:
+        return ipaddress.IPv4Address(n)
+    if 0 <= n < 2 ** 128:
+        return ipaddress.IPv6Address(n)
+    return None
+
+
+def _is_private_ip(ip) -> bool:
+    import ipaddress
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
+                # 100.64/10 is CGNAT shared address space — where tailscale/headscale live. Python
+                # does not class it private, and it is exactly the documented deployment.
+                or ip in ipaddress.ip_network("100.64.0.0/10")
+                or (ip.version == 6 and ip in ipaddress.ip_network("fd00::/8")))
+
+
 def _is_private_host(host: str | None) -> bool:
     """Is this destination on a network where TLS is not the meaningful control?"""
     if not host:
@@ -312,23 +351,20 @@ def _is_private_host(host: str | None) -> bool:
     if h == "localhost" or h.endswith((".local", ".internal", ".lan", ".home.arpa",
                                        ".test", ".example", ".invalid", ".localhost")):
         return True
+    # Classify by ADDRESS before falling back to any name rule: a host that spells an address is an
+    # address, whatever spelling it wears. This must precede the single-label branch below, which
+    # is what the integer spellings were escaping through.
+    ip = _numeric_host(h)
+    if ip is not None:
+        return _is_private_ip(ip)
     # A SINGLE-LABEL name (`docling`, `docling-serve`) has no public DNS answer — it can only be
     # resolved by a container network, a hosts file, or a local search domain. Rejecting these
     # broke the ordinary Docker and Kubernetes deployment, which was the point of the setting.
     # Note the limit, stated rather than hidden: a lexical rule cannot prove where a name RESOLVES;
-    # `[ingest].allow_insecure_http` exists for the cases it cannot classify.
+    # `KLODE_ALLOW_INSECURE_HTTP` exists for the cases it cannot classify.
     if "." not in h:
         return True
-    import ipaddress
-    try:
-        ip = ipaddress.ip_address(h)
-    except ValueError:
-        return False                                  # a public DNS name
-    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
-                # 100.64/10 is CGNAT shared address space — where tailscale/headscale live. Python
-                # does not class it private, and it is exactly the documented deployment.
-                or ip in ipaddress.ip_network("100.64.0.0/10")
-                or (ip.version == 6 and ip in ipaddress.ip_network("fd00::/8")))
+    return False                                      # a public DNS name
 
 
 def _coerce(spec: Spec, value, where: str):
