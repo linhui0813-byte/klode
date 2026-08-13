@@ -24,7 +24,16 @@ from . import authoring, spec as _spec
 
 
 def _cfg(args):
-    return lib.Config.load(Path(args.config))
+    """Load the KB, reporting a bad `-c` as a message rather than a traceback.
+
+    `ConfigError` is raised precisely so a missing or malformed `library.toml` arrives as one
+    readable line — which is what `klode.lib`'s CLI prints. This entry point let it escape, so the
+    same mistake produced a clean sentence from one command and 25 lines of stack from the other.
+    """
+    try:
+        return lib.Config.load(Path(args.config))
+    except lib.ConfigError as e:
+        raise SystemExit(f"config error: {e}")
 
 
 def _target(cfg, dimension: str) -> Path:

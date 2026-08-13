@@ -119,6 +119,31 @@ class ReadersStillRefuse(_EditedRubric):
                          "check mutated the rubric it was only asked to inspect")
 
 
+class ABadConfigIsAMessageNotATraceback(_EditedRubric):
+    """`ConfigError` exists so a missing `library.toml` arrives as one readable line, and
+    `klode.lib`'s CLI prints exactly that. This entry point let it escape as a 25-line stack, so
+    the same mistake read completely differently depending on which command you ran."""
+
+    def test_every_subcommand_reports_a_bad_config_cleanly(self):
+        for verb, fn in (("check", gate_main.cmd_check),
+                         ("approve", gate_main.cmd_approve),
+                         ("repin", gate_main.cmd_repin)):
+            with self.subTest(verb=verb):
+                args = self._args()
+                args.config = "/nonexistent/library.toml"
+                with self.assertRaises(SystemExit) as cm:
+                    fn(args)
+                self.assertIn("config error", str(cm.exception))
+
+    def test_the_message_survives_rather_than_being_replaced(self):
+        args = self._args()
+        args.config = "/nonexistent/library.toml"
+        with self.assertRaises(SystemExit) as cm:
+            gate_main.cmd_check(args)
+        self.assertIn("/nonexistent/library.toml", str(cm.exception),
+                      "the path the user typed was dropped from the error")
+
+
 class TheWriterIsNoWeakerThanTheReader(_EditedRubric):
     """`spec.load` and `_load_doc` read the same hand-edited file. The one that WRITES had the
     thinner exception boundary — it caught `json.JSONDecodeError` but not the other `ValueError`
