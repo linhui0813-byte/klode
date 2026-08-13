@@ -53,5 +53,35 @@ class PublicApiContract(unittest.TestCase):
         import klode.lib.query, klode.lib.common, klode.lib.build   # noqa: F401
 
 
+class EveryPathParameterAcceptsAString(unittest.TestCase):
+    """`Config` is on the public facade and the obvious way to call it is with a string. All three
+    path entry points did `.resolve()` on the argument, so a `str` raised
+    `AttributeError: 'str' object has no attribute 'resolve'` — the confusing-error-three-modules-
+    deep failure the module's own docstring opens by promising not to produce."""
+
+    FIX = Path(__file__).resolve().parent / "fixtures" / "kb-fixture"
+
+    def test_load_and_find_take_a_string(self):
+        from klode.lib import Config
+        self.assertEqual(Config.load(str(self.FIX / "library.toml")).id, "kb-fixture")
+        self.assertEqual(Config.load(start=str(self.FIX)).id, "kb-fixture")
+        self.assertEqual(Config.find(str(self.FIX)), self.FIX / "library.toml")
+
+    def test_a_string_and_a_path_agree(self):
+        from klode.lib import Config
+        self.assertEqual(Config.load(str(self.FIX / "library.toml")).config_path,
+                         Config.load(self.FIX / "library.toml").config_path)
+
+    def test_an_unusable_path_is_a_ConfigError_not_a_stray_builtin(self):
+        from klode.lib import Config
+        from klode.lib.config import ConfigError
+        for label, bad in (("embedded null", "bad\0path"), ("wrong type", 7), ("a list", [])):
+            with self.subTest(label=label):
+                with self.assertRaises(ConfigError):
+                    Config.load(bad)
+                with self.assertRaises(ConfigError):
+                    Config.load(start=bad)
+
+
 if __name__ == "__main__":
     unittest.main()

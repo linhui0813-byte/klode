@@ -45,6 +45,27 @@ class ConfigError(Exception):
     """A `library.toml` is missing, malformed, or internally inconsistent."""
 
 
+def _as_path(value, label: str) -> Path | None:
+    """Coerce a public path parameter, RESOLVED, or None — failing as a `ConfigError`.
+
+    `Config.load` and `Config.find` are the public facade's entry points and the obvious way to
+    call them is with a string. Every one of them did `.resolve()` on the argument, so a `str`
+    raised `AttributeError: 'str' object has no attribute 'resolve'` — three modules from anything
+    a caller could act on, and precisely the confusing-error-deep-inside failure this module opens
+    by promising not to produce. Resolution itself can also raise a bare `ValueError` (an embedded
+    null byte), which escaped the same contract.
+    """
+    if value is None:
+        return None
+    try:
+        return Path(value).resolve()
+    except TypeError as e:
+        raise ConfigError(f"{label} must be a path or a string, got "
+                          f"{type(value).__name__}") from e
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"{label} {value!r} is not a usable path — {e}") from e
+
+
 @dataclass(frozen=True)
 class Config:
     # --- provenance ---
@@ -85,9 +106,9 @@ class Config:
 
     # ------------------------------------------------------------------
     @classmethod
-    def find(cls, start: Path | None = None) -> Path:
+    def find(cls, start: Path | str | None = None) -> Path:
         """Walk up from `start` (default: cwd) to the nearest `library.toml`."""
-        here = (start or Path.cwd()).resolve()
+        here = _as_path(start, "start") or Path.cwd()
         for d in (here, *here.parents):
             cand = d / CONFIG_NAME
             if cand.is_file():
@@ -97,8 +118,9 @@ class Config:
         )
 
     @classmethod
-    def load(cls, config_path: Path | None = None, *, start: Path | None = None) -> "Config":
-        path = (config_path or cls.find(start)).resolve()
+    def load(cls, config_path: Path | str | None = None, *,
+             start: Path | str | None = None) -> "Config":
+        path = _as_path(config_path, "config_path") or cls.find(start)
         try:
             with open(path, "rb") as f:
                 raw = tomllib.load(f)
