@@ -186,6 +186,54 @@ class ContextBundle:
     rejected: tuple[RejectedContext, ...]    # everything that did not ground, with an explicit resolution
 
 
+# --- Evidence retrieval: cited raw passages, with an explicit fail-closed outcome ---
+class EvidenceStatus(str, Enum):
+    """Whether retrieval found candidate raw evidence.
+
+    FOUND means only that relevant-looking raw passages were retrieved. It does not claim that a
+    passage entails the user's answer; that judgment remains with the caller. INSUFFICIENT is the
+    honest terminal state after the requested search path finds no passage it can cite.
+    """
+    FOUND = "evidence-found"
+    INSUFFICIENT = "insufficient-evidence"
+
+
+@dataclass(frozen=True)
+class RawPassage:
+    """A verbatim excerpt from an installed L3 source, with enough location data to cite it."""
+    card: str
+    title: str
+    rel: str
+    line_start: int
+    line_end: int
+    text: str
+    source_sha: str
+    route: str                              # card-anchor | full-text
+    score: float = 0.0                     # retrieval rank only; never an entailment score
+
+
+@dataclass(frozen=True)
+class EvidenceSearchResult:
+    """Card-first evidence retrieval with a declared full-source fallback state."""
+    query: str
+    card: str
+    status: EvidenceStatus
+    passages: tuple[RawPassage, ...] = ()
+    full_text_searched: bool = False
+    searched_sources: tuple[str, ...] = ()
+    unavailable_sources: tuple[str, ...] = ()
+    note: str = ""
+
+    @property
+    def found(self) -> bool:
+        return self.status is EvidenceStatus.FOUND
+
+    @property
+    def source_sha(self) -> str | None:
+        """The single source snapshot used by this card-scoped result, for OpResult provenance."""
+        return self.passages[0].source_sha if self.passages else None
+
+
 # --- ReviewResult: capability-gated supervision (never an authoritative stub verdict) ---
 @dataclass(frozen=True)
 class ReviewResult:

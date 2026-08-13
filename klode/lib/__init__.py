@@ -17,7 +17,10 @@ re-exported here (the name would shadow the `klode.lib.check` module).
 from .config import Config, ConfigError
 from .console import ConsultRequest, ConsultResult, consult
 from .common import Marker, parse_markers   # the structured anchor contract, shared by linter + gate
-from .core import ContextBundle, EvidenceContext, EvidenceHit, RejectedContext
+from .core import (
+    ContextBundle, EvidenceContext, EvidenceHit, EvidenceSearchResult, EvidenceStatus,
+    RawPassage, RejectedContext,
+)
 from .core import Resolution as EvidenceResolution   # the grounding-outcome enum (distinct from query.Resolution)
 from .query import (
     Resolution,        # a resolved lookup (outcome + candidates + canonical message)
@@ -68,6 +71,18 @@ def build_context_bundle(cfg, requests, *, context_lines=3, max_window=40, requi
     return services.build_context_bundle(cfg, requests, context_lines=context_lines,
                                          max_window=max_window, require_stamp=require_stamp, today=today)
 
+def retrieve_evidence(cfg, card, question, *, full_text=False, context_lines=2, limit=5):
+    """Retrieve citable raw passages from one card's source.
+
+    Card anchors are used first. When none yield usable evidence, the complete installed source is
+    searched automatically; pass `full_text=True` when a caller has judged the card evidence
+    insufficient and wants to force that fallback. Returns an `EvidenceSearchResult`, including an
+    explicit `INSUFFICIENT` status rather than invented content.
+    """
+    from . import services
+    return services.retrieve_evidence(cfg, card, question, full_text=full_text,
+                                      context_lines=context_lines, limit=limit)
+
 __version__ = "0.4.2"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
@@ -79,6 +94,7 @@ __all__ = [
     "verify_evidence", "verify_context", "EvidenceHit", "EvidenceContext", "EvidenceResolution",
     "source_digest",
     "build_context_bundle", "ContextBundle", "RejectedContext",
+    "retrieve_evidence", "EvidenceSearchResult", "EvidenceStatus", "RawPassage",
     "dimension", "framework", "diagnose", "search",
     "__version__",
 ]

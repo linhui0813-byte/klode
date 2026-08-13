@@ -198,6 +198,39 @@ TOOLS = [
             "required": ["id", "phrase"],
         },
     },
+    {
+        "name": "retrieve_evidence",
+        "description": (
+            "Retrieve citable RAW passages for a question about one source card. First uses "
+            "query-relevant card anchors. If none yield usable evidence, automatically searches "
+            "the complete installed raw source. If card passages are present but insufficient for "
+            "the answer, call again with full_text=true. Returns source path + line range + verbatim "
+            "passage, or INSUFFICIENT_EVIDENCE after the fallback. A retrieved passage proves "
+            "occurrence, not entailment; judge whether it actually supports the answer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Card id, as returned by search_sources."},
+                "query": {
+                    "type": "string",
+                    "description": "The question, preferably including source-language keywords.",
+                },
+                "full_text": {
+                    "type": "boolean",
+                    "description": "Force complete raw-source search after card evidence was judged insufficient.",
+                    "default": False,
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Lines of raw context around a card anchor.",
+                    "default": 2,
+                },
+                "limit": {"type": "integer", "description": "Max cited passages.", "default": 5},
+            },
+            "required": ["id", "query"],
+        },
+    },
     # ---- the registry: which knowledge bases this server serves ----
     {
         "name": "list_kbs",
@@ -239,6 +272,10 @@ def _params_for(name: str, args: dict) -> dict:
     if name == "verify_quote":
         return {"card": str(args.get("id", "")).strip(), "phrase": str(args.get("phrase", "")),
                 "max_lines": args.get("max_lines", 10)}
+    if name == "retrieve_evidence":
+        return {"card": str(args.get("id", "")).strip(), "query": str(args.get("query", "")),
+                "full_text": bool(args.get("full_text", False)),
+                "context_lines": args.get("context_lines", 2), "limit": args.get("limit", 5)}
     if name == "diagnose":
         return {"symptom": str(args.get("symptom", ""))}
     return {}
@@ -360,6 +397,26 @@ def _r_verify(result, args):
     return f"VERIFIED — {phrase!r} occurs in {e.rel}:\n{untrusted.wrap_untrusted(body)}"
 
 
+def _r_evidence(result, args):
+    e = result.value
+    label = e.status.value.replace("-", "_").upper()
+    head = (f"{label} — card={e.card} "
+            f"full_text_searched={str(e.full_text_searched).lower()}")
+    out = [head, e.note]
+    if e.passages:
+        out += ["", "# Cited raw passages"]
+        for index, passage in enumerate(e.passages, 1):
+            citation = f"{passage.rel}:{passage.line_start}-{passage.line_end}"
+            out += ["", f"## {index}. {passage.title}",
+                    f"**Citation:** `{citation}`  **Route:** `{passage.route}`  "
+                    f"**SHA-256:** `{passage.source_sha}`",
+                    untrusted.wrap_untrusted(passage.text)]
+    if e.unavailable_sources:
+        out += ["", "# Unavailable evidence"]
+        out.extend(f"- {issue}" for issue in e.unavailable_sources)
+    return "\n".join(out)
+
+
 def _source_summary_from(v: "core.SourceCardResult") -> str:
     out = [f"# {v.title} — source card (no framework lens)"]
     shown = False
@@ -445,6 +502,7 @@ def _r_consult_framework(result, args):
 RENDERERS = {
     "list_kbs": _r_list_kbs, "list_lenses": _r_list_lenses, "diagnose": _r_diagnose,
     "search_sources": _r_search, "zoom_card": _r_zoom, "verify_quote": _r_verify,
+    "retrieve_evidence": _r_evidence,
     "consult_dimension": _r_consult_dimension, "consult_framework": _r_consult_framework,
 }
 
@@ -498,7 +556,8 @@ def _error(req_id, code: int, message: str) -> None:
 # discovery tools can fan out across all KBs. All multiplexing lives here in the router;
 # the underlying `_tool_x(cfg, args)` functions stay single-cfg and KB-agnostic.
 # ---------------------------------------------------------------------------
-_GROUNDING = ("consult_dimension", "consult_framework", "zoom_card", "verify_quote")
+_GROUNDING = ("consult_dimension", "consult_framework", "zoom_card", "verify_quote",
+              "retrieve_evidence")
 _DISCOVERY = ("search_sources", "list_lenses", "diagnose")
 
 # The `kb` selector, added to every KB-scoped tool (list_kbs is registry-scoped, so it is skipped).

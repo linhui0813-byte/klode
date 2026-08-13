@@ -60,6 +60,17 @@ class CliAgentic(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("NOT-FOUND", out.upper())
 
+    def test_evidence_outputs_cited_raw_passage_and_json_status(self):
+        code, out, _ = _run(self._kb("evidence", "brevity", "What quickens the pace?"))
+        self.assertEqual(code, 0)
+        self.assertIn("EVIDENCE_FOUND", out)
+        self.assertIn("library/books/brevity.txt:", out)
+        self.assertIn("quickens the pace", out)
+        jcode, jout, _ = _run(self._kb(
+            "--json", "evidence", "brevity", "quantum zucchini protocol"))
+        self.assertEqual(jcode, 1)
+        self.assertEqual(json.loads(jout)["value"]["status"], "insufficient-evidence")
+
     def test_cross_surface_provenance_parity(self):
         _, cout, _ = _run(self._kb("--json", "consult", "pacing"))
         cli_kb = json.loads(cout)["provenance"]["kb"]
@@ -113,7 +124,8 @@ class CliAgentic(unittest.TestCase):
 
     def test_star_kb_prose_is_rejected_not_crashed(self):
         # fan-out (`*`) has no single-KB prose rendering; it must error cleanly, never TypeError
-        for verb in (["search", "reader"], ["lenses"], ["cards"]):
+        for verb in (["search", "reader"], ["lenses"], ["cards"],
+                     ["evidence", "brevity", "reader"]):
             code, _, err = _run(["--kb", "*", "--registry", str(self.reg), *verb])
             self.assertEqual(code, 2, verb)
             self.assertIn("needs --json", err, verb)
