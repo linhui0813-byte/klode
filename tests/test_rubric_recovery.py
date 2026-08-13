@@ -91,6 +91,33 @@ class TheNamedRemedyWorks(_EditedRubric):
         with self.assertRaises(_spec.SpecError):
             _spec.load(self.cfg, "pacing", corpus=False)
 
+    def test_repin_still_announces_that_it_revoked_the_approval(self):
+        """Caught in review of my own fix. `_load_doc(allow_stale_approval=True)` originally
+        demoted the caller's document, and `cmd_repin` decides whether to print
+        "admission reset to 'candidate'" by testing that same field — so repin revoked a human's
+        approval and said nothing at all. The bypass now demotes a copy used only for validation."""
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(gate_main.cmd_repin(self._args()), 0)
+        self.assertIn("admission reset", out.getvalue(),
+                      "repin revoked the approval without telling anyone")
+
+    def test_repin_leaves_a_candidate_rubric_quiet(self):
+        """The notice must mean something — it should not fire for a rubric that was never
+        approved, or it becomes noise and stops being read."""
+        import contextlib
+        import io
+        doc = json.loads(self.path.read_text(encoding="utf-8"))
+        doc["admission"] = "candidate"
+        doc.pop("approved_digest", None)
+        self.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            gate_main.cmd_repin(self._args())
+        self.assertNotIn("admission reset", out.getvalue())
+
     def test_repin_also_recovers(self):
         """repin resets admission to candidate unconditionally, so the same guard blocked it from
         doing the very thing it was about to do — a moved corpus plus an edited body was terminal."""

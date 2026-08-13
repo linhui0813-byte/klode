@@ -164,11 +164,16 @@ def _load_doc(path: Path, *, allow_stale_approval: bool = False) -> dict:
         raise SystemExit(f"{path}: cannot be read as JSON — {e}")
     except RecursionError:
         raise SystemExit(f"{path}: JSON is nested too deeply to parse safely")
+    # Demote a COPY, never the caller's document. Mutating `doc` here silenced `cmd_repin`'s
+    # "admission reset to 'candidate'" notice, because that branch tests the admission this
+    # function had already overwritten — so repin revoked a human's approval and said nothing.
+    # The bypass is about what gets VALIDATED; what the caller then writes is the caller's call.
+    probe = doc
     if allow_stale_approval and isinstance(doc, dict):
-        doc["admission"] = "candidate"
-        doc.pop("approved_digest", None)
+        probe = {**doc, "admission": "candidate"}
+        probe.pop("approved_digest", None)
     try:
-        _spec.parse(doc)                      # structure only; the corpus may legitimately have moved
+        _spec.parse(probe)                    # structure only; the corpus may legitimately have moved
     except _spec.SpecError as e:
         raise SystemExit(f"{path}: not a valid rubric, refusing to rewrite it — {e}")
     return doc
