@@ -1,0 +1,147 @@
+name: sync upstream
+
+# GitHub Actions cron uses UTC. 02:00 UTC is 10:00 in Asia/Shanghai (UTC+8).
+# Scheduled runs can start a few minutes late when GitHub's runners are busy.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  open-sync-pr:
+    name: check xiaolai/klode and open a fork PR
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPOSITORY: xiaolai/klode
+      BASE_BRANCH: main
+      SYNC_BRANCH: automation/sync-upstream-main
+      VERSION_FILE: klode/lib/__init__.py
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the fork
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream and compare commits and versions
+        id: compare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream "${BASE_BRANCH}"
+          git fetch --no-tags origin "${BASE_BRANCH}"
+
+          fork_ref="origin/${BASE_BRANCH}"
+          upstream_ref="upstream/${BASE_BRANCH}"
+          fork_sha="$(git rev-parse "${fork_ref}")"
+          upstream_sha="$(git rev-parse "${upstream_ref}")"
+
+          version_at() {
+            git show "$1:${VERSION_FILE}" |
+              sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' |
+              head -n 1
+          }
+
+          fork_version="$(version_at "${fork_ref}")"
+          upstream_version="$(version_at "${upstream_ref}")"
+          if [[ -z "${fork_version}" || -z "${upstream_version}" ]]; then
+            echo "Could not read __version__ from ${VERSION_FILE} on both repositories." >&2
+            exit 1
+          fi
+          if [[ ! "${fork_version}" =~ ^[0-9A-Za-z._+-]+$ ||
+                ! "${upstream_version}" =~ ^[0-9A-Za-z._+-]+$ ]]; then
+            echo "Refusing unexpected version syntax in ${VERSION_FILE}." >&2
+            exit 1
+          fi
+
+          if git merge-base --is-ancestor "${upstream_sha}" "${fork_sha}"; then
+            needs_sync=false
+          else
+            needs_sync=true
+          fi
+
+          {
+            echo "needs_sync=${needs_sync}"
+            echo "fork_sha=${fork_sha}"
+            echo "upstream_sha=${upstream_sha}"
+            echo "fork_version=${fork_version}"
+            echo "upstream_version=${upstream_version}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Fork:     ${fork_sha} (version ${fork_version})"
+          echo "Upstream: ${upstream_sha} (version ${upstream_version})"
+          echo "Needs sync: ${needs_sync}"
+
+      - name: Push the upstream snapshot to the automation branch
+        if: steps.compare.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin \
+            "${{ steps.compare.outputs.upstream_sha }}:refs/heads/${SYNC_BRANCH}"
+
+      - name: Create or update the pull request inside this fork
+        if: steps.compare.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fork_version="${{ steps.compare.outputs.fork_version }}"
+          upstream_version="${{ steps.compare.outputs.upstream_version }}"
+          upstream_sha="${{ steps.compare.outputs.upstream_sha }}"
+          upstream_short="${upstream_sha:0:12}"
+
+          if [[ "${fork_version}" == "${upstream_version}" ]]; then
+            title="chore: sync upstream commit ${upstream_short}"
+          else
+            title="chore: sync upstream klode ${upstream_version}"
+          fi
+
+          body_file="${RUNNER_TEMP}/upstream-sync-pr.md"
+          {
+            echo "Automated upstream-sync proposal for this fork."
+            echo
+            echo "- Upstream repository: https://github.com/${UPSTREAM_REPOSITORY}"
+            echo "- Fork version: \`${fork_version}\`"
+            echo "- Upstream version: \`${upstream_version}\`"
+            echo "- Upstream commit: https://github.com/${UPSTREAM_REPOSITORY}/commit/${upstream_sha}"
+            echo
+            echo "This PR targets \`${GITHUB_REPOSITORY}:${BASE_BRANCH}\`. It does not send a PR to the upstream repository and will not merge automatically."
+          } > "${body_file}"
+
+          pr_number="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --base "${BASE_BRANCH}" \
+            --head "${SYNC_BRANCH}" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "${pr_number}" ]]; then
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${title}" \
+              --body-file "${body_file}"
+            echo "Updated pull request #${pr_number}."
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${BASE_BRANCH}" \
+              --head "${SYNC_BRANCH}" \
+              --title "${title}" \
+              --body-file "${body_file}"
+          fi
+
+      - name: Report that the fork is current
+        if: steps.compare.outputs.needs_sync == 'false'
+        run: echo "The fork already contains upstream main; no pull request is needed."
