@@ -75,6 +75,81 @@ class ReleaseIsGatedOnTheSuite(unittest.TestCase):
             self.assertIn(required, jobs, f"tests.yml no longer defines the `{required}` job")
 
 
+class PrintedCommandsAreRunnable(unittest.TestCase):
+    """Four CLI hints printed `lib consult …`, `lib diagnose …`, `lib zoom …` — the name of the
+    tool klode was ported from. They survived review because `lib` exists at ~/.local/bin/lib on
+    the machine this was written on, so the hint ran there and only there.
+
+    Matching a command token ANYWHERE in the literal, not just at the start: all four sat
+    mid-string behind a label or an arrow, which is why a startswith check would have found none
+    of them.
+
+    Scoped to FORMATTED hints — preceded by a column gap, a backtick, or an arrow. A verb at the
+    very start of a string is prose far more often than it is a hint ("library check — 2 cards"),
+    and a guard that cries wolf on headings gets loosened until it catches nothing. Stated rather
+    than hidden: a bare unlabelled hint at string start would slip past this.
+    """
+
+    @staticmethod
+    def _verbs() -> list[str]:
+        """The real subcommand list, read off the parser — so a verb added later is covered without
+        anyone remembering to add it here."""
+        import klode.lib.cli as cli
+        sub = next(a for a in cli.build_parser()._actions
+                   if a.__class__.__name__ == "_SubParsersAction")
+        return sorted(sub.choices)
+
+    @staticmethod
+    def _printed_strings(tree) -> list[tuple[int, str]]:
+        """Every string literal that reaches `print(...)`, f-string parts included.
+
+        Scoped to print arguments rather than every constant in the file: a docstring explaining
+        the defect ("printed \"no matching cards\"") is not itself a hint, and a guard that flags
+        the prose describing a bug is a guard that gets deleted."""
+        out = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "print"):
+                continue
+            for arg in node.args:
+                for part in ast.walk(arg):
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        out.append((part.lineno, part.value))
+        return out
+
+    def test_no_printed_hint_invokes_a_program_other_than_klode(self):
+        import klode.lib.cli as cli
+        verbs = self._verbs()
+        pattern = re.compile(r"(?:\s\s|`|→\s)([a-z][a-z0-9_.-]*)\s+(" + "|".join(verbs) + r")\b")
+        allowed = {cli.PROG, "python3", "python", "pipx", "pip", "uv"}
+        src = (REPO / "klode" / "lib" / "cli.py").read_text(encoding="utf-8")
+        offenders = []
+        for lineno, text in self._printed_strings(ast.parse(src)):
+            for prog, verb in pattern.findall(text):
+                if prog not in allowed:
+                    offenders.append(f"cli.py:{lineno}: prints `{prog} {verb}` — "
+                                     f"not {cli.PROG!r}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_the_parser_and_the_hints_share_one_name(self):
+        import klode.lib.cli as cli
+        self.assertEqual(cli.build_parser().prog, cli.PROG)
+        src = (REPO / "klode" / "lib" / "cli.py").read_text(encoding="utf-8")
+        self.assertNotIn('prog="klode"', src,
+                         "the program name is spelled twice; it can drift again")
+
+    def test_the_guard_catches_the_original_wording(self):
+        """A guard nobody has seen fire is a guard nobody knows the shape of."""
+        verbs = self._verbs()
+        pattern = re.compile(r"(?:\s\s|`|→\s)([a-z][a-z0-9_.-]*)\s+(" + "|".join(verbs) + r")\b")
+        for original in ('\nread one:  lib consult <name> [--section spec] [--full]',
+                         'stuck?     lib diagnose "what feels wrong"',
+                         '\nverify against the source:  lib zoom x --level content',
+                         '      → lib consult pacing'):
+            with self.subTest(original=original.strip()):
+                self.assertEqual([p for p, _ in pattern.findall(original)], ["lib"])
+
+
 class MainGuardIsLast(unittest.TestCase):
     """`if __name__ == "__main__": unittest.main()` placed before a class silently skips it when
     the file is run directly. pytest still collects it, so the omission is invisible in CI — which

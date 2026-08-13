@@ -58,6 +58,13 @@ dict_path = "/usr/share/dict/words"
 # Delimited so the managed rules can be REPLACED, not just appended once. Without an end marker,
 # `init --force` with a new shelf left that shelf's copyrighted .txt/.pdf untracked-but-unignored —
 # one `git add -A` from committing the corpus this project exists to keep local.
+# The installed console-script name, and the ONLY place it is spelled. Four "next command" hints
+# still said `lib` — the name of the pre-rename tool these scripts were ported from. It survived
+# review because `lib` exists at ~/.local/bin/lib on the machine klode was written on, so the
+# printed hint ran there and was `command not found` for everyone else. One constant, shared with
+# `ArgumentParser(prog=…)`, so the hints and the parser cannot disagree about what to call it.
+PROG = "klode"
+
 EXIT_ABSTAINED = 2   # measured-and-failed is 1; could-not-measure is 2, never 0
 _GI_BEGIN = "# >>> klode managed: the corpus is copyrighted — sources stay local, cards are tracked"
 _GI_END = "# <<< klode managed"
@@ -406,8 +413,8 @@ def _list_lenses(cfg: Config) -> int:
             by.setdefault(f.dimension.split("—")[0].strip(), []).append(f.name)
         for dim, names in sorted(by.items()):
             print(f"  {dim[:20]:22} {', '.join(sorted(names))}")
-    print("\nread one:  lib consult <name> [--section spec] [--full]")
-    print("stuck?     lib diagnose \"what feels wrong\"")
+    print(f"\nread one:  {PROG} consult <name> [--section spec] [--full]")
+    print(f"stuck?     {PROG} diagnose \"what feels wrong\"")
     return 0
 
 
@@ -473,7 +480,7 @@ def _render_source(cfg: Config, cid: str, full: bool) -> int:
         print(f"\n## Full\n{fullb}")
     if not thin and not fullb:
         print("\n(no L1/L2 written yet)")
-    print(f"\nverify against the source:  lib zoom {cid} --level content --grep \"…\"")
+    print(f"\nverify against the source:  {PROG} zoom {cid} --level content --grep \"…\"")
     return 0
 
 
@@ -554,7 +561,7 @@ def cmd_diagnose(args) -> int:
         print(f"  • {dn}")
         if q:
             print(f"      {q[:88]}")
-        print(f"      → lib consult {dn}")              # §5: the writer default IS the Craft layer — no `--section spec`
+        print(f"      → {PROG} consult {dn}")              # §5: the writer default IS the Craft layer — no `--section spec`
     return 0
 
 
@@ -885,7 +892,7 @@ def _tier_choices() -> tuple[str, ...]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="klode", description="klode — a grep-grounded, level-of-zoom "
+    p = argparse.ArgumentParser(prog=PROG, description="klode — a grep-grounded, level-of-zoom "
                                                         "knowledge library with a citation-rot linter.")
     src = p.add_mutually_exclusive_group()             # a KB comes from ONE place: a file or the registry
     src.add_argument("-c", "--config", help="path to library.toml (default: nearest in cwd/parents)")
