@@ -4,12 +4,75 @@ A defect that appears three times is not three mistakes, it is one missing check
 exist because the same fault was fixed individually more than twice.
 """
 import ast
+import re
 import sys
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+
+
+class ReleaseIsGatedOnTheSuite(unittest.TestCase):
+    """A tag push publishes to PyPI. `tests.yml` triggers on `push: branches: ["**"]`, and a tag
+    ref is not a branch ref — so no release ever ran the suite, the fixture lint, or the
+    zero-dependency probe on the ref being published, and `publish` needed only `build`.
+
+    Parsed as TEXT on purpose. CI installs nothing (`python -m unittest`, no pip), so a test that
+    imported PyYAML would pass here and be unrunnable in the one place it has to run.
+    """
+
+    WF = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+
+    def _jobs(self, name: str) -> dict[str, list[str]]:
+        """`job name -> its needs`, from the two-space-indented job block. Enough structure for
+        this guard, and no dependency to buy it."""
+        lines = (self.WF / name).read_text(encoding="utf-8").splitlines()
+        start = next(i for i, l in enumerate(lines) if l.rstrip() == "jobs:")
+        jobs: dict[str, list[str]] = {}
+        current = None
+        for line in lines[start + 1:]:
+            if line.strip() and not line.startswith(" "):
+                break                                       # a new top-level key ends `jobs:`
+            m = re.match(r"^  ([A-Za-z_][\w-]*):\s*$", line)
+            if m:
+                current = m.group(1)
+                jobs[current] = []
+            elif current is not None:
+                n = re.match(r"^    needs:\s*(.+?)\s*$", line)
+                if n:
+                    jobs[current] = re.findall(r"[\w-]+", n.group(1))
+        return jobs
+
+    def test_publish_depends_transitively_on_the_test_workflow(self):
+        jobs = self._jobs("workflow.yml")
+        self.assertIn("publish", jobs, "the publish job disappeared")
+        seen, frontier = set(), list(jobs.get("publish", []))
+        while frontier:
+            j = frontier.pop()
+            if j in seen:
+                continue
+            seen.add(j)
+            frontier += jobs.get(j, [])
+        self.assertTrue(seen & {"tests", "test"},
+                        f"publish does not depend on the test suite (reaches {sorted(seen)}) — a "
+                        "tag would publish over a red run")
+
+    def test_the_release_gate_calls_the_same_workflow_branches_use(self):
+        body = (self.WF / "workflow.yml").read_text(encoding="utf-8")
+        self.assertIn("./.github/workflows/tests.yml", body,
+                      "the release gate does not reuse tests.yml — a copied job list drifts")
+
+    def test_tests_yml_is_callable(self):
+        body = (self.WF / "tests.yml").read_text(encoding="utf-8")
+        self.assertRegex(body, r"(?m)^  workflow_call:",
+                         "tests.yml has no workflow_call trigger, so publish cannot depend on it")
+
+    def test_the_gated_jobs_are_all_still_there(self):
+        """publish depending on `tests` is worth nothing if `tests` stops running the checks."""
+        jobs = self._jobs("tests.yml")
+        for required in ("test", "corpus", "zero_deps"):
+            self.assertIn(required, jobs, f"tests.yml no longer defines the `{required}` job")
 
 
 class MainGuardIsLast(unittest.TestCase):

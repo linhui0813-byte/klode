@@ -8,8 +8,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The release gate. A tag push does not match `tests.yml`'s `branches: ["**"]`, so until this
+  # existed a tag published whatever was on it — red suite included. Calling the workflow rather
+  # than copying its jobs means the thing gating a release is the same thing gating a branch.
+  tests:
+    name: Test suite
+    uses: ./.github/workflows/tests.yml
+
   build:
     name: Build distributions
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

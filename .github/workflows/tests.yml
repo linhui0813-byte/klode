@@ -8,11 +8,16 @@ name: tests
 # package has zero runtime dependencies, so `python -m unittest` is the honest harness: if CI
 # needed pip, CI would no longer be testing the zero-dependency claim.
 
+# `branches: ["**"]` does NOT match a tag ref, so pushing v0.4.2 ran none of this — and `publish`
+# declared `needs: build` only. Every release so far was cut without the suite, the fixture lint,
+# or the zero-dependency probe having run on that ref. `workflow_call` lets publish depend on this
+# workflow rather than re-declare it, so the release gate and the branch gate cannot drift apart.
 on:
   push:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
