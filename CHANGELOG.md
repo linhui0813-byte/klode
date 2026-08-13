@@ -3,6 +3,84 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
+## Unreleased
+
+An audit of the whole repo, adversarially reviewed before any of it was written. Three findings
+here came from that review rather than from the audit; two of my own proposed fixes were wrong and
+were replaced after the checks meant to confirm them failed instead.
+
+> ### ⚠️ Verdicts move, and stored calibrations stop claiming coverage.
+>
+> The gate compared a **rounded** score against the hurdle, so any draft within half a point below
+> it was passed. A draft that scored Go at the boundary now scores **Recycle**. The error ran one
+> way only — across two-criterion rubrics with maxima 2..10 there are twelve false-Go
+> configurations and no false-Recycle — so no verdict moves from Recycle to Go.
+>
+> `Calibration` now pins the **judge** as well as the rubric. Existing records still load and
+> report `calibrated=False` until re-measured, because a record measured through one model at
+> `permutations=2` was being claimed by a different model running undebiased.
+
+### Security
+
+- **A public address spelled as an integer bypassed the plaintext-transport guard.**
+  `http://134744072` resolves to `8.8.8.8` and was accepted: it carries no dot, so the single-label
+  rule that exists to permit `http://docling` classified it as a container name before `ipaddress`
+  was consulted. `klode ingest` uploads whole documents to that endpoint. No opt-in was required —
+  the guard simply never fired. Classification is now by address, for any spelling, ahead of every
+  name rule. Ambiguous dotted forms (`010.010.010.010`, octal to a resolver, refused by Python)
+  still fail closed as public.
+- **A shelf name could switch off the copyright-leak guard.** `git ls-files -z <paths>` had no
+  `--`, so a shelf called `--others` was consumed as an option: git listed untracked files,
+  returned 0, and the guard reported no leak with a copyrighted source tracked in the index.
+  Closed at the call site and at the config boundary, which no longer accepts a shelf or
+  `extra_guard_dirs` entry beginning with `-`. `--literal-pathspecs` also stops a shelf named
+  `books*` dragging a sibling `booksOTHER/` into the report.
+
+### Fixed
+
+- **A glob metacharacter in a library path made the fail-closed linter pass green.**
+  `glob.glob(os.path.join(cfg.cards, "*.md"))` reads `[ ] * ?` anywhere in the joined string,
+  directory prefix included, so a KB under `.../kb[1]/` enumerated zero cards — and `unmeasured` is
+  recorded only `if cards:`, so an empty list is the one shape that slips past the abstention
+  guard. `klode check` exited **0** with `OK: 0 errors` over a citation resolving nowhere, and
+  `klode build` rewrote `INDEX.md` to empty. A shelf name is a second injection point. Enumeration
+  returning nothing while card files sit on disk is now a loud error naming itself as a bug.
+- **An edited rubric could not be re-approved by the command its own error named.** `approve` and
+  `repin` both ran the approval-digest check on the unmodified document, so the stale digest that
+  sent you there was what refused you. Rewording one level descriptor bricked the rubric, with no
+  documented way out. Both now demote before parsing; every reader still refuses an edited rubric.
+- **The Go/Recycle threshold was applied to a rounded score.** See the warning above. The
+  comparison is now exact and the displayed score is the floor — for an integer hurdle
+  `floor(x) >= h` exactly when `x >= h`, so the number shown can never contradict the decision.
+  `hurdle` must now be an integer, which that property depends on.
+- **`judge.permutations` accepted odd counts that unbalanced the debiasing.** At 3 the split is two
+  forward runs to one reversed, so the average keeps the position bias it exists to cancel, at 1.5×
+  the cost of the 2 that would have cancelled it. The domain is now 1 or an even number to 16. The
+  constructor also accepted `True` (which ran one silent forward pass), `2.0`, and 17.
+- **The plaintext refusal prescribed `[ingest].allow_insecure_http`,** which is not a setting —
+  writing it made the settings file fail to load. It could not have worked as a setting either, and
+  a persisted value grants more than the variable does. The message now names
+  `KLODE_ALLOW_INSECURE_HTTP` and says why it is deliberately not a setting.
+- **Every release so far was published without the suite having run on it.** `tests.yml` triggers
+  on `branches: ["**"]`, which does not match a tag ref, and `publish` needed only `build`.
+  `workflow.yml` now calls `tests.yml`.
+- **Four CLI hints named `lib`,** the tool klode was ported from — runnable only on the machine
+  klode was written on.
+- **`Config.load("path")` raised `AttributeError`** on a string, at the front door of the public
+  facade, in the module that opens by promising not to fail confusingly. All three path parameters
+  coerce now.
+- **`klode.gate` printed 25 lines of stack for a bad `-c`** where `klode.lib` prints one line.
+
+### Added
+
+- `tests/fixtures/kb-fixture/library/frameworks/_criteria/mixed-scale.json` — the first fixture
+  rubric whose criteria use **different** behavioral scales (0..3 and 0..7). Both existing rubrics
+  are uniform, and a uniform rubric's mean always lands on an integer percentage, which is why the
+  verdict-rounding defect was invisible to the whole suite. Checked by CI so it cannot drift back.
+- `PROMPT_VERSION`, with a test that hashes `STEPS_PROMPT`/`FORM_PROMPT` and fails when either
+  changes without the constant moving — a prompt edit silently invalidates every calibration
+  measured through the old wording.
+
 ## 0.4.2 — 2026-08-13
 
 Documentation only — no behaviour change. Cut as its own release because the thing it fixes is a
