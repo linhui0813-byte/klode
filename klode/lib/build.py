@@ -16,12 +16,12 @@ Idempotent. Emits `cards/INDEX.md` (the human board) and returns a coverage repo
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import re
 
-from .common import MARK, body_after_marker, fm_get, front_matter, read
+from .common import (MARK, NON_CARDS, body_after_marker, fm_get, front_matter,
+                      glob_in, read)
 from .config import Config, ConfigError
 
 
@@ -44,7 +44,7 @@ def framework_source_map(cfg: Config) -> dict[str, str]:
     # charset must match common.src_path_re, else an uppercase/underscore source (e.g. Booth_1961.txt)
     # passes `klode check` but is invisible here — its framework link and consult de-dup silently break
     src_re = re.compile(rf"{re.escape(cfg.lib_rel)}/(?:{shelves})/[A-Za-z0-9._-]+\.txt")
-    for p in glob.glob(os.path.join(cfg.frameworks, "*.md")):
+    for p in glob_in(cfg.frameworks, "*.md"):
         b = os.path.basename(p)
         if b == "README.md":
             continue
@@ -92,7 +92,7 @@ def _enumerate_sources(cfg: Config) -> list[dict]:
     fwmap = framework_source_map(cfg)
     sources = []
     for shelf in cfg.shelves:
-        for p in sorted(glob.glob(os.path.join(cfg.lib, shelf, "*.txt"))):
+        for p in sorted(glob_in(cfg.lib, shelf, "*.txt")):
             stem = os.path.basename(p)[:-4]
             rel = f"{cfg.lib_rel}/{shelf}/{stem}.txt"
             bib = bib_line_for(cfg, stem)
@@ -113,8 +113,8 @@ def build(cfg: Config, *, stamp: bool = False) -> dict:
     os.makedirs(cfg.cards, exist_ok=True)
     sources = _enumerate_sources(cfg)
 
-    existing = [p for p in glob.glob(os.path.join(cfg.cards, "*.md"))
-                if os.path.basename(p) not in ("INDEX.md", "README.md")]
+    existing = [p for p in glob_in(cfg.cards, "*.md")
+                if os.path.basename(p) not in NON_CARDS]
     if not sources and existing:
         # Fresh clone: the git-ignored corpus is not installed. Do NOT rewrite cards or overwrite
         # the tracked INDEX.md with an empty board — that is silent data loss AND would make the

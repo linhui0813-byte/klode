@@ -1,0 +1,184 @@
+"""A library path is not a pattern.
+
+`glob.glob(os.path.join(cfg.cards, "*.md"))` reads `[ ] * ?` anywhere in the joined string, the
+DIRECTORY prefix included. A knowledge base under `.../kb[1]/` — or with `shelves = ["books[1]"]`,
+which config validation accepts — therefore enumerated zero cards and zero sources.
+
+That is not merely an empty result. `check` records `unmeasured` only `if cards:`, so an empty card
+list is the one shape that slips past the guard built to stop `abstained` reading as `verified`:
+the run printed `OK: 0 errors` and exited 0 over a citation resolving nowhere, and `build` rewrote
+INDEX.md to empty and exited 0 as well.
+
+The frameworks/syntheses layer uses `Path.glob` and was never affected, so the KB half-worked —
+`consult` rendered a full panel while `search` said "no matching cards". Nothing looked broken.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from klode.lib import build, check                                       # noqa: E402
+from klode.lib.common import card_files, glob_in, shelf_txts             # noqa: E402
+from klode.lib.config import Config                                      # noqa: E402
+
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "kb-fixture"
+
+
+class _KBAtAHostilePath(unittest.TestCase):
+    """The fixture KB, copied to a directory whose name is a glob pattern."""
+
+    DIRNAME = "kb[1]"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.kb = self.tmp / self.DIRNAME
+        shutil.copytree(FIXTURE, self.kb)
+        self.cfg = Config.load(self.kb / "library.toml")
+
+    def _break_a_citation(self) -> str:
+        card = self.kb / "library" / "cards" / "brevity.md"
+        text = card.read_text(encoding="utf-8")
+        marker = "(grep: `"
+        i = text.index(marker) + len(marker)
+        j = text.index("`", i)
+        original = text[i:j]
+        card.write_text(text[:i] + "ZZZ-THIS-QUOTE-IS-NOWHERE" + text[j:], encoding="utf-8")
+        return original
+
+
+class TheCorpusIsVisibleAtAMetacharacterPath(_KBAtAHostilePath):
+    def test_cards_are_enumerated(self):
+        self.assertTrue(card_files(self.cfg), "no cards found under a `[`-containing library path")
+
+    def test_shelf_sources_are_enumerated(self):
+        self.assertTrue(shelf_txts(self.cfg), "no shelf sources found under a `[`-containing path")
+
+    def test_the_counts_match_the_same_kb_at_a_plain_path(self):
+        plain = self.tmp / "plain"
+        shutil.copytree(FIXTURE, plain)
+        ref = Config.load(plain / "library.toml")
+        self.assertEqual(len(card_files(self.cfg)), len(card_files(ref)))
+        self.assertEqual(len(shelf_txts(self.cfg)), len(shelf_txts(ref)))
+
+
+class CitationRotIsStillCaughtAtAMetacharacterPath(_KBAtAHostilePath):
+    def test_a_broken_citation_fails_the_check(self):
+        self._break_a_citation()
+        r = check.check(self.cfg)
+        self.assertFalse(r.ok, "check passed over a citation that resolves nowhere")
+        self.assertTrue(any("citation-rot" in e for e in r.errors),
+                        f"no citation-rot error raised; got {r.errors}")
+
+    def test_an_intact_kb_reports_its_real_card_count(self):
+        r = check.check(self.cfg)
+        self.assertGreater(r.n_cards, 0)
+        self.assertGreater(r.n_txts, 0)
+        self.assertFalse(any("corpus not installed" in n for n in r.notes),
+                         "an installed corpus was reported as absent")
+
+
+class BuildDoesNotEmptyTheIndex(_KBAtAHostilePath):
+    def test_build_sees_the_cards(self):
+        index = self.kb / "library" / "cards" / "INDEX.md"
+        before = index.read_text(encoding="utf-8")
+        build.build(self.cfg)
+        after = index.read_text(encoding="utf-8")
+        self.assertIn("brevity", after, "build rewrote INDEX.md without the cards on disk")
+        self.assertEqual(before.count("](" ), after.count("]("),
+                         "build changed the number of indexed cards")
+
+
+class AShelfNameIsAlsoAPattern(unittest.TestCase):
+    """`[library].shelves` validation rejects only `/`, `""`, `.` and `..` — a shelf may legally
+    carry a metacharacter, so escaping the library dir alone would be an incomplete fix."""
+
+    def test_a_bracketed_shelf_still_enumerates(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "library" / "books[1]").mkdir(parents=True)
+        (tmp / "library" / "cards").mkdir(parents=True)
+        (tmp / "library.toml").write_text(
+            '[library]\nid = "t"\ndir = "library"\nshelves = ["books[1]"]\n', encoding="utf-8")
+        (tmp / "library" / "books[1]" / "a.txt").write_text("text", encoding="utf-8")
+        cfg = Config.load(tmp / "library.toml")
+        self.assertEqual(cfg.shelves, ("books[1]",))
+        self.assertEqual(len(shelf_txts(cfg)), 1,
+                         "a shelf whose name contains `[` enumerated nothing")
+
+
+class GlobInEscapesDirectoriesButNotThePattern(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_the_trailing_pattern_stays_live(self):
+        d = self.tmp / "d[1]"
+        d.mkdir()
+        for n in ("a.md", "b.md", "c.txt"):
+            (d / n).write_text("x", encoding="utf-8")
+        self.assertEqual(sorted(os.path.basename(p) for p in glob_in(d, "*.md")), ["a.md", "b.md"])
+
+    def test_dotfiles_stay_excluded_as_glob_excludes_them(self):
+        """`Path.glob` would return these. An editor's `.#card.md` lock file is a symlink to
+        `user@host.pid`; enumerating it as a card is how the swap-to-pathlib fix breaks `read`."""
+        d = self.tmp / "d[2]"
+        d.mkdir()
+        (d / "real.md").write_text("x", encoding="utf-8")
+        (d / ".#real.md").write_text("x", encoding="utf-8")
+        self.assertEqual([os.path.basename(p) for p in glob_in(d, "*.md")], ["real.md"])
+
+    def test_an_explicitly_dotted_pattern_still_matches(self):
+        """check.py's `.normalize-backup-*` sweep depends on this."""
+        d = self.tmp / "d[3]"
+        d.mkdir()
+        (d / ".normalize-backup-1").mkdir()
+        self.assertEqual(len(glob_in(d, ".normalize-backup-*")), 1)
+
+    def test_intermediate_segments_are_escaped_too(self):
+        (self.tmp / "a[1]" / "b[2]").mkdir(parents=True)
+        (self.tmp / "a[1]" / "b[2]" / "x.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(len(glob_in(self.tmp, "a[1]", "b[2]", "*.txt")), 1)
+
+
+class TheEnumeratorTripwire(unittest.TestCase):
+    """Fixing the cause removes today's failure; the tripwire is what stops a future cause from
+    being silent again."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        shutil.copytree(FIXTURE, self.tmp / "kb")
+        self.cfg = Config.load(self.tmp / "kb" / "library.toml")
+
+    def test_it_fires_when_enumeration_disagrees_with_the_directory(self):
+        from unittest import mock
+        with mock.patch("klode.lib.check.card_files", return_value=[]):
+            r = check.check(self.cfg)
+        self.assertTrue(any("disagrees with the" in e for e in r.errors),
+                        f"tripwire did not fire; errors were {r.errors}")
+
+    def test_it_does_not_fire_on_a_directory_holding_only_index_and_readme(self):
+        for p in self.cfg.cards.glob("*.md"):
+            if p.name not in ("INDEX.md", "README.md"):
+                p.unlink()
+        (self.cfg.cards / "README.md").write_text("# cards\n", encoding="utf-8")
+        r = check.check(self.cfg)
+        self.assertFalse(any("disagrees with the" in e for e in r.errors),
+                         "tripwire false-fired on a genuinely card-less directory")
+
+    def test_it_does_not_fire_on_a_genuinely_empty_directory(self):
+        for p in self.cfg.cards.glob("*"):
+            p.unlink()
+        r = check.check(self.cfg)
+        self.assertFalse(any("disagrees with the" in e for e in r.errors))
+
+
+if __name__ == "__main__":
+    unittest.main()

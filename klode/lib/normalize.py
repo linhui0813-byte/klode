@@ -20,7 +20,6 @@ the most-recent runs are kept.
 """
 from __future__ import annotations
 
-import glob
 import os
 import re
 import shutil
@@ -30,6 +29,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from .common import glob_in
 from .config import Config
 
 LIG_MAP = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl",
@@ -338,7 +338,8 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
 
     lib_real = os.path.realpath(cfg.lib)
     files = []
-    for p in sorted(glob.glob(os.path.join(cfg.lib, pattern))):
+    # only cfg.lib is escaped: `pattern` is the USER's and must stay live (it may carry `/`)
+    for p in sorted(glob_in(cfg.lib, pattern)):
         rp = os.path.realpath(p)
         if rp.startswith(lib_real + os.sep) and rp.endswith(".txt") and os.path.isfile(rp):
             files.append(p)

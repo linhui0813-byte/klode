@@ -23,7 +23,6 @@ card->source and rot checks are skipped rather than false-failing every commit.
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import re
@@ -31,7 +30,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 
-from .common import (card_files, front_matter, fm_get, haystacks,
+from .common import (NON_CARDS, card_files, front_matter, fm_get, glob_in, haystacks,
                      parse_markers, read, read_lenient, resolve, shelf_txts, src_path_re)
 from .config import Config
 
@@ -64,11 +63,40 @@ class Report:
         return bool(self.unmeasured) and not self.errors
 
 
+def _check_enumerator_agrees_with_disk(cfg: Config, r: Report) -> None:
+    """The assertion the glob-escaping fix leaves behind.
+
+    A path metacharacter in the library directory made `card_files` return `[]` for a shelf full of
+    cards, and because `unmeasured` is only recorded `if cards:`, `check` reported `OK: 0 errors`
+    and exited 0 over a rotted citation. The fix removes today's cause; this stops any future cause
+    from being silent, because an enumerator that disagrees with the directory is a bug, never an
+    empty library.
+
+    Compared against the SAME exclusion set `card_files` uses — a directory holding only `INDEX.md`
+    and `README.md` genuinely has no cards and must not fire. An unreadable directory is reported
+    as its own error rather than raised: this is a linter, and it does not get to crash.
+    """
+    if not cfg.cards.is_dir():
+        return
+    try:
+        on_disk = [e.name for e in os.scandir(cfg.cards)
+                   if e.is_file() and e.name.endswith(".md") and e.name not in NON_CARDS]
+    except OSError as e:
+        r.errors.append(f"[A] cannot read the cards directory {cfg.cards}: {e}")
+        return
+    if on_disk and not r.n_cards:
+        r.errors.append(
+            f"[A] card enumeration returned nothing while {len(on_disk)} card file(s) sit in "
+            f"{cfg.cards} ({', '.join(sorted(on_disk)[:3])}…) — the enumerator disagrees with the "
+            "directory, so NO citation was checked. This is a bug in klode, not an empty library.")
+
+
 def check(cfg: Config, *, strict: bool = False, entail=None, entail_threshold: float = 0.5,
           today: date | None = None) -> Report:
     r = Report()
     r.n_cards = len(card_files(cfg))
     r.n_txts = len(shelf_txts(cfg))
+    _check_enumerator_agrees_with_disk(cfg, r)
     _check_orphans_and_rot(cfg, r, strict)
     if cfg.bib_enabled:
         _check_bibliography(cfg, r)
@@ -232,7 +260,7 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
 
 def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
     # F (frameworks). each framework card's grep markers vs every source .txt it references.
-    for p in sorted(glob.glob(os.path.join(cfg.frameworks, "*.md"))):
+    for p in sorted(glob_in(cfg.frameworks, "*.md")):
         if os.path.basename(p) == "README.md":
             continue
         text = read(p)
@@ -268,11 +296,11 @@ def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
             crel = fm_get(front_matter(read(cp)), "file")
             if crel:
                 card_src.setdefault(os.path.basename(cp)[:-3], []).append(os.path.join(cfg.root, crel))
-        for cp in glob.glob(os.path.join(cfg.frameworks, "*.md")):
+        for cp in glob_in(cfg.frameworks, "*.md"):
             stem = os.path.basename(cp)[:-3]
             for s in set(SRC_RE.findall(read(cp))):
                 card_src.setdefault(stem, []).append(os.path.join(cfg.root, s))
-        for p in sorted(glob.glob(os.path.join(cfg.syntheses, "*.md"))):
+        for p in sorted(glob_in(cfg.syntheses, "*.md")):
             if os.path.basename(p) in ("README.md", "GATE-TRIAGE.md"):
                 continue
             text = read(p)
@@ -392,6 +420,6 @@ def _check_copyright_leak(cfg: Config, r: Report) -> None:
         return
     for f in (f for f in tracked if f and f.lower().endswith((".txt", ".pdf"))):   # case-insensitive: .TXT must not slip
         r.errors.append(f"[E copyright-leak] corpus file is git-tracked (must be ignored): {f}")
-    for d in glob.glob(os.path.join(cfg.lib, ".normalize-backup-*")):
+    for d in glob_in(cfg.lib, ".normalize-backup-*"):
         r.errors.append(f"[E] in-tree normalize backup present (should live outside the repo): "
                         f"{os.path.relpath(d, cfg.root)}")
