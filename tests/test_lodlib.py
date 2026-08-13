@@ -164,14 +164,76 @@ class CheckTests(TempLibTest):
         r = check(self.cfg)
         self.assertTrue(any("[D]" in e for e in r.errors))
 
-    def test_absent_corpus_degrades_not_fails(self):
+    def test_absent_corpus_abstains_rather_than_reporting_ok(self):
+        """This test previously asserted `r.ok` — locking in the fail-open an audit then found.
+
+        With the corpus absent, citation-rot never runs. Reporting `ok` there meant `klode check
+        --strict` printed `OK: 0 errors` and exited 0 on a library whose every anchor might have
+        rotted, and CI reads the exit code rather than the notes. The check still DEGRADES — it
+        does not error, and the tracked-file checks still run — but degraded is not passed.
+        """
         build(self.cfg)
         set_thin(self.cfg, "foo", 'A claim — `grep: "jumps over the lazy dog"`.')
         (self.cfg.lib / "books" / "foo.txt").unlink()      # simulate a fresh clone (corpus git-ignored)
         r = check(self.cfg)
-        # source-dependent checks are skipped, not failed; but B (source->card) also has nothing to flag
-        self.assertTrue(r.ok, msg=r.errors)
+        self.assertEqual(r.errors, [], "an absent corpus is not an ERROR — it is unmeasured")
+        self.assertTrue(r.abstained)
+        self.assertFalse(r.ok, "unmeasured evidence reported as a pass")
         self.assertTrue(any("not installed" in n for n in r.notes))
+        self.assertTrue(any("NOT checked" in u for u in r.unmeasured))
+
+    def test_a_PARTIAL_corpus_also_abstains(self):
+        """The first fix only handled "zero sources installed". With half the corpus present the
+        remaining cards' anchors were still never resolved, and the run still ended in
+        `OK: 0 errors` exit 0 — half-measured is not measured. Found by an independent
+        verification pass after the blanket case was already fixed."""
+        # the stock fixture has ONE source, so removing it would hit the blanket case instead
+        (self.cfg.lib / "books" / "bar.txt").write_text(SOURCE, encoding="utf-8")
+        (self.cfg.lib / "BIBLIOGRAPHY.md").write_text(
+            "| Foo Bar — A Book | `foo.txt` | a note |\n"
+            "| Baz Qux — Another | `bar.txt` | a note |\n", encoding="utf-8")
+        build(self.cfg)
+        set_thin(self.cfg, "foo", 'A claim — `grep: "jumps over the lazy dog"`.')
+        (self.cfg.lib / "books" / "foo.txt").unlink()      # ONE source gone, the other remains
+        self.assertTrue(list((self.cfg.lib / "books").glob("*.txt")), "no source left — wrong case")
+        r = check(self.cfg)
+        self.assertEqual(r.errors, [])
+        self.assertTrue(r.abstained, "a partially installed corpus reported a clean pass")
+        self.assertTrue(any("foo.txt" in u for u in r.unmeasured))
+
+    def test_a_library_with_no_cards_and_no_corpus_is_not_abstained(self):
+        # nothing to measure is different from failed to measure; only the second is unmeasured
+        for p in (self.cfg.root / "cards").glob("*.md"):
+            p.unlink()
+        for p in (self.cfg.lib / "books").glob("*.txt"):
+            p.unlink()
+        r = check(self.cfg)
+        self.assertEqual(r.unmeasured, [])
+
+    def test_the_cli_exits_nonzero_and_never_prints_ok_when_it_could_not_measure(self):
+        # the contract that matters to CI: an exit code, not a note
+        import io
+        from contextlib import redirect_stdout
+        from klode.lib.cli import build_parser, cmd_check
+        build(self.cfg)
+        set_thin(self.cfg, "foo", 'A claim — `grep: "jumps over the lazy dog"`.')
+        (self.cfg.lib / "books" / "foo.txt").unlink()
+        args = build_parser().parse_args(["-c", str(self.cfg.config_path), "check", "--strict"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cmd_check(args)
+        out = buf.getvalue()
+        self.assertEqual(rc, 2)
+        self.assertIn("ABSTAINED", out)
+        self.assertNotIn("OK:", out)
+
+        args = build_parser().parse_args(
+            ["-c", str(self.cfg.config_path), "check", "--strict", "--allow-unmeasured"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cmd_check(args)
+        self.assertEqual(rc, 0, "an explicit opt-out must still be possible")
+        self.assertIn("knowingly skipped", buf.getvalue())
 
 
 # ---------------------------------------------------------------------------

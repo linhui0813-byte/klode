@@ -50,6 +50,12 @@ class Extraction:
     handler: str
     format: str
     note: str = ""
+    pages: tuple[int, ...] | None = None
+    """Page numbers this extraction claims to represent, when the backend can say.
+
+    `None` means UNKNOWN, not empty: a markdown-only backend genuinely cannot report which pages it
+    covered, and treating that as "no pages missing" is the exact inference this field exists to
+    stop. Only a structured result (docling `prov[].page_no`) populates it."""
 
     def __post_init__(self) -> None:
         if not self.format:

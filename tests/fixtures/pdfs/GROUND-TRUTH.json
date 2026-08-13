@@ -1,0 +1,184 @@
+{
+  "generator": "make_fixtures.py",
+  "page_size": [
+    612,
+    792
+  ],
+  "files": {
+    "three-pages.pdf": {
+      "pages": 3,
+      "why": "baseline page counting and per-page text",
+      "text": [
+        [
+          "than their implementations Such modules have two p10w0",
+          "their implementations Such modules have two advantages p10w1",
+          "implementations Such modules have two advantages First p10w2",
+          "Such modules have two advantages First a p10w3",
+          "modules have two advantages First a simple p10w4",
+          "have two advantages First a simple interface p10w5",
+          "two advantages First a simple interface minimizes p10w6",
+          "advantages First a simple interface minimizes the p10w7"
+        ],
+        [
+          "simple interface minimizes the complexity that a p20w0",
+          "interface minimizes the complexity that a module p20w1",
+          "minimizes the complexity that a module imposes p20w2",
+          "the complexity that a module imposes on p20w3",
+          "complexity that a module imposes on the p20w4",
+          "that a module imposes on the rest p20w5",
+          "a module imposes on the rest of p20w6",
+          "module imposes on the rest of the p20w7"
+        ],
+        [
+          "the rest of the system The best p30w0",
+          "rest of the system The best modules p30w1",
+          "of the system The best modules are p30w2",
+          "the system The best modules are those p30w3",
+          "system The best modules are those whose p30w4",
+          "The best modules are those whose interfaces p30w5",
+          "best modules are those whose interfaces are p30w6",
+          "modules are those whose interfaces are much p30w7"
+        ]
+      ]
+    },
+    "blank-middle.pdf": {
+      "pages": 3,
+      "why": "page 2 is empty \u2014 coverage must report it, not average it away",
+      "empty_pages": [
+        2
+      ],
+      "text": [
+        [
+          "simple interface minimizes the complexity that a p20w0",
+          "interface minimizes the complexity that a module p20w1",
+          "minimizes the complexity that a module imposes p20w2",
+          "the complexity that a module imposes on p20w3",
+          "complexity that a module imposes on the p20w4",
+          "that a module imposes on the rest p20w5",
+          "a module imposes on the rest of p20w6",
+          "module imposes on the rest of the p20w7"
+        ],
+        [],
+        [
+          "that a module imposes on the rest p60w0",
+          "a module imposes on the rest of p60w1",
+          "module imposes on the rest of the p60w2",
+          "imposes on the rest of the system p60w3",
+          "on the rest of the system The p60w4",
+          "the rest of the system The best p60w5",
+          "rest of the system The best modules p60w6",
+          "of the system The best modules are p60w7"
+        ]
+      ]
+    },
+    "two-column.pdf": {
+      "pages": 2,
+      "why": "two independent text blocks per page; correct reading order is left column fully, then right column",
+      "columns": 2,
+      "text": [
+        {
+          "left": [
+            "the rest of the system The best p30w0",
+            "rest of the system The best modules p30w1",
+            "of the system The best modules are p30w2",
+            "the system The best modules are those p30w3",
+            "system The best modules are those whose p30w4",
+            "The best modules are those whose interfaces p30w5",
+            "best modules are those whose interfaces are p30w6",
+            "modules are those whose interfaces are much p30w7",
+            "are those whose interfaces are much simpler p30w8",
+            "those whose interfaces are much simpler than p30w9"
+          ],
+          "right": [
+            "The best modules are those whose interfaces p35w0",
+            "best modules are those whose interfaces are p35w1",
+            "modules are those whose interfaces are much p35w2",
+            "are those whose interfaces are much simpler p35w3",
+            "those whose interfaces are much simpler than p35w4",
+            "whose interfaces are much simpler than their p35w5",
+            "interfaces are much simpler than their implementations p35w6",
+            "are much simpler than their implementations Such p35w7",
+            "much simpler than their implementations Such modules p35w8",
+            "simpler than their implementations Such modules have p35w9"
+          ]
+        },
+        {
+          "left": [
+            "that a module imposes on the rest p60w0",
+            "a module imposes on the rest of p60w1",
+            "module imposes on the rest of the p60w2",
+            "imposes on the rest of the system p60w3",
+            "on the rest of the system The p60w4",
+            "the rest of the system The best p60w5",
+            "rest of the system The best modules p60w6",
+            "of the system The best modules are p60w7",
+            "the system The best modules are those p60w8",
+            "system The best modules are those whose p60w9"
+          ],
+          "right": [
+            "the rest of the system The best p65w0",
+            "rest of the system The best modules p65w1",
+            "of the system The best modules are p65w2",
+            "the system The best modules are those p65w3",
+            "system The best modules are those whose p65w4",
+            "The best modules are those whose interfaces p65w5",
+            "best modules are those whose interfaces are p65w6",
+            "modules are those whose interfaces are much p65w7",
+            "are those whose interfaces are much simpler p65w8",
+            "those whose interfaces are much simpler than p65w9"
+          ]
+        }
+      ]
+    },
+    "running-head.pdf": {
+      "pages": 3,
+      "why": "identical head on every page \u2014 exercises furniture stripping",
+      "running_head": "A PHILOSOPHY OF SOFTWARE DESIGN",
+      "text": [
+        [
+          "whose interfaces are much simpler than their p40w0",
+          "interfaces are much simpler than their implementations p40w1",
+          "are much simpler than their implementations Such p40w2",
+          "much simpler than their implementations Such modules p40w3",
+          "simpler than their implementations Such modules have p40w4",
+          "than their implementations Such modules have two p40w5"
+        ],
+        [
+          "than their implementations Such modules have two p80w0",
+          "their implementations Such modules have two advantages p80w1",
+          "implementations Such modules have two advantages First p80w2",
+          "Such modules have two advantages First a p80w3",
+          "modules have two advantages First a simple p80w4",
+          "have two advantages First a simple interface p80w5"
+        ],
+        [
+          "have two advantages First a simple interface p120w0",
+          "two advantages First a simple interface minimizes p120w1",
+          "advantages First a simple interface minimizes the p120w2",
+          "First a simple interface minimizes the complexity p120w3",
+          "a simple interface minimizes the complexity that p120w4",
+          "simple interface minimizes the complexity that a p120w5"
+        ]
+      ]
+    },
+    "single-page.pdf": {
+      "pages": 1,
+      "why": "trailing form-feed off-by-one guard",
+      "text": [
+        [
+          "simple interface minimizes the complexity that a p90w0",
+          "interface minimizes the complexity that a module p90w1",
+          "minimizes the complexity that a module imposes p90w2",
+          "the complexity that a module imposes on p90w3",
+          "complexity that a module imposes on the p90w4"
+        ]
+      ]
+    }
+  },
+  "not_covered": [
+    "scanned raster pages (needs a real scan)",
+    "a broken text layer whose invisible text disagrees with the render",
+    "non-Latin scripts and mixed-language documents",
+    "real-world table and footnote layout complexity"
+  ]
+}

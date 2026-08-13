@@ -71,7 +71,6 @@ def build_context_bundle(cfg, requests, *, context_lines=3, max_window=40, requi
     return services.build_context_bundle(cfg, requests, context_lines=context_lines,
                                          max_window=max_window, require_stamp=require_stamp, today=today)
 
-
 def retrieve_evidence(cfg, card, question, *, full_text=False, context_lines=2, limit=5):
     """Retrieve citable raw passages from one card's source.
 
@@ -84,7 +83,7 @@ def retrieve_evidence(cfg, card, question, *, full_text=False, context_lines=2, 
     return services.retrieve_evidence(cfg, card, question, full_text=full_text,
                                       context_lines=context_lines, limit=limit)
 
-__version__ = "0.3.0"      # the single source of truth: pyproject reads this; mcp_server derives from it
+__version__ = "0.4.2"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
     "Config", "ConfigError",

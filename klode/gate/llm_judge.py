@@ -88,7 +88,10 @@ def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 payload = json.loads(r.read().decode())
-        except urllib.error.URLError as e:
+        except OSError as e:
+            # OSError, not just URLError: `urlopen` raises bare socket errors
+            # (ConnectionResetError, timeout) that URLError does not cover, and an uncaught one
+            # crashes the review with a traceback instead of the documented JudgeError.
             raise JudgeError(f"judge transport failed: {e}") from e
         try:
             return "".join(b.get("text", "") for b in payload["content"])

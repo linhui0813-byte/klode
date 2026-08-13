@@ -16,6 +16,296 @@ a **minor** bump may carry breaking changes.
 - **Honest terminal status** — an exhausted fallback returns `INSUFFICIENT_EVIDENCE` and explicitly
   says not to answer from recall. `EVIDENCE_FOUND` remains retrieval-only, never an entailment claim.
 
+## 0.4.2 — 2026-08-13
+
+Documentation only — no behaviour change. Cut as its own release because the thing it fixes is a
+discoverability defect in the previous one: the warning below did not exist in any tagged artifact.
+
+### Changed
+
+- **The upgrade warning is now in the release that carries the change.** `v0.4.1` shipped the
+  exit-code break, but documented it in the `0.4.0` section — and `0.4.0` was never tagged. Anyone
+  upgrading from `0.3.0` read the `0.4.1` notes and never saw the one change likely to turn their
+  CI red. A breaking change nobody can find is an undocumented breaking change. The `0.4.1` section
+  now opens with it, and the GitHub release notes lead with it, because that is where release notes
+  are actually read.
+- **Remote layout backends are documented as the recommended path**, not a convenience for
+  machines without a GPU. A remote conversion has a deadline that scales with the document; the
+  in-process backends have no wall-clock bound at all, which is the known limit this project
+  declined to close with an untestable worker process. Choosing the bounded path avoids the gap
+  rather than papering over it, and keeps the client dependency-free — which is the project's own
+  headline claim. Verified end to end on a machine with neither kreuzberg nor docling installed.
+
+## 0.4.1 — 2026-08-13
+
+> ### ⚠️ Upgrading from 0.3.0? Read the 0.4.0 section too.
+>
+> **0.4.0 was prepared but never published**, so `v0.4.1` is the first tag of this line and
+> carries *everything* since `v0.3.0` — including the change most likely to break you, which is
+> documented one section down rather than here:
+>
+> **Commands that could not do their work now exit 2 instead of 0.** If your CI runs `klode check`
+> on a machine without the corpus installed, it will now fail. That is deliberate: `klode check
+> --strict` used to print `OK: 0 errors` and exit 0 on a library whose citation-rot check never
+> ran, and a fresh clone has no corpus — so every anchor could have rotted while the build stayed
+> green. Pass `--allow-unmeasured` to accept the gap knowingly.
+>
+> The full table of moved exit codes, the card `file:` confinement, and the other breaking changes
+> are in [0.4.0](#040--2026-08-12).
+
+A second audit, of the code written to close the first one. 1,515 lines had been reviewed by
+nobody but their author; an independent pass plus an owner-proxy review of three deferred decisions
+returned 22 findings, five of which were rows the first audit had already marked `fixed`.
+
+### Breaking
+
+- **`klode review` verdict labels name the judge that actually ran.** The line was hardcoded to
+  "stub judge", which would have stayed wrong the moment a real one was wired. Anything parsing
+  that string must expect the judge's class name and a calibration reason.
+- **`--max` requires `--grep`, and defaults to `None` rather than 10.** An explicit `--max 10` was
+  indistinguishable from omission, so the dependency check could not tell "asked for and ignored"
+  from "not asked for".
+- **`--tier auto` refuses an extraction with too little text when no control corroborates it.**
+  With `pdftotext` failed, a single clean token became the chosen result and cleared the corruption
+  gate — a ratio scores one word exactly as it scores an empty string.
+
+### Added
+
+- **`klode review --live-judge`** — constructs the real `LLMJudge` from `[judge].model` and
+  `[judge].permutations`. Those settings were declared, labelled "not yet consumed", and inert; an
+  owner-proxy review ruled that a labelled dead setting is still dead. The flag exists because a
+  config file is consent to *choose* a model, not to *spend money*: `ANTHROPIC_API_KEY` is commonly
+  ambient for other tools, and this command advertises a stub. Without the flag klode makes no
+  network call whatever the settings say. With it, a model and a key are required and the cost —
+  `1 + permutations` calls per criterion — is printed before any call is made.
+- **`klode settings --lint`** — validates every value in the settings file, including ones an
+  override shadows. Resolution validates the winners; a shadowed broken value still goes live the
+  moment the override is removed, so both matter and neither should cost the other.
+- **`KLODE_ALLOW_INSECURE_HTTP`** — an explicit opt-in for plaintext endpoints a lexical rule
+  cannot classify. The private-host check is a heuristic, and it now says so rather than guessing.
+
+### Fixed
+
+- **The bake-off dropped the wrong backend when pairing.** It removed the tier with the fewest
+  total measurements, which is not the tier blocking the intersection: with A covering documents
+  1–3, B covering 1–4 and C covering 4–7, A and B are perfectly comparable and the ranking came
+  back empty. Selection is exhaustive now, and a test checks it against a brute-force oracle over
+  every coverage mask.
+- **Remote backends were still converted twice per document.** `_extract()` took the text and
+  `_structured_pages()` ran the backend again for page text, so the two could describe different
+  nondeterministic runs — `words` and `visual` describing different conversions. One invocation now
+  returns both.
+- **`--lang` reached one backend of four**, so a non-English scan was OCR'd as English while the
+  CLI and the changelog both said otherwise. It now reaches xberg, docling (remote and local) and
+  marker, asserted on the request body.
+- **Terminal sanitisation was applied per call site and had already missed one** — `verify` printed
+  raw source lines exactly as `zoom` had. The module now shadows `print`, so there is a single
+  boundary, with an AST guard against reaching around it. Writing that guard found the sanitiser
+  stripping newlines, which would have collapsed every multi-line message into one line.
+- **`--json kbs` exited 1 on a fresh install** while `klode kbs` exited 0. An empty catalog is a
+  successful answer; an empty search result is a miss. Both are empty lists, so the operation has
+  to say which.
+- **Four guards added in 0.4.0 refused legitimate input**: `http://docling:15001` (the ordinary
+  Docker deployment), an empty *optional* environment variable, a shadowed file value blocking
+  unrelated commands, and a single ordinary identifier such as `testIDs` in a short document.
+- The upload cap raced between `stat()` and `read_bytes()`; the `init` symlink guard covered three
+  managed paths of eight; the PDF header check allocated whole files to read five bytes; a
+  kreuzberg `TypeError` inside extraction was misdiagnosed as API incompatibility; an xberg
+  `ImportError` erased the reason `pdftotext` had failed.
+- **Conversion deadlines scale with the document.** A 222-page scanned book exceeded both fixed
+  timeouts, so it could not be ingested through a remote backend at all, while a 12-page paper
+  converts in under three seconds. One constant cannot serve both.
+
+### Known limit, stated rather than implied
+
+Local OCR (in-process kreuzberg and docling) has **no wall-clock bound**; `pdftotext` and the
+remote backends do. An `OCR_TIMEOUT` constant previously sat in the source wired to nothing, which
+reads as a guarantee. Bounding these needs a worker process — they are C/torch extensions that
+never return to the interpreter to notice a signal — and that re-imports torch in the child,
+roughly doubling docling's cost. It was built, and not shipped: neither backend is installed in the
+environment where it was written, so it could not be tested against the thing it wraps. Use a
+remote endpoint where a deadline matters.
+
+## 0.4.0 — 2026-08-12
+
+Extraction integrity: an ingest can now say whether the text it wrote actually represents the
+document, and refuse the shelf when it does not. Plus a settings file, and two remote layout
+backends reachable from it.
+
+### Breaking
+
+- 🔴 **Commands that could not do their work now exit 2 instead of 0.** This will turn a green CI
+  red, and that is the point: each of these previously certified something that had not happened.
+  **If your CI runs `klode check` on a machine without the corpus installed, it will now fail.**
+
+  | command | condition | was | now |
+  |---|---|---:|---:|
+  | `check` | corpus absent, or ANY card's source not installed | `OK`, 0 | `ABSTAINED`, 2 |
+  | `check --entail` | the entailment backend could not load | `OK`, 0 | `ABSTAINED`, 2 |
+  | `build` | nothing to build | 0 | 2 |
+  | `normalize --check` | no file matched, or files were unreadable | 0 | 2 |
+  | `zoom --level content` | the source is not installed | 0 | 2 |
+  | `eval/extract_bakeoff.py` | nothing could be ranked | 0 | 2 |
+
+  The convention is now uniform: **1 = measured and failed · 2 = could not measure · 0 = the work
+  happened.** Pass `--allow-unmeasured` to `check`, `build`, or `normalize` to accept a gap
+  knowingly — which is the difference between an accepted limitation and a silent one.
+
+  Why this is worth breaking: `klode check --strict` printed `OK: 0 errors` and exited 0 on a
+  library whose citation-rot check never ran. A fresh clone has no corpus (it is git-ignored), so
+  every anchor could have rotted and the build stayed green. CI reads exit codes, not notes.
+
+- 🔴 **A card's `file:` is confined to `<lib>/<shelf>/<name>.txt`.** It was confined only to the
+  library root, so a card could point at `library/.env`, `library.toml`, or `books/../.env` and
+  `zoom --grep` would print the matching lines. Cards travel — the registry exists so klode can be
+  pointed at someone else's knowledge base — so that field is untrusted input. Any card whose
+  source sits outside a configured shelf now reports "not installed" instead of being read.
+
+- **`normalize(stamp=...)` rejects anything but one safe path component.** `../../tmp/x` escaped
+  the backup root, where copies of a copyrighted corpus land.
+
+- **`klode init` replaces its managed `.gitignore` block rather than appending it once.** A new
+  shelf's copyrighted `.txt`/`.pdf` previously stayed unignored on re-init. Rules outside the
+  `# >>> klode managed` markers are preserved untouched.
+
+- **`klode ingest` refuses to promote a measured integrity FAILURE.** A candidate that drops,
+  duplicates, or scrambles material relative to the control raises `VerificationError` and writes
+  nothing — no shelf source, no provenance row. Override with `--accept-unverified`, which records
+  the finding as `unverified` rather than erasing it. Skip the check with `--no-verify`.
+- **`abstained` is not `verified`.** Verification has four states, and `Integrity.ok` is true only
+  for `verified`. Anything reading "no failure reported" as success is now wrong on purpose:
+  abstention means *could not measure*, and it is the honest answer for a document with no control,
+  too few anchors, or no rendering tools installed.
+- **Settings-backed CLI flags default to `None`, not to their value.** `--tier` no longer defaults
+  to `"auto"`, so `klode ingest x` and `klode ingest x --tier auto` produce different namespaces.
+  With a value default the argument level of the precedence chain silently swallowed environment,
+  file, and default. Anything inspecting `args.tier` must handle `None`.
+
+### Added
+
+- **Extraction integrity** — three independent measurements that fail differently: `containment`
+  (dropped material), `inflation` (duplication), and per-page rank correlation (reading order).
+  Order is measured **per page**, using real page boundaries when the control supplies them: a
+  whole-book correlation scores 300 pages with *every page internally reversed* at ρ = 0.999978,
+  which is invisible. Both numbers are reproduced in `tests/test_agreement.py`.
+- **Visual ground truth** (`klode.lib.visual`) — renders sampled pages with `pdftoppm`, reads them
+  with `tesseract`, and compares against the candidate. The only signal here not downstream of
+  another extractor. Sampled, so the seed and page numbers are recorded; both binaries optional,
+  and absent they abstain loudly.
+- **Page coverage** (`klode.lib.coverage`) — declared (`pdfinfo`) vs control (form feeds) vs
+  candidate (structured `prov[].page_no`). Candidate coverage is direct or `None`, never inferred.
+- **Provenance bound to the bytes written.** Every row carries `output_sha256` of the exact file,
+  the verdict, its metrics, and the thresholds that judged them, so a later recalibration can be
+  applied to records already written. Changing one byte orphans the record.
+- **`~/.klode/settings.toml`** — argument → environment → file → default, with the winning source
+  recorded and printed by `klode settings`. Unknown keys, wrong types, and out-of-domain values are
+  rejected loudly rather than ignored. Credentials are never settings: `ANTHROPIC_API_KEY` stays
+  environment-only, and a test enforces the ban.
+- **Remote layout backends.** `[ingest].docling_url` and `[ingest].marker_url` (or
+  `$KLODE_DOCLING_URL` / `$KLODE_MARKER_URL`) point at a `docling-serve` or `marker_server`
+  endpoint — the GPU runs server-side, so klode keeps zero runtime dependencies. `--tier marker`
+  joins `--tier docling`. **`marker` is not in the `auto` escalation ladder**; docling is, and has
+  now earned that place by measurement — median reading order 1.000 against pdftotext's 0.697 on
+  20 two-column papers (`eval/results/extract-bakeoff-2026-08-11.json`). marker failed 16 of those
+  20 documents on the deployment tested, so no paired basis to rank it exists. A backend earns a
+  ladder slot by measuring better than the one it would displace, and `eval/extract_bakeoff.py` is
+  what decides that.
+- **`eval/extract_bakeoff.py`** — ranks backends by fidelity to the *rendered page*. Anchor
+  resolution is reported as a migration statistic and never ranked on: it is biased toward whichever
+  backend authored the anchors and blind to reading order, and `tests/test_bakeoff.py` demonstrates
+  the ranking reversing when the anchors change origin.
+- **`klode settings --explain`** — describes every setting: what it does, its allowed values, its
+  environment variable, and its built-in default. Each `Spec` already carried that text and nothing
+  printed it, so a setting nobody could discover did not exist for them.
+- **A committed backend measurement** (`eval/results/extract-bakeoff-2026-08-11.json`) — 20 real
+  academic PDFs. docling keeps its tier-3 slot on reading order (median 1.000 vs pdftotext's 0.697
+  on two-column papers; recall is a tie). marker does not earn one: it failed 16 of 20 documents on
+  the deployment tested, so no paired basis to rank it exists.
+- **A labeled PDF corpus** (`tests/fixtures/pdfs/`) — hand-built, so ground truth is true by
+  construction rather than by another extractor's say-so, byte-reproducible from its generator, and
+  `GROUND-TRUTH.json` names what it does **not** cover.
+
+### Fixed
+
+- **A confident `verified` on unmeasured evidence**, in every form found: NaN metrics (which make
+  every threshold comparison false), order measured on only a minority of windows, an unknown
+  declared page count, and coverage that could not speak for the candidate. All now abstain.
+- **`order_median` was not a median** — a nearest-rank quantile returned one of the two middle
+  observations, reporting 1.0 for `[-1.0, 1.0]`. Same defect in the bake-off's `median_visual`.
+- **A one-page-in-ten reversal passed a median-only gate.** The worst window is now gated too.
+- **Non-ASCII text was discarded by the tokenizer**, so two unrelated CJK or Cyrillic documents
+  scored identical and verified.
+- **Ingest was not transactional in either direction.** Promoting before recording left a shelf
+  artifact when the provenance log was unwritable; recording before promoting left a row for an
+  artifact that never landed. Every fallible step now runs before either side is mutated.
+- **A predictable `<dest>.tmp` name** was followed through a planted symlink, truncating the target.
+- **The bake-off could crown a backend it had measured on half the corpus.** Failed
+  (document, tier) pairs were dropped from the report, so the denominator counted only successes
+  and a backend scored on 4 of 20 documents was printed as "scored 4/4" and ranked first. Ranking
+  is now a paired comparison over the documents the ranked backends share, and refuses rather than
+  ordering on an insufficient basis. This was caught on a real run, where it had ranked marker
+  first.
+- **`--resume` merged incompatible experiments** — it compared only seed and sample size, so adding
+  a tier or editing a PDF silently mixed old measurements with new. It now validates a manifest
+  (tiers, sample, seed, per-document content hashes, anchor hash) and refuses a mismatch, a missing
+  checkpoint, or a corrupt one, instead of silently restarting and overwriting the evidence.
+- **A one-word OCR result could displace a whole document.** It scores corruption 0.0 — there are
+  no corruption markers in one word to find — so it looked cleaner than 320 garbled words.
+  `corruption_score` is a ratio and cannot see loss, so candidates must also retain a share of the
+  incumbent's words.
+- **Endpoint URLs were validated by string prefix**, so `http://user:password@host` was accepted —
+  a credential in `settings.toml` and therefore in every backup. Endpoints are now parsed
+  structurally; userinfo, query, fragment, missing hosts, bad ports, and control characters are all
+  refused, on every source.
+- **The control was normalized page-at-a-time**, a different pipeline from the candidate's: a
+  running head repeated on six pages is stripped from a whole document and kept on every page in
+  isolation, so a faithful extraction lost containment.
+
+<!-- the remainder of the same audit, released together -->
+
+### Breaking
+
+- **`--tier auto` now REFUSES a result that meets none of auto's own criteria.** It was
+  returning `best` even when every tier failed the corruption threshold it judges by, and
+  verification then abstained (the control tier IS pdftotext), so garbage was promoted with no
+  check having run. Force a tier to accept such text deliberately.
+- **An explicitly empty `KLODE_*` variable is an error, not absence.** `FOO=$TYPO klode …` fell
+  through to the default while the operator believed the override was in force. Use `env -u`.
+- **Plaintext `http://` endpoints are allowed only to a private destination** (loopback, RFC1918,
+  tailnet 100.64/10, or a reserved name). klode uploads whole documents to them.
+- **`--json` on a command that does not implement it now exits 2** instead of printing prose,
+  which a machine consumer reads as valid output.
+- **`--limit`/`--max` reject values below 1**; `--apply` and `--check` are mutually exclusive;
+  `--grep`/`--max` are refused where they would be silently ignored; `--entail-model` and
+  `--entail-threshold` require `--entail`.
+
+### Fixed
+
+- **Terminal control sequences from corpus and card text** were printed verbatim, so a source line
+  could clear the reader's screen or set the window title. Prose output is sanitised; JSON is not,
+  because a machine consumer wants the real bytes.
+- **`init` wrote THROUGH a pre-existing symlink** at `library`, `library.toml`, or `.gitignore`.
+- **`_json_exit` inferred success from Python container types**, so `zoom --level full` on a card
+  with no Full section exited 0 under `--json` and 1 in prose.
+- **Prose `zoom --grep` bypassed the shared service**, skipping the stamped-source freshness and
+  ambiguity checks. A changed source is now reported as stale rather than as citation rot.
+- **An unknown settings key read as "unset"**, a missing explicit settings path read as "defaults",
+  an empty typo'd `[section]` was dropped, and file values were validated only when they won.
+- **The bake-off's median-of-medians** could hide a backend corrupting half its pages; the worst
+  document and the full distribution now survive aggregation. One global seed gave every
+  equal-length document identical page positions.
+- Marker page-id collisions, unvalidated nested response fields, an unbounded upload body, a
+  blanket `except Exception` around docling's OCR options, and `--lang` accepted by every extractor
+  and honoured by none — it now reaches xberg, docling (remote and local) and marker, so a
+  non-English scan is no longer silently OCR'd as English.
+
+### Testing
+
+Roughly thirty tests that asserted less than their names claimed: a denylist standing in for a
+zero-dependency check, a "real poppler integration" that converted any failure into a skip, a
+marker-not-in-`auto` gate implemented as a source-text search, a parity gate comparing only
+subcommand names, and assertions on echoed inputs rather than on what the code under test received.
+
 ## 0.3.0 — 2026-08-09
 
 The supervising gate (`klode.gate`) gets a real rubric artifact and a real judge. The engine

@@ -8,6 +8,19 @@ That guarantee is **referential, not semantic** — it proves the quoted text is
 current source, in exactly one place. It does *not* prove the quote supports the claim built on it.
 Green `klode check` means "no citation rot," never "this is true."
 
+A second, narrower limit sits beside it. `klode ingest` verifies an extraction against a control and
+against the rendered page, which catches dropped pages, duplicated blocks, and scrambled reading
+order — but **no signal detects a value transposition** that preserves the words, the length, and
+the order. A table extractor that swaps two cells produces this, and every check passes:
+
+```
+control:   Alice status approved   Bob status rejected
+candidate: Alice status rejected   Bob status approved
+```
+
+Both claims are inverted; containment, inflation, order, and coverage are all perfect. **A
+table-derived claim needs human verification.** Recorded rather than hoped away.
+
 Zero runtime dependencies — Python 3.11+, standard library only.
 
 ## The two loops
@@ -81,9 +94,41 @@ best when the query includes keywords in the source's language.
 
 `klode ingest` detects the format by content signature (not the extension) and converges every source
 on one clean-text pipeline: **PDF, EPUB, DOCX, HTML/XHTML, TXT**. EPUB/DOCX/HTML/TXT are pure stdlib;
-only PDF's OCR tiers are optional. For table-heavy or scanned PDFs, point `$KLODE_DOCLING_URL` at a
-[docling-serve](https://github.com/docling-project/docling-serve) endpoint (the GPU runs server-side —
-klode stays dependency-free) and pass `--tier docling`.
+only PDF's OCR tiers are optional.
+
+For table-heavy or multi-column PDFs, point klode at a
+[docling-serve](https://github.com/docling-project/docling-serve) endpoint — the GPU runs
+server-side, so klode stays dependency-free — and pass `--tier docling`:
+
+```toml
+# ~/.klode/settings.toml
+[ingest]
+docling_url = "http://<host>:15001"   # docling-serve
+marker_url  = "http://<host>:15002"   # marker_server, for --tier marker
+tier = "auto"                          # escalate only when the measured text layer is bad
+```
+
+**Prefer a remote endpoint over a local install.** A remote conversion has a deadline that scales
+with the document; the in-process backends have no wall-clock bound, so a pathological PDF can
+wedge a local ingest indefinitely. It also keeps this client dependency-free, which is the point of
+the project.
+
+`KLODE_DOCLING_URL` overrides the file, and `klode settings` prints every value with the source
+that won. The URL is topology, not a credential: **bind docling-serve to a private interface**, and
+do not rely on the URL being unguessable.
+
+[marker](https://github.com/datalab-to/marker) is supported the same way (`marker_url`, `--tier
+marker`) and is **remote-only** — it pulls torch and layout models, which klode does not depend on.
+It is deliberately *not* in the `auto` escalation ladder: a backend earns a ladder slot by
+measuring better than the one it would displace, not by being installed.
+
+Backends are chosen by measurement, never by intuition — `eval/extract_bakeoff.py` ranks them
+against the *rendered page* (`pdftoppm` + `tesseract`), the one signal not downstream of another
+extractor. The committed result over 20 two-column academic papers
+(`eval/results/extract-bakeoff-2026-08-11.json`): docling and `pdftotext` tie on recall (0.931 vs
+0.945), and docling wins decisively on **reading order** — median 1.000 against 0.697, better on 10
+documents of 17 and worse on 1. That is what earns it the tier-3 slot. marker failed 16 of the same
+20 documents on the deployment tested, so it has no paired basis to be ranked at all.
 
 ## Architecture
 
@@ -94,7 +139,7 @@ machine-readable operation table.
 
 ## Status
 
-`0.3.0` — beta. The engine (`klode.lib`) is solid: **600+ tests**, a stable public-API facade, an AST
+`0.4.2` — beta. The engine (`klode.lib`) is solid: **883 tests**, a stable public-API facade, an AST
 layering guard, a content-sniffing multi-format ingester, and an MCP server, all with zero runtime
 dependencies. `klode.gate` (Loop B) is now a fail-closed supervising gate — freshness/review-aware
 grounding (`verify_evidence`), a bounded evidence-context op (`verify_context`), a fail-closed

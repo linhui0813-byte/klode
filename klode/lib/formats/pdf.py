@@ -11,7 +11,6 @@ this module pulls in no backend."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -20,24 +19,70 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._base import Extraction
+from .. import coverage
+from ._base import Extraction, ExtractionError
 
 CLEAN_THRESHOLD = 5.0          # corruption/10k below which the text layer is trusted (empirical)
+MIN_CORRUPTION_MARKERS = 3
+"""Markers required before the RATE is believed as evidence of systematic corruption.
+
+The rate is per 10k words, so one marker in a document under 2000 words clears the threshold on its
+own — and `testIDs`, `sortBY`, or `fileIOhandler` are ordinary tokens, not OCR damage. The metric
+was calibrated on documents scoring 12-51 against clean ones scoring 0-4; those are MANY markers.
+Using a single hit to hard-refuse an extraction reads a ratio as a count."""
 MIN_WORDS = 200                # guard: an "empty but clean" extraction is not a win
-DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001 — keep it
-DOCLING_HTTP_TIMEOUT = 300          # on a trusted/private network + uncommitted. Env, not config.
+RETENTION_FLOOR = 0.5          # a candidate keeping <50% of the incumbent's words is a
+                               # fragment; corruption_score is a ratio and cannot see loss
+DOCLING_ENV = "KLODE_DOCLING_URL"    # a docling-serve endpoint, e.g. http://<host>:15001
+DOCLING_HTTP_TIMEOUT = 300     # floor; the real deadline scales with the document — see _deadline
+BYTES_PER_SECOND = 24_000      # observed floor for a layout backend on an image-heavy scan
+MAX_HTTP_TIMEOUT = 3 * 3600
 MAX_DOCLING_RESPONSE = 64 * 1024 * 1024   # cap the server response bytes read into memory (OOM guard)
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024      # cap the INPUT too: the body is read whole and then copied
+#                                           into a second full multipart buffer, so a hostile or
+#                                           merely huge PDF costs several times its size in RAM
+#                                           before the response guard can ever apply.
 _TILDE = re.compile(r"[A-Za-z]+~[A-Za-z]+")
 _MISCAP = re.compile(r"\b[a-z]{2,}[A-Z]{2}[a-z]*\b")
 
 
+def corruption_markers(text: str) -> int:
+    """How many corruption markers, absolutely — the count `corruption_score` divides away."""
+    return len(_TILDE.findall(text)) + len(_MISCAP.findall(text))
+
+
 def corruption_score(text: str) -> float:
-    """OCR-corruption markers per 10k words — tilde-in-word (`t~e`) + mid-word caps
-    (`mfonnafion`/`regulatIOn`). The signal that split clean sources from garbled ones."""
+    """OCR-corruption markers per 10k words — tilde-in-word (`t~e`) + mid-word caps (`regulatIOn`).
+    The signal that split clean sources from garbled ones.
+
+    NOTE the limit, because the docstring used to claim otherwise: `mfonnafion` is all lowercase
+    and `_MISCAP` requires an embedded capital run, so this metric does NOT catch it. Nothing here
+    detects a garbled word that happens to be correctly cased — that is `agreement.py`'s job, and
+    the reason a second signal exists at all."""
     w = len(text.split()) or 1
     return (len(_TILDE.findall(text)) + len(_MISCAP.findall(text))) / w * 10000
 
 
+DEFAULT_LANG = "eng"
+# Version ranges, because these adapters use specific APIs (kreuzberg's ExtractionConfig fields,
+# docling's PdfPipelineOptions). Telling users to install the unconstrained latest made the
+# optional environment irreproducible and able to break with no change in this repo.
+KREUZBERG_SPEC = "kreuzberg>=4.10,<5"
+DOCLING_SPEC = "docling>=2.0,<3"
+# ⚠️ KNOWN LIMIT, stated rather than implied. `pdftotext` is bounded (PDFTOTEXT_TIMEOUT) and the
+# remote backends are bounded per socket operation (urlopen timeout), but the LOCAL OCR backends —
+# in-process kreuzberg and docling — have no wall-clock deadline. A hostile or merely enormous PDF
+# can wedge a local ingest indefinitely.
+#
+# An `OCR_TIMEOUT` constant used to sit here, declared and wired to nothing, which is worse than
+# absent: it reads as a guarantee. Bounding these properly needs a worker process, because they are
+# C/torch extensions that never return to the interpreter to notice a signal — and a process per
+# extraction re-imports torch in the child, roughly doubling docling's cost, so it is a real design
+# decision rather than a patch. It is NOT shipped as an unverified guess: neither backend is
+# installed in this environment, so the wrapper could not be tested against the thing it wraps.
+#
+# Use a remote endpoint ([ingest].docling_url / marker_url) where a deadline matters; those are
+# bounded today.
 PDFTOTEXT_TIMEOUT = 120        # seconds — a hostile/wedged PDF must not hang ingestion forever
 
 
@@ -58,10 +103,111 @@ def _xberg(pdf: Path, lang: str = "eng") -> str:
     try:
         from kreuzberg import extract_file_sync, ExtractionConfig
     except ImportError as e:
-        raise ImportError("xberg/kreuzberg not installed — `pipx inject klode kreuzberg` "
-                          "(needs the tesseract binary too)") from e
-    r = extract_file_sync(str(pdf), config=ExtractionConfig(force_ocr=True))
-    return r.content or ""
+        raise ImportError(f"xberg/kreuzberg not installed — `pipx inject klode "
+                          f"'{KREUZBERG_SPEC}'` (needs the tesseract binary too)") from e
+    # `lang` was accepted here and by every other extractor and then used by NONE of them, while
+    # `--lang` documented itself as controlling Tier 2/3 OCR. A non-English scan was silently OCR'd
+    # as English. Passed through where the backend supports it; where it does not, the caller is
+    # told rather than left believing it took effect.
+    del extract_file_sync, ExtractionConfig       # imported here only to fail fast if absent
+    return _xberg_convert(str(pdf), lang)
+
+
+def _deadline(body_bytes: int, floor: float) -> float:
+    """A conversion deadline proportional to the document.
+
+    A FIXED timeout is wrong for a backend whose cost scales with page count. Measured: a 222-page
+    scanned book exceeded both the 300 s docling floor and the 900 s marker floor, so klode could
+    not ingest it at all through a remote backend — while a 12-page paper finished in under three
+    seconds. One constant cannot serve both, and raising it globally would leave a wedged request
+    hanging for hours on a small file.
+
+    Derived from bytes because that is what is available at this call site without another
+    subprocess; page count would be better and needs `pdfinfo`, which is not guaranteed present.
+    """
+    return min(MAX_HTTP_TIMEOUT, max(floor, body_bytes / BYTES_PER_SECOND))
+
+
+def _post_multipart_json(pdf: Path, url: str, fields: dict, timeout: float, cap: int) -> dict:
+    """One bounded multipart-JSON round trip, shared by both remote backends.
+
+    They had separate copies of: build the body, POST, bounded-read, size-check, decode, and
+    top-level type-check — and the copies had ALREADY drifted (one validated nested types, the
+    other did not; one stripped a trailing slash, the other did not). Backend-specific schema
+    parsing stays with each backend; only the transport is shared.
+    """
+    boundary = uuid.uuid4().hex
+    body = _multipart(fields, "files" if "to_formats" in fields else "file",
+                      pdf.name, _read_upload(pdf), boundary)
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=_deadline(len(body), timeout)) as resp:
+        raw = resp.read(cap + 1)                  # bounded read: never OOM on a huge response
+    if len(raw) > cap:
+        raise RuntimeError(f"{url}: response exceeds the {cap // 1048576} MB cap")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:     # JSONDecodeError is a ValueError
+        raise RuntimeError(f"{url}: unparseable response ({e})") from e
+    if not isinstance(data, dict):        # a valid but non-object body (e.g. `[]`) must degrade
+        raise RuntimeError(f"{url}: non-object JSON response")
+    return data
+
+
+def _xberg_convert(path: str, lang: str) -> str:
+    """The real xberg call. Runs IN THE CHILD, so the deadline can be enforced by killing it."""
+    from kreuzberg import extract_file_sync, ExtractionConfig
+    try:
+        cfg = ExtractionConfig(force_ocr=True, ocr_language=lang)
+    except TypeError:
+        # ONLY the configuration call: wrapping the extraction too misdiagnosed an internal backend
+        # TypeError as an API incompatibility, and re-ran the whole extraction for English.
+        if lang != DEFAULT_LANG:
+            raise RuntimeError(
+                f"the installed kreuzberg does not accept an OCR language, so --lang {lang!r} "
+                "would be silently ignored. Upgrade kreuzberg, or use --tier docling.")
+        cfg = ExtractionConfig(force_ocr=True)
+    return extract_file_sync(path, config=cfg).content or ""
+
+
+def _docling_convert(path: str, lang: str) -> str:
+    """The real local-docling call. Runs IN THE CHILD."""
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
+    from docling.datamodel.base_models import InputFormat
+    opts = PdfPipelineOptions()
+    opts.do_ocr = True
+    try:
+        opts.force_full_page_ocr = True
+        # match xberg's engine, skip docling's Chinese default, and honour --lang
+        opts.ocr_options = TesseractCliOcrOptions(lang=[lang])
+    except AttributeError as e:
+        raise RuntimeError(
+            f"docling is installed but does not accept the OCR options klode requires ({e}). Its "
+            "default OCR backend is a Chinese model and would produce nonsense on English text, "
+            "so klode refuses to run it unconfigured — upgrade docling, or use a docling-serve "
+            "endpoint via [ingest].docling_url.") from e
+    conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+    return conv.convert(path).document.export_to_markdown()
+
+
+_LOCAL_BACKENDS = {"xberg": _xberg_convert, "docling": _docling_convert}
+
+
+def _read_upload(pdf: Path) -> bytes:
+    """The PDF bytes, size-capped. Only the RESPONSE was bounded, while the request path read the
+    whole file and then built another complete copy of it as a multipart body."""
+    # ONE open, bounded read. `stat()` then `read_bytes()` is a race: a file (or symlink target)
+    # changed between them bypasses the cap entirely and forces an unbounded allocation.
+    try:
+        with open(pdf, "rb") as fh:
+            data = fh.read(MAX_UPLOAD_BYTES + 1)
+    except OSError as e:
+        raise RuntimeError(f"cannot read {pdf.name} ({e})") from e
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise RuntimeError(f"{pdf.name} exceeds the {MAX_UPLOAD_BYTES // 1048576} MB upload cap")
+    return data
 
 
 def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
@@ -71,8 +217,11 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
     safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
     parts: list[bytes] = []
     for k, v in fields.items():
-        parts += [f"--{boundary}".encode(),
-                  f'Content-Disposition: form-data; name="{k}"'.encode(), b"", str(v).encode()]
+        # a list value becomes a REPEATED field, which is how multipart encodes a list. Joining
+        # with a comma produced one value the server can reject as an invalid enum.
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            parts += [f"--{boundary}".encode(),
+                      f'Content-Disposition: form-data; name="{k}"'.encode(), b"", str(item).encode()]
     parts += [f"--{boundary}".encode(),
               f'Content-Disposition: form-data; name="{file_field}"; filename="{safe_name}"'.encode(),
               b"Content-Type: application/pdf", b"", file_bytes,
@@ -80,57 +229,286 @@ def _multipart(fields: dict, file_field: str, filename: str, file_bytes: bytes,
     return b"\r\n".join(parts)
 
 
-def _docling_remote(pdf: Path, endpoint: str) -> str:
+def docling_endpoint() -> str | None:
+    """The docling-serve endpoint, resolved through the normal settings chain: `KLODE_DOCLING_URL`
+    first, then `~/.klode/settings.toml`'s `[ingest].docling_url`, then absent.
+
+    ONE resolver, because three call sites each reading `os.environ` and each re-checking the
+    scheme is three places for the rule to drift — and one of them had already lost the
+    `rstrip("/")` the others had, so a trailing slash produced `…//v1/convert/file`. Scheme
+    validation lives in `settings._validate`, which applies it to every source rather than only to
+    the environment.
+
+    Returns None — not "" — when unconfigured, so callers can distinguish absent from empty.
+    """
+    from .. import settings
+    return (settings.resolve(None).value("ingest.docling_url") or "").rstrip("/") or None
+
+
+def _docling_remote(pdf: Path, endpoint: str,
+                    lang: str = DEFAULT_LANG) -> tuple[str, tuple[int, ...] | None]:
+    """`(markdown, pages)` — the escalation path's view. See `_docling_structured`."""
+    md, pages, _text = _docling_structured(pdf, endpoint, lang)
+    return md, pages
+
+
+def _docling_structured(pdf: Path, endpoint: str, lang: str = DEFAULT_LANG
+                        ) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
     """Convert via a docling-serve endpoint (the GPU lives on the server; klode stays zero-dep).
-    Returns the document's markdown. Network/HTTP failure raises OSError and a malformed/oversized
+    Returns `(markdown, pages, page_text)` where `pages` is the page numbers the structured result
+    claims to cover and `page_text` maps each page to its blocks' text — both None when the
+    response carries no provenance. Network/HTTP failure raises OSError and a malformed/oversized
     response raises RuntimeError, so the escalation loop degrades to the best local tier instead of
-    crashing."""
-    boundary = uuid.uuid4().hex
-    body = _multipart({"to_formats": "md", "do_table_structure": "true"},
-                      "files", pdf.name, pdf.read_bytes(), boundary)
-    req = urllib.request.Request(
-        f"{endpoint}/v1/convert/file", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=DOCLING_HTTP_TIMEOUT) as resp:
-        raw = resp.read(MAX_DOCLING_RESPONSE + 1)         # bounded read: never OOM on a huge response
-    if len(raw) > MAX_DOCLING_RESPONSE:
-        raise RuntimeError("docling-serve response exceeds the size cap")
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:         # JSONDecodeError is a ValueError
-        raise RuntimeError(f"docling-serve returned an unparseable response ({e})") from e
-    md = (data.get("document") or {}).get("md_content") or ""
+    crashing.
+
+    `json` is requested alongside `md` so candidate page coverage can be read DIRECTLY from
+    `prov[].page_no` rather than inferred from the control — the control cannot answer for the
+    candidate, and inferring it was a defect in an earlier design."""
+    # repeated field, not "md,json": docling models `to_formats` as a list of enum values, and a
+    # single comma-joined value can be rejected — in which case the JSON provenance never arrives
+    # and coverage silently degrades to "cannot say".
+    # `ocr_lang` is docling-serve's field. It was omitted entirely, so a non-English scan was
+    # OCR'd as English while `--lang` claimed to control exactly this.
+    data = _post_multipart_json(
+        pdf, f"{endpoint}/v1/convert/file",
+        {"to_formats": ["md", "json"], "do_table_structure": "true", "ocr_lang": lang},
+        DOCLING_HTTP_TIMEOUT, MAX_DOCLING_RESPONSE)
+    doc = data.get("document") or {}
+    if not isinstance(doc, dict):     # a truthy non-dict `document` reached .get and raised
+        raise RuntimeError("docling-serve returned a non-object `document`")
+    md = doc.get("md_content") or ""
+    if not isinstance(md, str):       # a non-string md_content raised AttributeError on .strip()
+        raise RuntimeError(f"docling-serve returned {type(md).__name__} markdown, expected a string")
     if not md.strip():
         raise RuntimeError("docling-serve returned no markdown")
-    return md
+    structured = doc.get("json_content")
+    if isinstance(structured, str):                       # some builds return it as a JSON string
+        try:
+            structured = json.loads(structured)
+        except ValueError:
+            structured = None
+    return (md, coverage.pages_from_docling(structured),
+            coverage.page_text_from_docling(structured))
+
+
+def _docling_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
+    """Markdown plus page provenance. `_docling` wraps this for the text-only extractor table."""
+    # Resolved ONCE and passed down. Resolving again inside `_docling` meant a settings-file or
+    # environment change between the two lookups could send the second call to a different place
+    # than the branch decision was made on — and the wrapper would then discard its provenance.
+    endpoint = docling_endpoint()
+    if endpoint:
+        return _docling_remote(pdf, endpoint, lang)
+    return _docling_local(pdf, lang), None   # local has a DoclingDocument but no export wired yet
+
+
+def structured_extract(pdf: Path, tier: str) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None, str]":
+    """`(text, pages, page_text, error)` from ONE backend invocation.
+
+    The harness previously called `_extract()` for the text and then `*_page_text()` for the page
+    text — two separate remote conversions of the same document. Beyond paying twice for the most
+    expensive step (marker is minutes per document), the two calls are independent nondeterministic
+    executions, so `words`/`containment` could describe a different conversion than `visual`. A
+    metric and the evidence explaining it must come from the same run.
+
+    Returns an error string rather than raising, because the caller reports which backends it could
+    not test rather than quietly testing fewer.
+    """
+    try:
+        if tier == "docling":
+            ep = docling_endpoint()
+            if ep:
+                md, pages, text = _docling_structured(pdf, ep)
+                return md, pages, text, ""
+            return _docling_local(pdf, DEFAULT_LANG), None, None, ""
+        if tier == "marker":
+            ep = marker_endpoint()
+            if not ep:
+                return _marker(pdf, DEFAULT_LANG), None, None, ""    # raises the config error
+            md, pages, text = _marker_structured(pdf, ep)
+            return md, pages, text, ""
+        fn = _EXTRACTORS.get(tier)
+        if fn is None:
+            return "", None, None, f"unknown tier {tier}"
+        return fn(pdf, DEFAULT_LANG), None, None, ""
+    except ImportError as e:
+        return "", None, None, f"not installed ({e})"
+    except (RuntimeError, OSError) as e:
+        return "", None, None, f"failed ({e})"
+
+
+def docling_page_text(pdf: Path) -> "dict[int, str] | None":
+    """Per-page candidate text from docling's structured result, or None when it cannot say.
+
+    Only the remote path can answer today: `_docling_remote` requests `json` alongside `md`, so the
+    per-block `prov[].page_no` is available. The local `DocumentConverter` path has a
+    `DoclingDocument` in hand but no export wired, and inventing page text from markdown would be
+    exactly the inference this module refuses to make.
+    """
+    endpoint = docling_endpoint()
+    if not endpoint:
+        return None
+    return _docling_structured(pdf, endpoint)[2]
 
 
 def _docling(pdf: Path, lang: str = "eng") -> str:
-    endpoint = os.environ.get(DOCLING_ENV)
+    """Markdown only — the escalation loop compares text and nothing else."""
+    endpoint = docling_endpoint()
     if endpoint:                                          # remote docling-serve (GPU lives server-side)
-        endpoint = endpoint.rstrip("/")
-        if not endpoint.startswith(("http://", "https://")):
-            raise RuntimeError(f"{DOCLING_ENV} must be an http(s) URL, got {endpoint!r}")
-        return _docling_remote(pdf, endpoint)
+        return _docling_remote(pdf, endpoint, lang)[0]
+    return _docling_local(pdf, lang)
+
+
+def _docling_local(pdf: Path, lang: str = "eng") -> str:
+    """The in-process backend. Split out so the endpoint is resolved exactly once, by the caller."""
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
         from docling.datamodel.base_models import InputFormat
     except ImportError as e:
-        raise ImportError("docling not installed — set $KLODE_DOCLING_URL to a docling-serve "
-                          "endpoint, or `pipx inject klode docling` (heavy: torch + models).") from e
+        raise ImportError(f"docling not installed — set $KLODE_DOCLING_URL to a docling-serve "
+                          f"endpoint, or `pipx inject klode '{DOCLING_SPEC}'` "
+                          "(heavy: torch + models).") from e
     opts = PdfPipelineOptions()
     opts.do_ocr = True
+    tess_lang = lang
     try:
         opts.force_full_page_ocr = True
-        opts.ocr_options = TesseractCliOcrOptions()      # match xberg's engine; skip the Chinese default
-    except Exception:
-        pass
-    conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
-    return conv.convert(str(pdf)).document.export_to_markdown()
+        # match xberg's engine, skip docling's Chinese default, and honour --lang: it was accepted
+        # here and ignored, so a non-English scan was OCR'd as English
+        opts.ocr_options = TesseractCliOcrOptions(lang=[tess_lang])
+    except AttributeError as e:
+        # ONLY the documented compatibility case: an older docling without these fields. A blanket
+        # `except Exception: pass` also swallowed a missing tesseract binary, an invalid option, and
+        # any programming error here — every one of which silently changes which OCR engine runs,
+        # and docling's default is a Chinese model that produces nonsense on English.
+        raise RuntimeError(
+            f"docling is installed but does not accept the OCR options klode requires ({e}). "
+            "Its default OCR backend is a Chinese model and would produce nonsense on English "
+            "text, so klode refuses to run it unconfigured — upgrade docling, or use a "
+            "docling-serve endpoint via [ingest].docling_url.") from e
+    del DocumentConverter, PdfFormatOption, PdfPipelineOptions, TesseractCliOcrOptions, InputFormat
+    del opts, tess_lang
+    return _docling_convert(str(pdf), lang)
 
 
-_EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling}
+# --------------------------------------------------------------------------- marker
+#
+# marker is REMOTE-ONLY here, and deliberately NOT in the `auto` escalation ladder. A backend earns
+# a ladder slot by measuring better than the one it would displace (`eval/extract_bakeoff.py`) —
+# the same rule that kept BM25 out of retrieval until an eval set existed. Until that measurement
+# says otherwise, `--tier marker` runs it on request and the bake-off ranks it; nothing escalates
+# to it on its own.
+
+MARKER_ENV = "KLODE_MARKER_URL"          # a `marker_server` endpoint, e.g. http://<host>:15002
+MARKER_HTTP_TIMEOUT = 900                # marker is minutes-per-document on a large PDF, not seconds
+MAX_MARKER_RESPONSE = 64 * 1024 * 1024
+# `{N}` then a rule, emitted by `paginate_output=true`. 0-INDEXED, and it precedes each page.
+_MARKER_PAGE_RE = re.compile(r"^\{(\d+)\}-{8,}$", re.M)
+
+
+def marker_endpoint() -> str | None:
+    """The marker_server endpoint, resolved through the settings chain. See `docling_endpoint`."""
+    from .. import settings
+    return (settings.resolve(None).value("ingest.marker_url") or "").rstrip("/") or None
+
+
+def _marker_mode() -> str:
+    from .. import settings
+    return settings.resolve(None).value("ingest.marker_mode")
+
+
+def split_marker_pages(md: str, page_ids: "list[int] | None" = None) -> "dict[int, str] | None":
+    """Per-page text from marker's paginated markdown, 1-indexed, or None when it cannot say.
+
+    marker emits `{N}` + a rule BEFORE each page, with N **0-indexed**; klode counts pages from 1
+    everywhere else, so the offset is corrected here rather than at each call site.
+
+    `page_ids` is marker's own `metadata.page_stats[].page_id` — an INDEPENDENT statement of which
+    pages it produced. When the two disagree, this returns None. Reconciling them would mean
+    picking a winner between two sources that just contradicted each other, which is a guess; the
+    caller's honest answer is "cannot say" and coverage already distinguishes that from "complete".
+    """
+    hits = list(_MARKER_PAGE_RE.finditer(md))
+    if not hits:
+        return None                       # not paginated — never infer boundaries from headings
+    out: dict[int, str] = {}
+    for i, m in enumerate(hits):
+        stop = hits[i + 1].start() if i + 1 < len(hits) else len(md)
+        page = int(m.group(1)) + 1
+        if page in out:
+            # two separators claiming the same page: the later silently overwrote the earlier, and
+            # a contradictory pagination was then reported as valid provenance
+            return None
+        out[page] = md[m.end():stop].strip()
+    if page_ids is not None and sorted(out) != sorted(n + 1 for n in page_ids):
+        return None                       # marker's two accounts of its own output disagree
+    return out or None
+
+
+def _marker_structured(pdf: Path, endpoint: str, lang: str = DEFAULT_LANG
+                       ) -> "tuple[str, tuple[int, ...] | None, dict[int, str] | None]":
+    """`(markdown, pages, page_text)` from a `marker_server` endpoint.
+
+    `paginate_output` is always requested: without it marker returns one undivided markdown blob,
+    the visual check cannot align a page, and the backend becomes unrankable — the exact hole that
+    made docling unscorable on every document until its structured result was read.
+    """
+    data = _post_multipart_json(
+        pdf, f"{endpoint}/marker/upload",
+        {"paginate_output": "true", "output_format": "markdown", "mode": _marker_mode(),
+         "langs": lang},
+        MARKER_HTTP_TIMEOUT, MAX_MARKER_RESPONSE)
+    if not data.get("success"):
+        # marker reports failure with HTTP 200 and `success: false`. Reading only the status code
+        # would take an error payload for a document.
+        raise RuntimeError(f"marker_server failed: {str(data.get('error'))[:200]}")
+    md = data.get("output") or ""
+    if not isinstance(md, str):
+        raise RuntimeError(f"marker_server returned {type(md).__name__} output, expected a string")
+    if not md.strip():
+        raise RuntimeError("marker_server returned no text")
+    meta = data.get("metadata") or {}
+    if not isinstance(meta, dict):    # a truthy non-dict metadata raised AttributeError on .get
+        raise RuntimeError("marker_server returned a non-object `metadata`")
+    stats = meta.get("page_stats") or []
+    if not isinstance(stats, list):
+        raise RuntimeError("marker_server returned a non-list `page_stats`")
+    ids = [s["page_id"] for s in stats
+           if isinstance(s, dict) and isinstance(s.get("page_id"), int)] or None
+    text = split_marker_pages(md, ids)
+    return md, (tuple(sorted(text)) if text else None), text
+
+
+def marker_page_text(pdf: Path) -> "dict[int, str] | None":
+    endpoint = marker_endpoint()
+    return _marker_structured(pdf, endpoint)[2] if endpoint else None
+
+
+def _marker(pdf: Path, lang: str = "eng") -> str:
+    endpoint = marker_endpoint()
+    if not endpoint:
+        raise ImportError(
+            f"marker not configured — set ${MARKER_ENV} (or [ingest].marker_url in "
+            "~/.klode/settings.toml) to a `marker_server` endpoint. There is no local path: "
+            "marker pulls torch + layout models, which klode does not depend on.")
+    return _marker_structured(pdf, endpoint, lang)[0]
+
+
+def _marker_with_pages(pdf: Path, lang: str = "eng") -> tuple[str, "tuple[int, ...] | None"]:
+    endpoint = marker_endpoint()
+    if not endpoint:
+        return _marker(pdf, lang), None          # raises the configuration error above
+    md, pages, _text = _marker_structured(pdf, endpoint, lang)
+    return md, pages
+
+
+_EXTRACTORS = {"pdftotext": _pdftotext, "xberg": _xberg, "docling": _docling,
+               "marker": _marker}
+_PAGE_AWARE = {"docling": _docling_with_pages, "marker": _marker_with_pages}
+"""Backends that can report which pages they represent. One table, so a forced tier cannot
+silently take the text-only extractor and discard the provenance."""
+# `marker` is selectable and rankable but NOT in the `auto` ladder — see the marker section above.
 
 
 @dataclass
@@ -139,53 +517,142 @@ class Choice:
     text: str
     score: float
     note: str = ""
+    pages: "tuple[int, ...] | None" = None
+    """Page provenance from a structured backend, or None when it cannot say.
+
+    Carried on the result rather than in a module-global keyed by path: that global raced when the
+    same path was ingested concurrently (one call could consume another's provenance) and leaked
+    entries whenever docling ran during `auto` but lost."""
 
 
-def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
-    """Pick a tier. Forced tiers run as asked; `auto` uses the cheap path unless its measured
-    corruption says otherwise, then escalates pdftotext -> xberg -> docling, taking the best."""
-    if tier != "auto":
-        fn = _EXTRACTORS.get(tier)
-        if fn is None:
-            raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
-        text = fn(pdf, lang)
-        return Choice(tier, text, corruption_score(text))
+def _forced(pdf: Path, tier: str, lang: str) -> Choice:
+    """A tier the caller named. Returns whatever it produced — no quality refusal, because only
+    `auto` claims to have chosen on quality."""
+    fn = _EXTRACTORS.get(tier)
+    if fn is None:
+        raise ValueError(f"unknown tier {tier!r}; choose one of {', '.join(_EXTRACTORS)}")
+    if tier in _PAGE_AWARE:
+        # both carry page provenance; taking the text-only extractor would discard it
+        text, pages = _PAGE_AWARE[tier](pdf, lang)
+        return Choice(tier, text, corruption_score(text), pages=pages)
+    text = fn(pdf, lang)
+    return Choice(tier, text, corruption_score(text))
 
-    def _better(cur: Choice, name: str, text: str, note: str) -> Choice:
-        # never replace usable text with an EMPTY/short OCR result (an empty result scores 0 and
-        # would otherwise look "clean"); otherwise prefer strictly-lower corruption.
-        if not text.split():
-            return cur
-        score = corruption_score(text)
-        if not cur.text.split() or score <= cur.score:
-            return Choice(name, text, score, note)
+
+def _better(cur: Choice, name: str, text: str, note: str, pages=None) -> Choice:
+    """Replace the incumbent only on evidence.
+
+    Two guards, because `corruption_score` cannot supply either on its own:
+
+    - RETENTION. The comment said it rejected "EMPTY/short" output and the code tested only EMPTY,
+      so a one-word OCR result — which scores 0.0, there being no corruption markers in one word to
+      find — displaced hundreds of words and suppressed further escalation. `corruption_score` is a
+      RATIO over the words present and structurally cannot see loss. The floor is relative to the
+      incumbent, not an absolute count: gating on MIN_WORDS too rejected a clean 120-word recovery
+      of a corrupted 120-word document, which is a fact about the document, not the extraction.
+    - STRICTLY LOWER. `<=` let an equally-scored backend displace the incumbent for no measured
+      reason, and repeated ties walked the ladder to its last rung.
+    """
+    words, cur_words = len(text.split()), len(cur.text.split())
+    if not words:
         return cur
+    if cur_words and words < cur_words * RETENTION_FLOOR:
+        return cur                                        # a fragment, not an improvement
+    score = corruption_score(text)
+    if not cur_words or score < cur.score:
+        return Choice(name, text, score, note, pages=pages)
+    return cur
 
-    # Tier 1 — pdftotext (cheap). A missing/failing Poppler is an escalation reason, not an abort.
+
+def _tier1(pdf: Path, lang: str) -> tuple[Choice, bool]:
+    """(candidate, done). A missing or failing Poppler is an escalation reason, not an abort."""
     try:
         t1 = _pdftotext(pdf, lang)
         s1 = corruption_score(t1)
         if s1 < CLEAN_THRESHOLD and len(t1.split()) >= MIN_WORDS:
-            return Choice("pdftotext", t1, s1, "text layer clean")
-        best = Choice("pdftotext", t1, s1, f"pdftotext scored {s1:.1f}")
+            return Choice("pdftotext", t1, s1, "text layer clean"), True
+        return Choice("pdftotext", t1, s1, f"pdftotext scored {s1:.1f}"), False
     except (RuntimeError, OSError) as e:
-        best = Choice("pdftotext", "", float("inf"), f"pdftotext failed ({e})")
+        return Choice("pdftotext", "", float("inf"), f"pdftotext failed ({e})"), False
 
-    try:                                                  # Tier 2 — OCR
-        best = _better(best, "xberg", _xberg(pdf, lang), f"escalated: pdftotext scored {best.score:.1f}")
+
+def _escalate(best: Choice, pdf: Path, lang: str) -> Choice:
+    """Tier 2 then, only if still unusable, Tier 3. Backend absence is a note, never a crash."""
+    try:
+        best = _better(best, "xberg", _xberg(pdf, lang),
+                       f"escalated: pdftotext scored {best.score:.1f}")
     except ImportError as e:
-        best = Choice(best.tier, best.text, best.score, f"WANTED OCR but {e}")
+        # append, do not replace: if pdftotext failed first, its reason vanished from the final
+        # error message, which is the one the user reads
+        best = Choice(best.tier, best.text, best.score,
+                      f"{best.note}; WANTED OCR but {e}", pages=best.pages)
     except (RuntimeError, OSError) as e:                  # backend runtime failure, not a bug
-        best = Choice(best.tier, best.text, best.score, f"{best.note}; xberg failed ({e})")
+        best = Choice(best.tier, best.text, best.score,
+                      f"{best.note}; xberg failed ({e})", pages=best.pages)
 
-    if not best.text.split() or best.score >= CLEAN_THRESHOLD:   # still unusable — Tier 3
-        try:
-            best = _better(best, "docling", _docling(pdf, lang),
-                           f"escalated to docling: prior scored {best.score:.1f}")
-        except (ImportError, RuntimeError, OSError) as e:
-            best = Choice(best.tier, best.text, best.score, f"{best.note}; docling absent ({e})")
+    if best.text.split() and best.score < CLEAN_THRESHOLD:
+        return best
+    try:
+        # `_docling_with_pages`, not `_docling`: the auto path used the text-only extractor, so an
+        # auto-escalated docling win arrived with `pages=None` even when the backend had supplied
+        # per-block provenance — and coverage then abstained on evidence it had.
+        md, pages = _docling_with_pages(pdf, lang)
+        return _better(best, "docling", md,
+                       f"escalated to docling: prior scored {best.score:.1f}", pages=pages)
+    except (ImportError, RuntimeError, OSError) as e:
+        return Choice(best.tier, best.text, best.score,
+                      f"{best.note}; docling absent ({e})", pages=best.pages)
+
+
+def choose_and_extract(pdf: Path, tier: str = "auto", lang: str = "eng") -> Choice:
+    """Pick a tier. Forced tiers run as asked; `auto` uses the cheap path unless its measured
+    corruption says otherwise, then escalates pdftotext -> xberg -> docling, taking the best.
+
+    Split into `_forced` / `_tier1` / `_escalate` / `_better` because the single 94-line version
+    interleaved dispatch, scoring, orchestration and error translation — and the inconsistency that
+    produced (a usability check applied on one path and not the other) is exactly where the
+    one-word-fragment defect lived.
+    """
+    if tier != "auto":
+        return _forced(pdf, tier, lang)
+    best, done = _tier1(pdf, lang)
+    if done:
+        return best
+    _tier1_text = best.text          # kept: it is the only corroboration a short result can have
+    best = _escalate(best, pdf, lang)
+
+    # `auto` used to return `best` even when EVERY tier failed the criteria `auto` itself judges
+    # by. A 15-word extraction scoring 6667 was handed back as the chosen result, and verification
+    # then ABSTAINED — the control tier IS pdftotext, so there is nothing to compare against — and
+    # the garbage was promoted with no check having run. Gated on CORRUPTION only: MIN_WORDS
+    # belongs to the tier-1 fast path and cannot mean "this document is too short to be real".
+    words = len(best.text.split())
+    # Two independent conditions, because `corruption_score` is a RATIO and a short clean-looking
+    # result scores 0.0 for the same reason an empty one does — there are no markers to find.
+    #
+    #   corruption  — the text is garbled
+    #   substance   — there is not enough of it to have measured anything
+    #
+    # The substance floor applies ONLY when no control corroborates the result. `_better`'s
+    # retention rule is relative to an incumbent, so with pdftotext failed (`cur_words == 0`) a
+    # single clean token became `best` and cleared the corruption gate. A short document extracted
+    # by a WORKING control is still fine — that case has corroboration and is not refused.
+    corroborated = bool(_tier1_text and len(_tier1_text.split()) >= words * RETENTION_FLOOR)
+    # BOTH the rate and the count: one ordinary identifier in a short document clears the rate by
+    # itself, and refusing a correct extraction over a single `testIDs` is the same over-correction
+    # the MIN_WORDS gate already made once.
+    garbled = (best.score >= CLEAN_THRESHOLD
+               and corruption_markers(best.text) >= MIN_CORRUPTION_MARKERS)
+    if not words or garbled or (words < MIN_WORDS and not corroborated):
+        why = ("garbled" if garbled
+               else "empty" if not words else "too little text, and no control to corroborate it")
+        raise ExtractionError(
+            f"{pdf.name}: no extraction tier reached usable quality — {why} "
+            f"(best: {best.tier}, {words} words, corruption {best.score:.1f}, "
+            f"needs < {CLEAN_THRESHOLD}). {best.note}. "
+            f"Install an OCR tier, point --tier at a remote backend, or force "
+            f"`--tier {best.tier}` to accept this text deliberately.")
     return best
-
 
 class PdfHandler:
     name = "pdf"
@@ -197,4 +664,4 @@ class PdfHandler:
 
     def extract(self, path: Path, *, lang: str = "eng", tier: str = "auto") -> Extraction:
         c = choose_and_extract(path, tier, lang)
-        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note)
+        return Extraction(text=c.text, handler=c.tier, format="pdf", note=c.note, pages=c.pages)

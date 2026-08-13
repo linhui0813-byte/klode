@@ -48,6 +48,65 @@ class Parity(unittest.TestCase):
         rogue_cli = _cli_subcommands() | {"rogue_verb"}
         self.assertNotEqual(rogue_cli, {s.cli for s in opspec.ops() if s.cli})
 
+class ProseAndJsonAgreeOnOutCOMES(unittest.TestCase):
+    """Name parity is not behaviour parity.
+
+    The registry check compares subcommand names against MCP tool names, so it still passed with
+    routing through `services.execute` deleted, or with prose and JSON disagreeing completely about
+    what a given request means. Both divergences that an audit found — `--json search ""`
+    succeeding where prose failed, and `--limit 0` differing between surfaces — were invisible to
+    it. These drive both renderers over the same inputs and compare the EXIT CODES, which is the
+    part a caller actually branches on.
+    """
+
+    CASES = [
+        (["search", ""], "an empty query"),
+        (["search", "definitely-no-such-term-xyz"], "a query with no hits"),
+        (["zoom", "nosuchcard", "--level", "meta"], "a missing card"),
+        (["zoom", "brevity", "--level", "meta"], "an ordinary hit"),
+        (["zoom", "brevity", "--level", "content", "--grep", "no-such-phrase-xyz"], "a failed grep"),
+    ]
+
+    def setUp(self):
+        import shutil, tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="klode-parity-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        kb = self.tmp / "kb"
+        shutil.copytree(REPO / "tests" / "fixtures" / "kb-fixture", kb)
+        self.cfg = str(kb / "library.toml")
+
+    def _rc(self, argv):
+        import contextlib, io
+        from klode.lib.cli import main
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            try:
+                return main(["-c", self.cfg] + argv)
+            except SystemExit as e:
+                return e.code if isinstance(e.code, int) else 2
+
+    def test_both_surfaces_agree_on_the_exit_code(self):
+        for argv, label in self.CASES:
+            with self.subTest(label):
+                self.assertEqual(self._rc(argv), self._rc(["--json"] + argv),
+                                 f"prose and JSON disagree on {label}")
+
+    def test_json_output_is_parseable_wherever_it_is_offered(self):
+        import contextlib, io, json as _json
+        from klode.lib.cli import main, JSON_COMMANDS
+        for argv, label in self.CASES:
+            if argv[0] not in JSON_COMMANDS:
+                continue
+            with self.subTest(label):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                    try:
+                        main(["-c", self.cfg, "--json"] + argv)
+                    except SystemExit:
+                        continue
+                out = buf.getvalue().strip()
+                if out:
+                    _json.loads(out)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,65 @@
+{
+  "schema": "klode.extract-bakeoff.result/v1",
+  "date": "2026-08-11",
+  "corpus": {
+    "description": "20 born-digital academic PDFs, mostly two-column journal articles",
+    "documents": [
+      "blasi-2016-sound-meaning-association-biases.pdf",
+      "brysbaert-2014-concreteness-ratings.pdf",
+      "busselle-bilandzic-2009-narrative-engagement.pdf",
+      "geanakoplos-1989-game-theory-without-partitions.pdf",
+      "hasson-2008-neurocinematics.pdf",
+      "itti-baldi-2009-bayesian-surprise.pdf",
+      "johnson-hashtroudi-lindsay-1993-source-monitoring.pdf",
+      "kahneman-tversky-1979-prospect-theory.pdf",
+      "loewenstein-1994-psychology-of-curiosity.pdf",
+      "lynott-2020-lancaster-sensorimotor-norms.pdf",
+      "mckoon-ratcliff-1992-inference-during-reading.pdf",
+      "modica-rustichini-1999-unawareness-partitional.pdf",
+      "shain-2024-logarithmic-predictability.pdf",
+      "tilmatine-ludtke-jacobs-2024-predicting-reader-response.pdf",
+      "tsur-aspects-of-cognitive-poetics.pdf",
+      "wilmot-2026-shadow-loom-NEAR-TWIN.pdf",
+      "winter-2023-iconicity-ratings.pdf",
+      "xie-riedl-2024-creating-suspenseful-stories.pdf",
+      "zwaan-2025-words-to-worlds.pdf",
+      "zwaan-radvansky-1998-situation-models.pdf"
+    ],
+    "note": "the PDFs themselves are copyrighted and are NOT in this repo; only metrics are"
+  },
+  "harness": {
+    "sample_pages_per_pdf": 3,
+    "seed": 1618,
+    "ranking_signal": "median per-page OCR recall vs the rendered page (visual.py)"
+  },
+  "caveat": "visual_order is measured against tesseract's own reading order, which is unreliable on complex layouts. It is trustworthy for GROSS differences and not for fine ranking. The pdftotext-vs-docling order gap below is gross (0.52-0.70 vs 0.96-1.00) and consistent in direction across 10 of 17 documents, which is why it is reported as a result; both backends are scored against the SAME reference per page, so a scrambled reference would penalise both.",
+  "results": {
+    "pdftotext": {
+      "documents_attempted": 20,
+      "documents_scored": 20,
+      "median_visual_recall": 0.9453124600540963,
+      "median_visual_order": 0.6966892168921689,
+      "paired_with": "docling, over all 20 documents"
+    },
+    "docling": {
+      "documents_attempted": 20,
+      "documents_scored": 20,
+      "median_visual_recall": 0.9305849887941944,
+      "median_visual_order": 0.9999941587647735,
+      "paired_with": "pdftotext, over all 20 documents"
+    },
+    "marker": {
+      "documents_attempted": 20,
+      "documents_scored": 4,
+      "median_visual_recall": 0.9620085435164234,
+      "median_visual_order": 1.0,
+      "paired_with": null
+    }
+  },
+  "verdict": {
+    "docling_keeps_its_ladder_slot": true,
+    "docling_rationale": "reading order on two-column papers: median 1.000 vs pdftotext 0.697, clearly better on 10/17 and worse on 1/17. Recall is a tie (0.931 vs 0.945), so the slot is earned on ORDER, which is what tier 3 is for. Two documents where pdftotext scored 0.000 recall and docling 0.978/0.945 are the escalation case working.",
+    "marker_earns_a_ladder_slot": false,
+    "marker_rationale": "failed 16 of 20 documents on this deployment (vllm inference server would not start), so there is no paired basis to rank it. On the 4 it completed it is indistinguishable from docling. The failure is deployment-specific rather than intrinsic to marker, but the ladder must work on the machine it runs on, so that does not rescue it. marker stays selectable via --tier marker and out of `auto`."
+  }
+}
