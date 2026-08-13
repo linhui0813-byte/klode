@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _rubric                                                             # noqa: E402
 from klode import lib                                                      # noqa: E402
 from klode.gate import review_draft, rubric_identity, load_spec            # noqa: E402
-from klode.gate.llm_judge import (Calibration, JudgeError, LLMJudge,       # noqa: E402
+from klode.gate.llm_judge import (FORM_PROMPT, PROMPT_VERSION, STEPS_PROMPT,   # noqa: E402
+                                  Calibration, JudgeError, LLMJudge,
                                   anthropic_transport)
 
 FIX = REPO / "tests" / "fixtures" / "kb-fixture" / "library.toml"
@@ -163,7 +164,8 @@ class CalibrationGate(unittest.TestCase):
         self.assertFalse(v.calibrated)
 
     def test_a_calibration_on_this_rubric_that_clears_the_bar_sets_it(self):
-        cal = Calibration(rubric_digest=self.digest, n=24, agreement=0.71)
+        cal = Calibration(rubric_digest=self.digest, n=24, agreement=0.71,
+                          model="m", permutations=2, prompt_version=PROMPT_VERSION)
         self.assertTrue(cal.clears())
         v = review_draft(self.cfg, "d", "pacing", self._judge(cal))
         self.assertTrue(v.calibrated)
@@ -171,9 +173,10 @@ class CalibrationGate(unittest.TestCase):
     def test_a_calibration_measured_on_a_DIFFERENT_rubric_does_not_transfer(self):
         # rewording a level descriptor makes a different instrument; an agreement number from the
         # old one says nothing about the new one
-        cal = Calibration(rubric_digest="0" * 64, n=50, agreement=0.95)
+        cal = Calibration(rubric_digest="0" * 64, n=50, agreement=0.95,
+                          model="m", permutations=2, prompt_version=PROMPT_VERSION)
         self.assertTrue(cal.clears())
-        self.assertFalse(cal.covers(self.digest))
+        self.assertFalse(cal.covers(self.digest, model="m", permutations=2))
         v = review_draft(self.cfg, "d", "pacing", self._judge(cal))
         self.assertFalse(v.calibrated)
 
@@ -187,13 +190,80 @@ class CalibrationGate(unittest.TestCase):
         self.assertFalse(j.calibrated)
         self.assertFalse(j.calibrated_for(self.digest))
         # the only lever is supplying a measurement
-        j.calibration = Calibration(self.digest, n=20, agreement=0.6)
+        j.calibration = Calibration(self.digest, n=20, agreement=0.6, model="m",
+                                    permutations=2, prompt_version=PROMPT_VERSION)
         self.assertTrue(j.calibrated_for(self.digest))
 
     def test_the_stub_judge_is_never_calibrated(self):
         from klode.gate import FixtureJudge
         v = review_draft(self.cfg, "d", "pacing", FixtureJudge({}, default_fraction=1.0))
         self.assertFalse(v.calibrated)
+
+    # --- the instrument is BOTH halves: the rubric AND the judge that reads it -------------
+    def _cal(self, **kw):
+        base = dict(rubric_digest=self.digest, n=30, agreement=0.8, model="m",
+                    permutations=2, prompt_version=PROMPT_VERSION)
+        base.update(kw)
+        return Calibration(**base)
+
+    def test_a_calibration_does_not_transfer_to_a_DIFFERENT_MODEL(self):
+        """Self-enhancement bias is why `model` has no default. Measuring agreement through one
+        model and inheriting it for another discards the reason that rule exists."""
+        cal = self._cal(model="measured-model")
+        j = LLMJudge(Recorder([]), model="a-different-model", permutations=2, calibration=cal)
+        self.assertTrue(cal.clears())
+        self.assertFalse(j.calibrated_for(self.digest))
+
+    def test_a_calibration_does_not_transfer_ACROSS_PERMUTATION_POLICIES(self):
+        """permutations=1 runs one forward order and cancels no position bias at all. An agreement
+        number measured at 2 describes a different instrument."""
+        cal = self._cal(permutations=2)
+        for perms in (1, 4):
+            with self.subTest(permutations=perms):
+                j = LLMJudge(Recorder([]), model="m", permutations=perms, calibration=cal)
+                self.assertFalse(j.calibrated_for(self.digest))
+
+    def test_a_calibration_does_not_survive_a_PROMPT_CHANGE(self):
+        cal = self._cal(prompt_version="0")
+        j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=cal)
+        self.assertFalse(j.calibrated_for(self.digest))
+
+    def test_a_record_from_before_the_instrument_was_pinned_fails_closed(self):
+        """An existing record still constructs — and claims nothing, because None matches no live
+        judge. Losing a claim is the correct migration; keeping an unmeasured one is the defect."""
+        legacy = Calibration(self.digest, n=30, agreement=0.8)
+        self.assertTrue(legacy.clears())
+        j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=legacy)
+        self.assertFalse(j.calibrated_for(self.digest))
+
+    def test_the_matching_instrument_still_clears(self):
+        """The whole point is that a real measurement still counts."""
+        j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=self._cal())
+        self.assertTrue(j.calibrated_for(self.digest))
+
+
+class ThePromptsAreTheInstrument(unittest.TestCase):
+    """The tripwire behind PROMPT_VERSION. The prompts ARE the judge: reword one and it answers
+    differently, so a stored calibration stops describing it. Nothing in a dataclass can notice
+    that, so the check has to live here — edit a prompt without bumping the constant and this
+    fails, rather than the calibration silently outliving the instrument it measured."""
+
+    DIGESTS = {
+        "1": ("9a078b2864de662a", "steps+form prompts as of PROMPT_VERSION 1"),
+    }
+
+    def test_a_prompt_edit_requires_a_version_bump(self):
+        import hashlib
+        actual = hashlib.sha256((STEPS_PROMPT + "\x00" + FORM_PROMPT).encode()).hexdigest()[:16]
+        known = self.DIGESTS.get(PROMPT_VERSION)
+        self.assertIsNotNone(
+            known, f"PROMPT_VERSION is {PROMPT_VERSION!r} but no digest is recorded for it — add "
+                   f"one: {actual!r}")
+        self.assertEqual(
+            actual, known[0],
+            "STEPS_PROMPT/FORM_PROMPT changed without bumping PROMPT_VERSION. Every stored "
+            "Calibration was measured through the OLD wording and no longer describes this judge. "
+            f"Bump PROMPT_VERSION and record the new digest {actual!r}.")
 
 
 class ReviewServiceHonesty(unittest.TestCase):
@@ -208,7 +278,9 @@ class ReviewServiceHonesty(unittest.TestCase):
         self.assertTrue(stub.value.non_production)          # no calibration -> not authoritative
 
         judge = LLMJudge(Recorder(["steps"] + ['{"score":5,"note":"n"}'] * 40), model="m",
-                         calibration=Calibration(digest, n=30, agreement=0.8))
+                         calibration=Calibration(digest, n=30, agreement=0.8, model="m",
+                                                 permutations=2,
+                                                 prompt_version=PROMPT_VERSION))
         real = services.execute(pool, "review",
                                 params={"draft": "d", "dimension": "pacing", "judge": judge})
         self.assertFalse(real.value.non_production)         # measured -> may be presented as such

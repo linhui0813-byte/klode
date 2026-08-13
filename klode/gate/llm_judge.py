@@ -48,25 +48,57 @@ class JudgeError(RuntimeError):
     invents a score when the model failed is worse than one that abstains."""
 
 
+# Bumped whenever STEPS_PROMPT or FORM_PROMPT changes. Those prompts ARE the instrument: reword
+# one and the judge answers differently, so an agreement number measured through the old wording
+# does not describe the new one. `tests/test_llm_judge.py` pins the prompts to this constant, so a
+# prompt edit that forgets to bump it fails there rather than silently inheriting a calibration.
+PROMPT_VERSION = "1"
+
+
 @dataclass(frozen=True)
 class Calibration:
-    """Measured agreement between this judge and human raters, on ONE rubric.
+    """Measured agreement between this judge and human raters, on ONE rubric, through ONE judge.
 
     Not a claim — a record. `rubric_digest` is `spec.rubric_identity(spec)` of the rubric the
     measurement was taken against; `agreement` is quadratic-weighted kappa against human scores,
-    the same statistic `eval/rate.py` reports for two humans."""
+    the same statistic `eval/rate.py` reports for two humans.
+
+    The instrument is BOTH halves. This class pinned only the rubric, on the reasoning that
+    rewording a level descriptor produces a different instrument — which is true, and equally true
+    of the judge doing the reading. A record measured with one model at `permutations=2` returned
+    `covers() -> True` for a different model running undebiased at `permutations=1`, and
+    `calibrated` is the single bit the review service uses to drop `non_production`. So `model`,
+    `permutations` and `prompt_version` are part of the identity now.
+
+    They default to None so an existing record still constructs — and then fails closed, since None
+    matches no live judge. A stored calibration that stops claiming coverage is the correct
+    migration; one that keeps claiming it for an unmeasured instrument is the defect.
+    """
     rubric_digest: str
     n: int                       # human-scored drafts the agreement was measured over
     agreement: float             # QWK vs human
     bar: float = 0.6
     min_n: int = 20
     measured_on: str = ""        # ISO date; provenance, not logic
+    model: str | None = None            # the judge model the agreement was measured through
+    permutations: int | None = None     # the debiasing policy in force during measurement
+    prompt_version: str | None = None   # PROMPT_VERSION at measurement time
 
     def clears(self) -> bool:
         return self.n >= self.min_n and self.agreement >= self.bar
 
-    def covers(self, rubric_digest: str) -> bool:
-        return self.clears() and rubric_digest == self.rubric_digest
+    def covers(self, rubric_digest: str, *, model: str | None = None,
+               permutations: int | None = None) -> bool:
+        """True only when this record was measured on THIS rubric, through THIS judge.
+
+        A missing field on either side means "not measured for that", so it fails closed rather
+        than matching by omission."""
+        if not (self.clears() and rubric_digest == self.rubric_digest):
+            return False
+        if self.prompt_version != PROMPT_VERSION:
+            return False
+        return (self.model is not None and self.model == model
+                and self.permutations is not None and self.permutations == permutations)
 
 
 def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
@@ -182,8 +214,10 @@ class LLMJudge:
         return bool(self.calibration and self.calibration.clears())
 
     def calibrated_for(self, rubric_digest: str) -> bool:
-        """True only when the calibration was measured on THIS rubric and cleared its bar."""
-        return bool(self.calibration and self.calibration.covers(rubric_digest))
+        """True only when the calibration was measured on THIS rubric, through THIS judge —
+        same model, same permutation policy, same prompt version — and cleared its bar."""
+        return bool(self.calibration and self.calibration.covers(
+            rubric_digest, model=self.model, permutations=self._permutations))
 
     # -- scoring -----------------------------------------------------------
     def steps_for(self, item) -> str:
