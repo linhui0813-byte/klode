@@ -12,8 +12,9 @@ plus a note. Steps are derived once per criterion and reused.
 **Balanced permutation.** Each criterion is scored more than once with the level descriptors
 presented in a different order, and the results averaged. Position bias is the most severe defect in
 rubric-judge studies: the same draft scores differently depending on where a band sits in the list.
-Averaging over reversed orders cancels the first-order effect. It does not cancel every bias, which
-is why the third thing exists.
+Averaging over reversed orders cancels the first-order effect — CONDITIONALLY, on the two orders
+being presented equally often, which is why `permutations` must be 1 or even and an odd count is
+refused. It does not cancel every bias, which is why the third thing exists.
 
 **Calibration gating — the part that matters.** A judge that has not been measured against human
 scores on THIS rubric cannot report an authoritative verdict. `calibrated_for()` answers for one
@@ -190,10 +191,25 @@ reward or penalize anything the criterion does not mention. Output ONLY a JSON o
 class LLMJudge:
     """A `Judge` that asks a model, twice per criterion, in opposed level orders."""
 
+    # `1` (one forward pass, explicitly undebiased and cheap) or an EVEN count. `reverse=bool(i%2)`
+    # splits an odd count unevenly — at 3 it is two forward runs and one reversed — so the mean
+    # keeps a share of the position bias the averaging exists to cancel, at 1.5x the API cost. The
+    # trap is that 3 looks more thorough than 2 and is strictly less debiased.
+    VALID_PERMUTATIONS = (1,) + tuple(range(2, 17, 2))
+
     def __init__(self, transport, *, model: str = "", permutations: int = 2,
                  calibration: "Calibration | None" = None):
-        if permutations < 1:
-            raise ValueError(f"permutations must be >= 1, got {permutations}")
+        # `permutations < 1` was the whole guard, and `True < 1` is False — so `permutations=True`
+        # constructed and silently ran ONE forward pass, and `2.0` got as far as `range()` before
+        # failing with a TypeError from somewhere unrelated-looking.
+        if isinstance(permutations, bool) or not isinstance(permutations, int):
+            raise ValueError(f"permutations must be an integer, got {permutations!r}")
+        if permutations not in self.VALID_PERMUTATIONS:
+            raise ValueError(
+                f"permutations must be 1 (one forward pass, explicitly undebiased) or an even "
+                f"number up to 16 — got {permutations}. An odd count above 1 presents one order "
+                f"more often than the other, so it retains the position bias the average exists "
+                f"to cancel while costing more than the even count below it.")
         if not model or not model.strip():
             # There is no default model ON PURPOSE (self-enhancement bias: the judge must differ
             # from whatever produced the draft), but "no default" is only meaningful if the empty

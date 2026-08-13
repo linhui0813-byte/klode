@@ -81,8 +81,11 @@ SPEC: tuple[Spec, ...] = (
          "default on purpose (self-enhancement bias: it must differ from whatever produced the "
          "draft)"),
     Spec("judge", "permutations", "KLODE_JUDGE_PERMUTATIONS", 2, int,
-         "how many opposed level orders to average over, against position bias. Each costs an API "
-         "call under --live-judge: 1 + permutations per criterion", lo=1, hi=16),
+         "how many opposed level orders to average over, against position bias. 1 (one forward "
+         "pass, explicitly undebiased) or an even number to 16 — an odd count presents one order "
+         "more often and keeps the bias the average exists to cancel. Each costs an API call "
+         "under --live-judge: 1 + permutations per criterion",
+         choices=(1, 2, 4, 6, 8, 10, 12, 14, 16)),
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
          "Go/Recycle threshold, 0..100 — the mean criterion percentage a draft must reach",
          lo=0, hi=100),

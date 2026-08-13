@@ -242,6 +242,65 @@ class CalibrationGate(unittest.TestCase):
         self.assertTrue(j.calibrated_for(self.digest))
 
 
+class PermutationsMustActuallyBalance(unittest.TestCase):
+    """`reverse=bool(i % 2)` splits an odd count unevenly. At 3 that is two forward runs and one
+    reversed, so the mean keeps a share of the position bias the averaging exists to cancel — at
+    1.5x the API cost of the even count below it. The trap is that 3 reads as more thorough than 2
+    and is strictly less debiased."""
+
+    def _orders(self, permutations):
+        t = Recorder(["steps"] + ['{"score":3,"note":"n"}'] * 20)
+        LLMJudge(t, model="m", permutations=permutations).score("d", [Item()])
+        forms = [p for p in t.prompts if "Score one draft" in p]
+        out = []
+        for f in forms:
+            block = f[f.index("BEHAVIORAL LEVELS"):]
+            out.append("forward" if block.index("band 0") < block.index("band 5") else "reversed")
+        return out
+
+    def test_every_permitted_count_above_one_is_balanced(self):
+        for p in LLMJudge.VALID_PERMUTATIONS:
+            if p == 1:
+                continue
+            with self.subTest(permutations=p):
+                orders = self._orders(p)
+                self.assertEqual(orders.count("forward"), orders.count("reversed"),
+                                 f"permutations={p} presents {orders.count('forward')} forward "
+                                 f"and {orders.count('reversed')} reversed")
+
+    def test_one_is_permitted_and_is_a_single_forward_pass(self):
+        """Kept legal on purpose — it is the cheap, explicitly undebiased mode — but it must be
+        honest about being one pass rather than pretending to cancel anything."""
+        self.assertEqual(self._orders(1), ["forward"])
+
+    def test_an_odd_count_above_one_is_refused(self):
+        for bad in (3, 5, 15):
+            with self.subTest(permutations=bad):
+                with self.assertRaises(ValueError) as cm:
+                    LLMJudge(Recorder([]), model="m", permutations=bad)
+                self.assertIn("even", str(cm.exception))
+
+    def test_a_bool_does_not_slip_through_as_one(self):
+        """`permutations < 1` was the entire guard, and `True < 1` is False — so `True` constructed
+        and silently ran one forward pass while looking like a configuration mistake nobody saw."""
+        with self.assertRaises(ValueError) as cm:
+            LLMJudge(Recorder([]), model="m", permutations=True)
+        self.assertIn("integer", str(cm.exception))
+
+    def test_a_float_fails_at_the_constructor_not_inside_range(self):
+        with self.assertRaises(ValueError):
+            LLMJudge(Recorder([]), model="m", permutations=2.0)
+
+    def test_a_value_above_the_settings_cap_is_refused_here_too(self):
+        """The constructor and the settings domain have to agree, or whichever is looser is the
+        real policy and the other one is decoration."""
+        from klode.lib import settings
+        spec = next(s for s in settings.SPEC if s.key == "permutations")
+        self.assertEqual(tuple(spec.choices), LLMJudge.VALID_PERMUTATIONS)
+        with self.assertRaises(ValueError):
+            LLMJudge(Recorder([]), model="m", permutations=17)
+
+
 class ThePromptsAreTheInstrument(unittest.TestCase):
     """The tripwire behind PROMPT_VERSION. The prompts ARE the judge: reword one and it answers
     differently, so a stored calibration stops describing it. Nothing in a dataclass can notice
