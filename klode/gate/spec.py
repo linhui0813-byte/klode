@@ -467,8 +467,9 @@ def parse(doc: dict, *, path: Path | None = None) -> CriterionSpec:
         actual = content_digest(doc)
         if stated != actual:
             raise SpecError("spec: the rubric has been EDITED since it was approved "
-                            f"(approved {stated[:12]}…, now {actual[:12]}…) — re-read it and "
-                            "re-approve with `python3 -m klode.gate approve`")
+                            f"(approved {stated[:12]}…, now {actual[:12]}…) — re-read the change, "
+                            "then re-approve with `python3 -m klode.gate -c <library.toml> "
+                            f"approve {doc.get('dimension', '<dimension>')}`")
 
     return CriterionSpec(dimension, tuple(panel), criteria, admission,
                          _freeze(fingerprint), path)
