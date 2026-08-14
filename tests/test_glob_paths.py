@@ -231,6 +231,26 @@ class TheEnumeratorTripwire(unittest.TestCase):
         self.assertFalse(any("enumeration missed" in e for e in r.errors),
                          f"tripwire false-fired on a hidden file; errors were {r.errors}")
 
+    def test_it_covers_the_frameworks_and_syntheses_layers_too(self):
+        """The frameworks and syntheses loops had no guard of their own — `glob` turns a
+        directory-read error into `[]`, and neither loop records an error or `unmeasured`, so an
+        entire enabled citation layer could be skipped in silence. A tripwire protecting one of
+        three enumerators is the same defect with better odds."""
+        from unittest import mock
+        (self.cfg.frameworks / "vega.md").write_text(
+            "# Vega\n\n**Dimension:** Pacing\n\n### 1. Engine\n\nx\n", encoding="utf-8")
+        self.assertTrue(check.check(self.cfg).ok, "fixture should be clean before blinding")
+        real = check.glob_in
+
+        def blind(d, *parts):
+            return [] if str(d).endswith("frameworks") else real(d, *parts)
+
+        with mock.patch("klode.lib.check.glob_in", side_effect=blind):
+            r = check.check(self.cfg)
+        self.assertTrue(any("framework enumeration missed" in e for e in r.errors),
+                        f"a blinded frameworks layer went unreported; errors were {r.errors}")
+        self.assertFalse(r.ok)
+
     def test_it_does_not_fire_on_a_genuinely_empty_directory(self):
         for p in self.cfg.cards.glob("*"):
             p.unlink()

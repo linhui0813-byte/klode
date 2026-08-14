@@ -108,11 +108,24 @@ class Config:
     @classmethod
     def find(cls, start: Path | str | None = None) -> Path:
         """Walk up from `start` (default: cwd) to the nearest `library.toml`."""
-        here = _as_path(start, "start") or Path.cwd()
+        here = _as_path(start, "start")
+        if here is None:
+            try:
+                here = _as_path(Path.cwd(), "the current directory")
+            except OSError as e:
+                # A deleted or unreadable cwd is exactly when someone is debugging something else;
+                # `FileNotFoundError` from inside a config loader is not the clue they need.
+                raise ConfigError(f"cannot determine the current directory ({e}) — pass an "
+                                  f"explicit path to {CONFIG_NAME}") from e
         for d in (here, *here.parents):
             cand = d / CONFIG_NAME
             if cand.is_file():
-                return cand
+                # RESOLVED, because `load` resolves an explicitly-passed path and the two must
+                # agree. When I moved that `.resolve()` into `_as_path` it stopped covering the
+                # discovered path, so a `library.toml` that is itself a SYMLINK anchored every
+                # relative setting at the link's directory when found and at the target's when
+                # named — the same file, two different trees, depending how you opened it.
+                return _as_path(cand, "discovered config")
         raise ConfigError(
             f"no {CONFIG_NAME} found in {here} or any parent — run `klode init` to scaffold one"
         )
@@ -143,7 +156,7 @@ class Config:
 
         lib_section = _table("library")
         lib_dirname = str(lib_section.get("dir", "library"))
-        lib = (root / lib_dirname).resolve()
+        lib = _as_path(root / lib_dirname, "[library].dir")
         try:
             lib_rel = lib.relative_to(root).as_posix()
         except ValueError:
@@ -151,7 +164,7 @@ class Config:
                 f"[library].dir ({lib_dirname!r}) must be inside the config directory {root}"
             )
 
-        cards = (lib / str(lib_section.get("cards", "cards"))).resolve()
+        cards = _as_path(lib / str(lib_section.get("cards", "cards")), "[library].cards")
 
         raw_shelves = lib_section.get("shelves", [])
         if raw_shelves and not isinstance(raw_shelves, list):
@@ -172,11 +185,13 @@ class Config:
 
         bib_section = _table("bibliography")
         bib_enabled = bool(bib_section.get("enabled", True))
-        bib = (lib / str(bib_section.get("path", "BIBLIOGRAPHY.md"))).resolve() if bib_enabled else None
+        bib = (_as_path(lib / str(bib_section.get("path", "BIBLIOGRAPHY.md")),
+                        "[bibliography].path") if bib_enabled else None)
 
         fw_section = _table("frameworks")
         fw_enabled = bool(fw_section.get("enabled", False))
-        frameworks = (lib / str(fw_section.get("dir", "frameworks"))).resolve() if fw_enabled else None
+        frameworks = (_as_path(lib / str(fw_section.get("dir", "frameworks")),
+                               "[frameworks].dir") if fw_enabled else None)
         syntheses = (
             (frameworks / str(fw_section.get("syntheses", "_syntheses"))).resolve()
             if fw_enabled and frameworks else None
@@ -258,7 +273,7 @@ class Config:
 
         nz = _table("normalize")
         backup_raw = str(nz.get("backup_dir", "") or "").strip()
-        backup_dir = (root / backup_raw).resolve() if backup_raw else None
+        backup_dir = _as_path(root / backup_raw, "[normalize].backup_dir") if backup_raw else None
         try:
             backup_keep = int(nz.get("backup_keep", 3))
         except (TypeError, ValueError):

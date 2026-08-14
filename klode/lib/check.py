@@ -76,29 +76,39 @@ def _check_enumerator_agrees_with_disk(cfg: Config, r: Report) -> None:
     and `README.md` genuinely has no cards and must not fire. An unreadable directory is reported
     as its own error rather than raised: this is a linter, and it does not get to crash.
     """
-    if not cfg.cards.is_dir():
-        return
-    try:
-        # The SAME rules `card_files` applies, or the comparison is between two different
-        # questions: `*.md`, not a dotfile (glob excludes those), and not the generated board.
-        on_disk = {e.name for e in os.scandir(cfg.cards)
-                   if e.is_file() and e.name.endswith(".md")
-                   and not e.name.startswith(".") and e.name not in NON_CARDS}
-    except OSError as e:
-        r.errors.append(f"[A] cannot read the cards directory {cfg.cards}: {e}")
-        return
-    enumerated = {os.path.basename(p) for p in card_files(cfg)}
-    missed = on_disk - enumerated
-    if missed:
-        # Compared as SETS, not counts. A zero-vs-nonzero test caught the total failure that
-        # prompted it and nothing else: enumerate one card of two and the run reported ok=True,
-        # errors=[], unmeasured=[] while never reading the card it skipped. Partial blindness is
-        # the more dangerous shape, because the number on screen looks plausible.
-        r.errors.append(
-            f"[A] card enumeration missed {len(missed)} file(s) present in {cfg.cards} "
-            f"({', '.join(sorted(missed)[:3])}{'…' if len(missed) > 3 else ''}) — the enumerator "
-            "disagrees with the directory, so those citations were NOT checked. This is a bug in "
-            "klode, not an empty library.")
+    def _sweep(label: str, directory, enumerated: set[str], exclude: tuple = ()) -> None:
+        if directory is None or not directory.is_dir():
+            return
+        try:
+            # The SAME rules the enumerator applies, or the comparison is between two different
+            # questions: `*.md`, not a dotfile (glob excludes those), minus any generated files.
+            on_disk = {e.name for e in os.scandir(directory)
+                       if e.is_file() and e.name.endswith(".md")
+                       and not e.name.startswith(".") and e.name not in exclude}
+        except OSError as e:
+            r.errors.append(f"[A] cannot read the {label} directory {directory}: {e}")
+            return
+        missed = on_disk - enumerated
+        if missed:
+            # Compared as SETS, not counts. A zero-vs-nonzero test caught the total failure that
+            # prompted it and nothing else: enumerate one card of two and the run reported
+            # ok=True, errors=[], unmeasured=[] while never reading the one it skipped. Partial
+            # blindness is the worse shape, because the number on screen looks plausible.
+            r.errors.append(
+                f"[A] {label} enumeration missed {len(missed)} file(s) present in {directory} "
+                f"({', '.join(sorted(missed)[:3])}{'…' if len(missed) > 3 else ''}) — the "
+                "enumerator disagrees with the directory, so those citations were NOT checked. "
+                "This is a bug in klode, not an empty library.")
+
+    _sweep("card", cfg.cards, {os.path.basename(p) for p in card_files(cfg)}, NON_CARDS)
+    if cfg.fw_enabled:
+        # The frameworks and syntheses loops had no guard of their own: `glob` turns a
+        # directory-read error into `[]`, and those loops record neither an error nor
+        # `unmeasured`, so an entire enabled citation layer could be skipped in silence. The
+        # cards tripwire did not cover them; a guard that protects one of three enumerators is
+        # the same defect with better odds.
+        for label, d in (("framework", cfg.frameworks), ("synthesis", cfg.syntheses)):
+            _sweep(label, d, {os.path.basename(p) for p in glob_in(d, "*.md")} if d else set())
 
 
 def check(cfg: Config, *, strict: bool = False, entail=None, entail_threshold: float = 0.5,

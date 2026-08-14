@@ -72,6 +72,44 @@ class EveryPathParameterAcceptsAString(unittest.TestCase):
         self.assertEqual(Config.load(str(self.FIX / "library.toml")).config_path,
                          Config.load(self.FIX / "library.toml").config_path)
 
+    def test_a_symlinked_config_anchors_the_same_way_however_it_is_opened(self):
+        """Moving `.resolve()` into the coercion helper stopped it covering the DISCOVERED path,
+        so a `library.toml` that is itself a symlink anchored every relative setting at the link's
+        directory when found and at the target's when named — one file, two trees."""
+        import os
+        from klode.lib import Config
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        real = base / "real"
+        (real / "library" / "books").mkdir(parents=True)
+        (real / "library" / "cards").mkdir(parents=True)
+        (real / "library.toml").write_text(
+            '[library]\nid = "t"\ndir = "library"\nshelves = ["books"]\n', encoding="utf-8")
+        alt = base / "alt"
+        (alt / "library" / "books").mkdir(parents=True)
+        (alt / "library" / "cards").mkdir(parents=True)
+        os.symlink(real / "library.toml", alt / "library.toml")
+        self.assertEqual(Config.load(start=alt).root, Config.load(alt / "library.toml").root)
+
+    def test_an_unavailable_cwd_is_a_ConfigError(self):
+        from unittest import mock
+        from klode.lib import Config
+        from klode.lib.config import ConfigError
+        with mock.patch("pathlib.Path.cwd", side_effect=FileNotFoundError("deleted cwd")):
+            for fn in (Config.find, Config.load):
+                with self.subTest(fn=fn.__name__), self.assertRaises(ConfigError):
+                    fn()
+
+    def test_a_toml_derived_path_also_fails_as_a_ConfigError(self):
+        from klode.lib import Config
+        from klode.lib.config import ConfigError
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "library.toml").write_text(
+            '[library]\nid = "t"\ndir = "li\\u0000b"\nshelves = ["books"]\n', encoding="utf-8")
+        with self.assertRaises(ConfigError):
+            Config.load(tmp / "library.toml")
+
     def test_an_unusable_path_is_a_ConfigError_not_a_stray_builtin(self):
         from klode.lib import Config
         from klode.lib.config import ConfigError
