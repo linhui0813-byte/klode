@@ -209,6 +209,17 @@ class Config:
             guard_relpaths = tuple((lib / g).resolve().relative_to(root).as_posix() for g in guard)
         except ValueError as e:
             raise ConfigError(f"a guard dir resolves outside the library root: {e}")
+        # Validate the value git will ACTUALLY receive. Checking the raw shelf names left the
+        # composed path unguarded: `[library].dir = "--format="` with an ordinary shelf produced
+        # the pathspec `--format=/books`, which `git ls-files` accepts as an option and which
+        # hides every tracked file. Whatever assembles a pathspec, the pathspec is what must not
+        # look like a flag.
+        for rel in guard_relpaths:
+            if rel.startswith("-"):
+                raise ConfigError(
+                    f"the copyright guard would pass {rel!r} to git as a path, where a leading "
+                    "dash reads as a flag — rename [library].dir or the shelf so the composed "
+                    "path does not begin with '-'")
 
         # identity — self-describing KB metadata, all optional and backward-compatible.
         # A config with no [library].id still loads: id falls back to a slug of the dir name.

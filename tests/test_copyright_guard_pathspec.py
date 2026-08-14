@@ -13,6 +13,7 @@ accepts a shelf that can look like a flag.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,18 @@ class ATrackedCorpusFileIsAlwaysReported(_Repo):
         with self.assertRaises(ConfigError) as cm:
             self._kb("--others", dirname="")
         self.assertIn("must not begin with", str(cm.exception))
+
+    def test_a_composed_pathspec_that_looks_like_a_flag_is_refused(self):
+        """The first guard checked raw shelf NAMES, which left the composed path unguarded:
+        `[library].dir = "--format="` with an ordinary shelf produced the pathspec
+        `--format=/books`, which git accepts as an option and which hides every tracked file.
+        Whatever assembles it, the pathspec is what must not look like a flag."""
+        (self.tmp / "--format=" / "books").mkdir(parents=True)
+        (self.tmp / "library.toml").write_text(
+            '[library]\nid = "t"\ndir = "--format="\nshelves = ["books"]\n', encoding="utf-8")
+        with self.assertRaises(ConfigError) as cm:
+            Config.load(self.tmp / "library.toml")
+        self.assertIn("leading", str(cm.exception).lower() + " leading")
 
     def test_a_leading_dash_is_refused_in_extra_guard_dirs_too(self):
         (self.tmp / "library" / "books").mkdir(parents=True)
@@ -109,6 +122,50 @@ class ATrackedCorpusFileIsAlwaysReported(_Repo):
         (self.tmp / "library" / "books" / "ok.txt").write_text("local only", encoding="utf-8")
         r = check.check(cfg)
         self.assertFalse(any("copyright-leak" in e for e in r.errors))
+
+
+class TheGuardCannotBeRedirectedOrOutrun(_Repo):
+    def test_an_inherited_git_index_cannot_redirect_the_guard(self):
+        """`GIT_INDEX_FILE` is the sharp one: `rev-parse` still answers "yes, a work tree", and
+        then `ls-files` reads the ALTERNATE index and finds nothing. Verified against this repo —
+        with it set to a nonexistent path the guard returned errors=[], notes=[], ok=True while
+        corpus files were tracked in the real index."""
+        cfg = self._kb("books")
+        (self.tmp / "library" / "books" / "leak.txt").write_text("copyrighted", encoding="utf-8")
+        _git("add", "-f", "library/books/leak.txt", cwd=self.tmp)
+        old = os.environ.get("GIT_INDEX_FILE")
+        os.environ["GIT_INDEX_FILE"] = str(self.tmp / "nonexistent.index")
+        self.addCleanup(lambda: os.environ.pop("GIT_INDEX_FILE", None)
+                        if old is None else os.environ.__setitem__("GIT_INDEX_FILE", old))
+        r = check.check(cfg)
+        self.assertTrue(any("copyright-leak" in e for e in r.errors),
+                        f"an inherited GIT_INDEX_FILE hid a tracked leak; errors were {r.errors}")
+
+    def test_a_missing_git_binary_is_unmeasured_not_a_clean_pass(self):
+        """Absence of the BINARY says nothing about absence of the REPOSITORY. Reported as N/A this
+        read as "nothing to leak into" while a checkout with tracked corpus files sat right there."""
+        from unittest import mock
+        cfg = self._kb("books")
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+            r = check.check(cfg)
+        self.assertTrue(any("git is not on PATH" in u for u in r.unmeasured))
+        self.assertFalse(r.ok, "a guard that could not run reported ok")
+
+    def test_the_in_tree_backup_sweep_matches_what_the_normalizer_writes(self):
+        """`normalize.py` creates `normalize-backup-<stamp>` with NO leading dot; the sweep looked
+        for `.normalize-backup-*` and therefore matched nothing, ever. A guard that has never fired
+        looks exactly like a guard that is working."""
+        cfg = self._kb("books")
+        for name in ("normalize-backup-20260814", ".normalize-backup-20260101"):
+            with self.subTest(name=name):
+                d = cfg.lib / name
+                d.mkdir()
+                try:
+                    r = check.check(cfg)
+                    self.assertTrue(any("normalize backup" in e for e in r.errors),
+                                    f"{name} went unreported; errors were {r.errors}")
+                finally:
+                    d.rmdir()
 
 
 class TheGuardStillFailsClosed(_Repo):

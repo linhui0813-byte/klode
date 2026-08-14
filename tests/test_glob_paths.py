@@ -147,6 +147,42 @@ class GlobInEscapesDirectoriesButNotThePattern(unittest.TestCase):
         self.assertEqual(len(glob_in(self.tmp, "a[1]", "b[2]", "*.txt")), 1)
 
 
+class TheDirectoryNeverEntersThePattern(unittest.TestCase):
+    """`glob.escape` was the first fix and was two-thirds of one. It turns `[category]` into
+    `[[]category]` — still a live bracket expression — so glob must LIST the parent to match it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.d = self.tmp / "[category]"
+        self.d.mkdir()
+        for n in ("a.md", "b.md"):
+            (self.d / n).write_text("x", encoding="utf-8")
+
+    def test_a_traversable_but_unlistable_parent_still_enumerates(self):
+        """A parent that can be entered but not listed made the escaped form return [] with no
+        error — the same silent-empty failure the whole fix exists to remove, by another route."""
+        from unittest import mock
+        parent, real = str(self.tmp), os.scandir
+
+        def deny(path):
+            if os.fspath(path) == parent:
+                raise PermissionError("execute-only parent")
+            return real(path)
+
+        with mock.patch("glob.os.scandir", side_effect=deny):
+            found = glob_in(self.d, "*.md")
+        self.assertEqual(len(found), 2,
+                         "enumeration went empty because the parent could not be listed")
+
+    def test_an_absolute_pattern_is_passed_through_not_silently_dropped(self):
+        """`os.path.join` discards the base for an absolute pattern, so escaping the base
+        protected nothing in that case. The behaviour must at least match the original."""
+        import glob as _glob
+        absolute = str(self.d / "*.md")
+        self.assertEqual(sorted(glob_in(self.d, absolute)), sorted(_glob.glob(absolute)))
+
+
 class TheEnumeratorTripwire(unittest.TestCase):
     """Fixing the cause removes today's failure; the tripwire is what stops a future cause from
     being silent again."""
@@ -172,6 +208,28 @@ class TheEnumeratorTripwire(unittest.TestCase):
         r = check.check(self.cfg)
         self.assertFalse(any("disagrees with the" in e for e in r.errors),
                          "tripwire false-fired on a genuinely card-less directory")
+
+    def test_it_fires_on_PARTIAL_enumeration_not_only_on_zero(self):
+        """A zero-vs-nonzero test caught the total failure and nothing else. Enumerate one card of
+        two and the run reported ok=True, errors=[], unmeasured=[] — while never reading the card
+        it skipped. Partial blindness is the worse shape: the number on screen looks plausible."""
+        from unittest import mock
+        real = check.card_files
+        both = real(self.cfg)
+        self.assertGreaterEqual(len(both), 2, "fixture needs >=2 cards for this test")
+        with mock.patch("klode.lib.check.card_files", side_effect=lambda c: real(c)[:1]):
+            r = check.check(self.cfg)
+        self.assertTrue(any("enumeration missed" in e for e in r.errors),
+                        f"partial enumeration went unreported; errors were {r.errors}")
+        self.assertFalse(r.ok)
+
+    def test_it_does_not_fire_on_a_hidden_md_file(self):
+        """`scandir` sees dotfiles; `glob`'s `*.md` does not. Comparing the two sets without
+        matching that rule made an editor lock file (`.#card.md`) look like a missed card."""
+        (self.cfg.cards / ".draft.md").write_text("# hidden\n", encoding="utf-8")
+        r = check.check(self.cfg)
+        self.assertFalse(any("enumeration missed" in e for e in r.errors),
+                         f"tripwire false-fired on a hidden file; errors were {r.errors}")
 
     def test_it_does_not_fire_on_a_genuinely_empty_directory(self):
         for p in self.cfg.cards.glob("*"):

@@ -283,10 +283,20 @@ def glob_in(directory, *parts: str) -> list[str]:
     symlink to `user@host.pid`, which would be read as a card), it treats `**` as recursive where
     `glob` without `recursive=True` does not, it declines to follow directory symlinks, and it
     raises on an absolute pattern that `os.path.join` currently absorbs.
+
+    `root_dir=` rather than `glob.escape`, which was the first fix and was two-thirds of one.
+    Escaping produces a LIVE bracket expression (`[category]` becomes `[[]category]`), so glob
+    still has to LIST the parent directory to match it — and a parent that is traversable but not
+    listable then yields `[]` with no error, which is the same silent-empty failure by a different
+    route. Escaping also does nothing when the caller's final pattern is absolute, because
+    `os.path.join` discards the escaped root entirely. Keeping the directory out of the pattern
+    string closes both: there is nothing left in it to interpret.
     """
     *dirs, pattern = parts
-    root = os.path.join(glob.escape(str(directory)), *(glob.escape(d) for d in dirs))
-    return glob.glob(os.path.join(root, pattern))
+    root = os.path.join(str(directory), *dirs)
+    # results are relative to root_dir; join them back. An absolute pattern makes `root_dir`
+    # inert and returns absolute paths, which `os.path.join` passes through unchanged.
+    return [os.path.join(root, p) for p in glob.glob(pattern, root_dir=root)]
 
 
 def src_path_re(cfg: Config) -> re.Pattern[str]:

@@ -79,16 +79,26 @@ def _check_enumerator_agrees_with_disk(cfg: Config, r: Report) -> None:
     if not cfg.cards.is_dir():
         return
     try:
-        on_disk = [e.name for e in os.scandir(cfg.cards)
-                   if e.is_file() and e.name.endswith(".md") and e.name not in NON_CARDS]
+        # The SAME rules `card_files` applies, or the comparison is between two different
+        # questions: `*.md`, not a dotfile (glob excludes those), and not the generated board.
+        on_disk = {e.name for e in os.scandir(cfg.cards)
+                   if e.is_file() and e.name.endswith(".md")
+                   and not e.name.startswith(".") and e.name not in NON_CARDS}
     except OSError as e:
         r.errors.append(f"[A] cannot read the cards directory {cfg.cards}: {e}")
         return
-    if on_disk and not r.n_cards:
+    enumerated = {os.path.basename(p) for p in card_files(cfg)}
+    missed = on_disk - enumerated
+    if missed:
+        # Compared as SETS, not counts. A zero-vs-nonzero test caught the total failure that
+        # prompted it and nothing else: enumerate one card of two and the run reported ok=True,
+        # errors=[], unmeasured=[] while never reading the card it skipped. Partial blindness is
+        # the more dangerous shape, because the number on screen looks plausible.
         r.errors.append(
-            f"[A] card enumeration returned nothing while {len(on_disk)} card file(s) sit in "
-            f"{cfg.cards} ({', '.join(sorted(on_disk)[:3])}…) — the enumerator disagrees with the "
-            "directory, so NO citation was checked. This is a bug in klode, not an empty library.")
+            f"[A] card enumeration missed {len(missed)} file(s) present in {cfg.cards} "
+            f"({', '.join(sorted(missed)[:3])}{'…' if len(missed) > 3 else ''}) — the enumerator "
+            "disagrees with the directory, so those citations were NOT checked. This is a bug in "
+            "klode, not an empty library.")
 
 
 def check(cfg: Config, *, strict: bool = False, entail=None, entail_threshold: float = 0.5,
@@ -388,15 +398,35 @@ def _check_index_fresh(cfg: Config, r: Report) -> None:
                         f"({', '.join(sorted(extra)[:5])}) -> run `klode build`")
 
 
+def _clean_git_env() -> dict:
+    """The ambient environment minus the variables that re-point git at a different repository.
+
+    `GIT_INDEX_FILE` is the sharp one: `rev-parse` still answers "yes, a work tree", and then
+    `ls-files` reads the alternate index and finds nothing. Verified against this repo — with it
+    set to a nonexistent path the guard returned errors=[], notes=[], ok=True while two corpus
+    .txt files were tracked in the real index. A leak guard that inherits its target from the
+    environment is not a guard.
+    """
+    return {k: v for k, v in os.environ.items()
+            if k not in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                         "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE")}
+
+
 def _check_copyright_leak(cfg: Config, r: Report) -> None:
     """Guarded shelf .txt/.pdf must never be git-tracked. The guard must not fail OPEN: inside a git
     repo a failing `git ls-files` is an ERROR; outside a repo there is no git to leak into, so the
     guard is N/A and only noted."""
     try:
         inside = subprocess.run(["git", "-C", str(cfg.root), "rev-parse", "--is-inside-work-tree"],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=_clean_git_env())
     except FileNotFoundError:
-        r.notes.append("[E] git not found on PATH — copyright-leak guard N/A (nothing to leak into)")
+        # Absence of the BINARY says nothing about absence of the REPOSITORY. Reported as N/A,
+        # this read as "nothing to leak into" while a checkout with tracked corpus files sat right
+        # there. It is a check that could not run, which is what `unmeasured` is for.
+        r.unmeasured.append("[E] git is not on PATH, so the copyright-leak guard could not run. "
+                            "A tracked corpus file would go unreported. Install git, or pass "
+                            "--allow-unmeasured to accept the gap knowingly.")
         return
     out = inside.stdout.strip()
     # "not a git repository" (rc=128) is a genuine N/A; a DIFFERENT git error (e.g. dubious ownership,
@@ -427,12 +457,17 @@ def _check_copyright_leak(cfg: Config, r: Report) -> None:
             #   no leak reported, a copyrighted source sitting in the index.
             ["git", "-C", str(cfg.root), "--literal-pathspecs", "ls-files", "-z", "--",
              *cfg.guard_relpaths],
-            capture_output=True, text=True, check=True).stdout.split("\0")
+            capture_output=True, text=True, check=True, env=_clean_git_env()).stdout.split("\0")
     except Exception as e:
         r.errors.append(f"[E] could not run git ls-files ({e}); the copyright-leak guard must not fail open")
         return
     for f in (f for f in tracked if f and f.lower().endswith((".txt", ".pdf"))):   # case-insensitive: .TXT must not slip
         r.errors.append(f"[E copyright-leak] corpus file is git-tracked (must be ignored): {f}")
-    for d in glob_in(cfg.lib, ".normalize-backup-*"):
+    # `normalize.py` writes `normalize-backup-<stamp>` with NO leading dot; this swept for
+    # `.normalize-backup-*` and therefore matched nothing, ever. A guard that has never fired is
+    # indistinguishable from a guard that is working, which is why it survived. `[normalize].
+    # backup_dir` may legitimately point inside the library, so an in-tree backup full of copied
+    # copyrighted sources is reachable and was going unreported.
+    for d in glob_in(cfg.lib, "normalize-backup-*") + glob_in(cfg.lib, ".normalize-backup-*"):
         r.errors.append(f"[E] in-tree normalize backup present (should live outside the repo): "
                         f"{os.path.relpath(d, cfg.root)}")

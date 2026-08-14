@@ -680,6 +680,37 @@ class SecretsStayOut(unittest.TestCase):
                     self.assertEqual(settings._is_private_host(spelling), expected,
                                      f"{spelling} spells {ip}, classified inconsistently")
 
+    def test_a_leading_zero_integer_is_refused_because_it_is_ambiguous(self):
+        """`0170000000` is 10.33.254.128 to Python's `int()` — private, so the guard allowed it —
+        and 1.224.0.0 to the resolver, which reads a leading zero as octal. The guard classified
+        one address while the socket went to another. There is no correct value to return, which
+        is exactly why the answer must be "not classifiable", and unclassifiable must mean
+        refused rather than falling through to the container-name rule."""
+        for host in ("0170000000", "010", "0177001", "00134744072"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_a_percent_encoded_host_is_classified_as_what_will_be_dialled(self):
+        """`urlsplit().hostname` keeps percent-escapes, so `8%2e8%2e8%2e8` reached the classifier
+        with no dot in it, took the single-label branch, and was allowed — while urllib decodes it
+        to 8.8.8.8 before opening the socket."""
+        for host in ("8%2e8%2e8%2e8", "8%2E8%2E8%2E8"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_no_numeric_looking_host_reaches_the_container_name_rule(self):
+        """The container-name rule means "this can only be a local name". A string of digits is
+        never that, so it must not be able to reach it by failing every earlier test."""
+        for host in ("0170000000", "0x", "0b", "007"):
+            with self.subTest(host=host):
+                if host.isdigit() or host[:2] in ("0x", "0o", "0b"):
+                    self.assertFalse(settings._is_private_host(host),
+                                     f"{host} was classified as a container name")
+
     def test_an_ambiguous_dotted_spelling_fails_closed(self):
         """A resolver reads `010.010.010.010` as octal (8.8.8.8); Python's `ipaddress` refuses the
         leading zeros outright. An ambiguous spelling must be treated as public, not guessed."""

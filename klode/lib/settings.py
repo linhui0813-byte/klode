@@ -327,10 +327,22 @@ def _numeric_host(h: str):
         return ipaddress.ip_address(h)
     except ValueError:
         pass
-    try:
-        n = int(h, 0) if h[:2] in ("0x", "0o", "0b") else int(h)
-    except ValueError:
-        return None
+    if h[:2] in ("0x", "0o", "0b"):
+        try:
+            n = int(h, 0)
+        except ValueError:
+            return None
+    else:
+        if not h.isdigit():
+            return None
+        # A BARE decimal with a leading zero is read as octal by the resolver and as decimal by
+        # Python — two different addresses from one string. `0170000000` is 10.33.254.128 to
+        # `int()` (private, so the guard allowed it) and 1.224.0.0 to `getaddrinfo` (public, so
+        # that is where the document went). There is no right answer to return here, which is
+        # exactly why the answer must be "not classifiable".
+        if len(h) > 1 and h[0] == "0":
+            return None
+        n = int(h)
     if 0 <= n <= 0xFFFFFFFF:
         return ipaddress.IPv4Address(n)
     if 0 <= n < 2 ** 128:
@@ -351,7 +363,13 @@ def _is_private_host(host: str | None) -> bool:
     """Is this destination on a network where TLS is not the meaningful control?"""
     if not host:
         return False
-    h = host.strip("[]").lower()
+    # Classify what will actually be CONTACTED. `urlsplit().hostname` keeps percent-escapes, so
+    # `8%2e8%2e8%2e8` arrived here with no dot at all, took the single-label branch, and was
+    # allowed — while urllib decodes it to 8.8.8.8 before opening the socket. Decoding first means
+    # the string being judged is the string being dialled. (An IPv6 zone id like `fe80::1%eth0`
+    # is not a valid escape sequence, so `unquote` leaves it alone.)
+    from urllib.parse import unquote
+    h = unquote(host).strip("[]").lower()
     # RFC 2606 / RFC 6761 reserved names can never resolve to a real public host, so cleartext to
     # one leaks nothing. `.test` in particular is what a test suite is supposed to use.
     if h == "localhost" or h.endswith((".local", ".internal", ".lan", ".home.arpa",
@@ -363,6 +381,13 @@ def _is_private_host(host: str | None) -> bool:
     ip = _numeric_host(h)
     if ip is not None:
         return _is_private_ip(ip)
+    # A host that LOOKS numeric but could not be pinned to one address must not fall through to
+    # the single-label rule below — that rule means "this can only be a container name", and a
+    # string of digits is not a container name. `0170000000` reached it and was allowed as
+    # private while resolving to public 1.224.0.0. Unclassifiable has to mean refused, not
+    # "try the next branch and see if it says yes".
+    if h.isdigit() or h[:2] in ("0x", "0o", "0b"):
+        return False
     # A SINGLE-LABEL name (`docling`, `docling-serve`) has no public DNS answer — it can only be
     # resolved by a container network, a hosts file, or a local search domain. Rejecting these
     # broke the ordinary Docker and Kubernetes deployment, which was the point of the setting.
