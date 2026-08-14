@@ -34,7 +34,12 @@ class Line:
 
     @property
     def pct(self) -> int:
-        return round(100 * self.score / self.max_score)
+        # FLOOR, for the reason the verdict floors: `defects` classifies by an exact comparison,
+        # so rounding here let a criterion DISPLAY at the hurdle while being listed as a defect
+        # below it. At hurdle 67 a 2/3 criterion is exactly 66.67%, showed as 67, and was still
+        # (correctly) a defect. Same arithmetic, same fix — I closed it in the verdict and left
+        # the two other places it appears.
+        return int(Fraction(100 * self.score, self.max_score))
 
 
 @dataclass(frozen=True)

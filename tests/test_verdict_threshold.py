@@ -128,6 +128,49 @@ class TheHurdleMustBeAnInteger(_MixedScaleKB):
                                  hurdle=bad, require_stamp=False)
 
 
+class TheServiceBoundaryDoesNotLaunderTheHurdle(_MixedScaleKB):
+    """`review_draft` refuses a non-integer hurdle. The review SERVICE coerced with `int(...)`
+    first, so the guard never saw one — and truncation always moves a fractional hurdle DOWN. Ask
+    for 59.6 and the gate silently applied 59, passing a draft that scored 59.5238. `int(False)`
+    is 0, which passes everything. MCP and CLI both go through this path, so the guard was
+    decorative exactly where it mattered."""
+
+    def _svc(self, hurdle):
+        from klode.lib import services
+        from klode.lib.pool import KBPool
+        judge = _FixedJudge({"mixed-scale.cut-inferable": 1,
+                             "mixed-scale.vary-sentence-length": 6})
+        return services.execute(KBPool.single(self.cfg), "review",
+                                params={"draft": "d", "dimension": "mixed-scale",
+                                        "hurdle": hurdle, "judge": judge})
+
+    def test_a_fractional_hurdle_is_refused_not_truncated(self):
+        for bad in (59.6, 60.5, "60", True, False):
+            with self.subTest(hurdle=bad), self.assertRaises(ValueError):
+                self._svc(bad)
+
+    def test_a_valid_hurdle_still_reaches_the_verdict(self):
+        v = self._svc(60).value
+        self.assertEqual((v.decision, v.score), ("Recycle", 59))
+
+
+class PerCriterionDisplayAgreesWithClassification(_MixedScaleKB):
+    """`Verdict.defects` classifies by exact ratio; `Line.pct` rounded. So a criterion could show
+    AT the hurdle while being listed as a defect below it — the same contradiction I fixed in the
+    verdict and left in the two other places the arithmetic appears."""
+
+    def test_a_criterion_shown_at_or_above_the_hurdle_is_never_a_defect(self):
+        for a in range(4):
+            for b in range(8):
+                for hurdle in (33, 50, 60, 67, 75):
+                    with self.subTest(a=a, b=b, hurdle=hurdle):
+                        v = self._verdict(a, b, hurdle=hurdle)
+                        for line in v.defects:
+                            self.assertLess(line.pct, v.hurdle,
+                                            f"{line.score}/{line.max_score} displays as "
+                                            f"{line.pct} at hurdle {v.hurdle} yet is a defect")
+
+
 class TheFixtureItselfMixesScales(_MixedScaleKB):
     """If this fixture ever drifts back to uniform scales it stops being able to express the
     defect, and the tests above would pass for the wrong reason."""
