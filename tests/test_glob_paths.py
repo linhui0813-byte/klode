@@ -183,6 +183,45 @@ class TheDirectoryNeverEntersThePattern(unittest.TestCase):
         self.assertEqual(sorted(glob_in(self.d, absolute)), sorted(_glob.glob(absolute)))
 
 
+class BuildRefusesToRewriteFromABlindEnumeration(unittest.TestCase):
+    """`check` only reports; `build` REWRITES INDEX.md, so the write side is where an enumeration
+    failure becomes irreversible. The existing guard covers "no sources but cards exist"; it
+    cannot see the case where BOTH enumerations come back empty because enumeration itself
+    failed — which is exactly what the metacharacter path did."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        shutil.copytree(FIXTURE, self.tmp / "kb")
+        self.cfg = Config.load(self.tmp / "kb" / "library.toml")
+
+    def test_it_refuses_rather_than_emptying_the_board(self):
+        from unittest import mock
+        from klode.lib.config import ConfigError
+        index = self.cfg.cards / "INDEX.md"
+        before = index.read_text(encoding="utf-8")
+        with mock.patch("klode.lib.build.glob_in", return_value=[]):
+            with self.assertRaises(ConfigError) as cm:
+                build.build(self.cfg)
+        self.assertIn("refusing to rewrite", str(cm.exception))
+        self.assertEqual(index.read_text(encoding="utf-8"), before,
+                         "the board was rewritten despite the refusal")
+
+    def test_a_genuinely_empty_cards_directory_still_builds(self):
+        """The guard must not block the legitimate first build of a new library."""
+        for p in self.cfg.cards.glob("*.md"):
+            p.unlink()
+        self.assertEqual(build.build(self.cfg)["total"], 2)
+
+    def test_an_unreadable_cards_directory_refuses_rather_than_crashing_mid_write(self):
+        from unittest import mock
+        from klode.lib.config import ConfigError
+        with mock.patch("klode.lib.build.glob_in", return_value=[]), \
+             mock.patch("os.scandir", side_effect=PermissionError("locked")):
+            with self.assertRaises(ConfigError):
+                build.build(self.cfg)
+
+
 class TheEnumeratorTripwire(unittest.TestCase):
     """Fixing the cause removes today's failure; the tripwire is what stops a future cause from
     being silent again."""

@@ -338,7 +338,8 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
 
     lib_real = os.path.realpath(cfg.lib)
     files = []
-    # only cfg.lib is escaped: `pattern` is the USER's and must stay live (it may carry `/`)
+    # `pattern` is the USER's and stays live (it may carry `/`); `glob_in` keeps the
+    # library directory out of the pattern string entirely, so it needs no escaping
     for p in sorted(glob_in(cfg.lib, pattern)):
         rp = os.path.realpath(p)
         if rp.startswith(lib_real + os.sep) and rp.endswith(".txt") and os.path.isfile(rp):

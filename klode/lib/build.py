@@ -115,6 +115,25 @@ def build(cfg: Config, *, stamp: bool = False) -> dict:
 
     existing = [p for p in glob_in(cfg.cards, "*.md")
                 if os.path.basename(p) not in NON_CARDS]
+    # The write-side of the enumeration tripwire, and the one that actually matters. `check` only
+    # reports; THIS rewrites INDEX.md. The guard below covers "no sources but cards exist"; it
+    # cannot see the case where BOTH enumerations come back empty because enumeration itself
+    # failed — which is exactly what a metacharacter path did, and what an unreadable directory
+    # would still do. Verified: with enumeration stubbed empty, build overwrote a 2-card INDEX
+    # with an empty one and reported success.
+    if not existing and cfg.cards.is_dir():
+        try:
+            on_disk = [e.name for e in os.scandir(cfg.cards)
+                       if e.is_file() and e.name.endswith(".md")
+                       and not e.name.startswith(".") and e.name not in NON_CARDS]
+        except OSError as e:
+            raise ConfigError(f"cannot read the cards directory {cfg.cards} ({e}) — refusing to "
+                              "rewrite the board from an enumeration that could not run")
+        if on_disk:
+            raise ConfigError(
+                f"card enumeration returned nothing while {len(on_disk)} card file(s) sit in "
+                f"{cfg.cards} ({', '.join(sorted(on_disk)[:3])}…) — refusing to rewrite the board "
+                "from an enumeration that disagrees with the directory. This is a bug in klode.")
     if not sources and existing:
         # Fresh clone: the git-ignored corpus is not installed. Do NOT rewrite cards or overwrite
         # the tracked INDEX.md with an empty board — that is silent data loss AND would make the
