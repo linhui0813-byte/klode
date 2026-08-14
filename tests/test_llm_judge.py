@@ -241,6 +241,25 @@ class CalibrationGate(unittest.TestCase):
         j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=self._cal())
         self.assertTrue(j.calibrated_for(self.digest))
 
+    def test_a_serialized_record_round_trips_and_keeps_its_verdict(self):
+        """`Calibration` has no persistence path today — it is built in code and never written —
+        so "an old stored record fails closed" was an untested claim about a file that cannot
+        exist. This pins the shape any future persistence would take: a record serialized WITHOUT
+        the instrument fields reconstructs and claims nothing, and one serialized WITH them
+        reconstructs and still clears."""
+        import dataclasses
+        legacy = {"rubric_digest": self.digest, "n": 30, "agreement": 0.8,
+                  "bar": 0.6, "min_n": 20, "measured_on": "2026-01-01"}
+        j = LLMJudge(Recorder([]), model="m", permutations=2,
+                     calibration=Calibration(**legacy))
+        self.assertTrue(j.calibration.clears())            # the measurement itself is intact
+        self.assertFalse(j.calibrated_for(self.digest))    # but it describes no known instrument
+
+        full = dataclasses.asdict(self._cal())
+        self.assertEqual(set(full) - set(legacy), {"model", "permutations", "prompt_version"})
+        j2 = LLMJudge(Recorder([]), model="m", permutations=2, calibration=Calibration(**full))
+        self.assertTrue(j2.calibrated_for(self.digest))
+
 
 class PermutationsMustActuallyBalance(unittest.TestCase):
     """`reverse=bool(i % 2)` splits an odd count unevenly. At 3 that is two forward runs and one

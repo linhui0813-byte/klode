@@ -74,6 +74,19 @@ class ReleaseIsGatedOnTheSuite(unittest.TestCase):
         for required in ("test", "corpus", "zero_deps"):
             self.assertIn(required, jobs, f"tests.yml no longer defines the `{required}` job")
 
+    def test_publish_only_ever_runs_for_a_tag(self):
+        """`workflow_dispatch` is on the release workflow so a release can be re-run by hand. With
+        no ref guard that let anyone who can press "Run workflow" publish an arbitrary branch to
+        PyPI — and Trusted Publishing authenticates the workflow, not the operator, so no token
+        stands in the way. Same class as the missing test gate: the release path was reachable
+        without passing what makes a release a release."""
+        body = (self.WF / "workflow.yml").read_text(encoding="utf-8")
+        block = body[body.index("  publish:"):]
+        guard = re.search(r"^    if:\s*(.+)$", block, re.M)
+        self.assertIsNotNone(guard, "the publish job has no `if:` guard — dispatch would publish")
+        self.assertIn("refs/tags/", guard.group(1),
+                      f"publish is guarded by {guard.group(1)!r}, which does not require a tag")
+
 
 class PrintedCommandsAreRunnable(unittest.TestCase):
     """Four CLI hints printed `lib consult …`, `lib diagnose …`, `lib zoom …` — the name of the
