@@ -320,6 +320,71 @@ class PermutationsMustActuallyBalance(unittest.TestCase):
             LLMJudge(Recorder([]), model="m", permutations=17)
 
 
+class TheInstrumentIsBoundToWhatItActuallyDoes(unittest.TestCase):
+    def test_cached_steps_do_not_cross_a_rubric_revision(self):
+        """A criterion id is deliberately STABLE across revisions — that is what makes human
+        labels survive an edit. Caching steps by id alone therefore reused the standard derived
+        for the old wording, so a revised criterion was scored against steps nobody wrote for it."""
+        t = Recorder([])
+        j = LLMJudge(t, model="m", permutations=2)
+        a, b = Item("c.one"), Item("c.one")
+        b.statement = "An entirely different criterion under the same stable id."
+        j.score("d", [a])
+        j.score("d", [b])
+        steps = [p for p in t.prompts if "evaluation steps" in p]
+        self.assertEqual(len(steps), 2, "the revised criterion reused the old steps")
+
+    def test_the_same_criterion_is_still_derived_only_once(self):
+        """The memoization must survive the fix, or every draft pays for fresh steps."""
+        t = Recorder([])
+        j = LLMJudge(t, model="m", permutations=2)
+        j.score("draft one", [Item("c.one")])
+        j.score("draft two", [Item("c.one")])
+        self.assertEqual(len([p for p in t.prompts if "evaluation steps" in p]), 1)
+
+    def test_a_transport_that_declares_a_different_model_is_refused(self):
+        """`self.model` is the label a Calibration matches against, and it was only ever a CLAIM —
+        the transport is injectable, so it could send something else entirely and the record would
+        still certify."""
+        t = anthropic_transport("claude-opus-5")
+        with self.assertRaises(ValueError) as cm:
+            LLMJudge(t, model="a-different-label", permutations=2)
+        self.assertIn("transport sends model", str(cm.exception))
+        LLMJudge(t, model="claude-opus-5", permutations=2)          # matching label is fine
+        LLMJudge(lambda p: "", model="anything", permutations=2)    # undeclaring stays allowed
+
+    def test_calibrated_and_calibrated_for_never_disagree(self):
+        """`calibrated` checked only that the RECORD cleared its bar, so a direct consumer got
+        True for exactly the cases `calibrated_for` refuses."""
+        cfg = lib.Config.load(FIX)
+        digest = rubric_identity(load_spec(cfg, "pacing"))
+        base = dict(rubric_digest=digest, n=30, agreement=0.8)
+        for label, cal in (
+                ("legacy record", Calibration(**base)),
+                ("wrong model", Calibration(**base, model="other", permutations=2,
+                                            prompt_version=PROMPT_VERSION)),
+                ("wrong permutations", Calibration(**base, model="m", permutations=4,
+                                                   prompt_version=PROMPT_VERSION)),
+                ("stale prompt", Calibration(**base, model="m", permutations=2,
+                                             prompt_version="0"))):
+            with self.subTest(label=label):
+                j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=cal)
+                self.assertEqual(j.calibrated, j.calibrated_for(digest))
+                self.assertFalse(j.calibrated)
+
+    def test_a_bool_or_float_in_a_record_does_not_match_a_real_policy(self):
+        """`True == 1` and `2.0 == 2` in Python, so a record carrying either covered a live policy
+        the judge itself refuses to be constructed with."""
+        cfg = lib.Config.load(FIX)
+        digest = rubric_identity(load_spec(cfg, "pacing"))
+        for bad in (True, 2.0):
+            with self.subTest(permutations=bad):
+                cal = Calibration(digest, n=30, agreement=0.8, model="m",
+                                  permutations=bad, prompt_version=PROMPT_VERSION)
+                j = LLMJudge(Recorder([]), model="m", permutations=2, calibration=cal)
+                self.assertFalse(j.calibrated_for(digest))
+
+
 class ThePromptsAreTheInstrument(unittest.TestCase):
     """The tripwire behind PROMPT_VERSION. The prompts ARE the judge: reword one and it answers
     differently, so a stored calibration stops describing it. Nothing in a dataclass can notice
@@ -327,12 +392,30 @@ class ThePromptsAreTheInstrument(unittest.TestCase):
     fails, rather than the calibration silently outliving the instrument it measured."""
 
     DIGESTS = {
-        "1": ("9a078b2864de662a", "steps+form prompts as of PROMPT_VERSION 1"),
+        "1": ("40944a2d7d5b9edb", "templates + render/aggregate code as of PROMPT_VERSION 1"),
     }
 
-    def test_a_prompt_edit_requires_a_version_bump(self):
+    @staticmethod
+    def _instrument_digest() -> str:
+        """The templates AND the code that renders and aggregates them.
+
+        Hashing the two literals alone left the instrument half-covered: `_levels_block`,
+        `_evidence_block` and the averaging in `score` can each change the prompt a model sees or
+        the number it produces, without either template moving. Verified — editing `_levels_block`
+        and the rounding changed a rendered prompt and turned a 2.5 into 2, while the template
+        hash, the version and `calibrated_for()` all stayed put."""
         import hashlib
-        actual = hashlib.sha256((STEPS_PROMPT + "\x00" + FORM_PROMPT).encode()).hexdigest()[:16]
+        import inspect
+        from klode.gate import llm_judge as lj
+        parts = [STEPS_PROMPT, FORM_PROMPT,
+                 inspect.getsource(lj._levels_block),
+                 inspect.getsource(lj._evidence_block),
+                 inspect.getsource(lj.LLMJudge.score),
+                 inspect.getsource(lj.LLMJudge._one)]
+        return hashlib.sha256("\x00".join(parts).encode()).hexdigest()[:16]
+
+    def test_a_prompt_edit_requires_a_version_bump(self):
+        actual = self._instrument_digest()
         known = self.DIGESTS.get(PROMPT_VERSION)
         self.assertIsNotNone(
             known, f"PROMPT_VERSION is {PROMPT_VERSION!r} but no digest is recorded for it — add "

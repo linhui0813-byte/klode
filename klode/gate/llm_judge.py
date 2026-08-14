@@ -98,8 +98,11 @@ class Calibration:
             return False
         if self.prompt_version != PROMPT_VERSION:
             return False
+        # `type(...) is int`, not `isinstance`/`==`: Python equality makes `True == 1` and
+        # `2.0 == 2`, so a record carrying either covered a live policy the judge itself refuses
+        # to be constructed with.
         return (self.model is not None and self.model == model
-                and self.permutations is not None and self.permutations == permutations)
+                and type(self.permutations) is int and self.permutations == permutations)
 
 
 def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
@@ -130,6 +133,7 @@ def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
             return "".join(b.get("text", "") for b in payload["content"])
         except (KeyError, TypeError) as e:
             raise JudgeError(f"unexpected model response shape: {payload!r:.200}") from e
+    call.model = model      # declared, so a judge can verify its label matches the transport
     return call
 
 
@@ -218,6 +222,17 @@ class LLMJudge:
             raise ValueError("LLMJudge requires an explicit `model` — pick one from a DIFFERENT "
                              "family than whatever produced the draft (self-enhancement bias); "
                              "there is deliberately no default")
+        # `self.model` is the label a Calibration is matched against, and it was only ever a
+        # CLAIM: the transport is injectable, so it could send a different model entirely and the
+        # record would still certify. A transport that declares its model is now checked against
+        # the label. One that declares nothing keeps the weaker property — stated here rather than
+        # implied, because it is the seam a wrong calibration would come through.
+        declared = getattr(transport, "model", None)
+        if declared is not None and declared != model:
+            raise ValueError(
+                f"transport sends model {declared!r} but the judge is labelled {model!r} — the "
+                "label is what a Calibration is matched against, so a mismatch would certify a "
+                "judge nobody measured")
         self._call = transport
         self.model = model
         self._permutations = permutations
@@ -227,7 +242,15 @@ class LLMJudge:
     # -- calibration -------------------------------------------------------
     @property
     def calibrated(self) -> bool:
-        return bool(self.calibration and self.calibration.clears())
+        """Instrument-aware, like `calibrated_for`. This checked only that the RECORD cleared its
+        bar, so a direct consumer got True for a legacy record, the wrong model, the wrong
+        permutation policy, or a stale prompt version — every case `calibrated_for` refuses. Two
+        properties on one object disagreeing about whether the judge is calibrated is worse than
+        either answer."""
+        c = self.calibration
+        return bool(c and c.clears() and c.prompt_version == PROMPT_VERSION
+                    and c.model is not None and c.model == self.model
+                    and type(c.permutations) is int and c.permutations == self._permutations)
 
     def calibrated_for(self, rubric_digest: str) -> bool:
         """True only when the calibration was measured on THIS rubric, through THIS judge —
@@ -236,16 +259,32 @@ class LLMJudge:
             rubric_digest, model=self.model, permutations=self._permutations))
 
     # -- scoring -----------------------------------------------------------
+    @staticmethod
+    def _criterion_key(item) -> str:
+        """Cache key: the criterion's CONTENT, not merely its id.
+
+        A criterion id is deliberately stable across rubric revisions — that is what makes human
+        labels collected against it survive an edit. Caching steps by id alone therefore reused the
+        steps derived for the OLD wording after the statement, guidance or levels changed, so the
+        revised criterion was scored against a standard nobody wrote for it. Verified: two
+        different statements sharing an id produced ONE steps derivation, and the second form
+        carried the first's steps."""
+        import hashlib
+        levels = "|".join(f"{lv.score}={lv.descriptor.value}" for lv in item.levels)
+        blob = f"{item.id}\x00{item.statement}\x00{item.guidance or ''}\x00{levels}"
+        return hashlib.sha256(blob.encode()).hexdigest()
+
     def steps_for(self, item) -> str:
         """Step 1, memoized: the criterion's evaluation steps, derived without the draft in view."""
-        if item.id not in self._steps:
+        key = self._criterion_key(item)
+        if key not in self._steps:
             out = self._call(STEPS_PROMPT.format(
                 statement=item.statement, guidance=item.guidance or "(none)",
                 levels=_levels_block(item, reverse=False), evidence=_evidence_block(item)))
             if not (out or "").strip():
                 raise JudgeError(f"{item.id}: the model returned no evaluation steps")
-            self._steps[item.id] = out.strip()
-        return self._steps[item.id]
+            self._steps[key] = out.strip()
+        return self._steps[key]
 
     def _one(self, draft: str, item, steps: str, *, reverse: bool) -> tuple[int, str]:
         hi = item.max_score

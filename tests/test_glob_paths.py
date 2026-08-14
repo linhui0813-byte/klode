@@ -222,6 +222,87 @@ class BuildRefusesToRewriteFromABlindEnumeration(unittest.TestCase):
                 build.build(self.cfg)
 
 
+class NormalizeDoesNotCertifyWhatItDidNotRead(unittest.TestCase):
+    """`glob` turns a directory it cannot read into ZERO matches with no error, so a shelf that
+    went unreadable left `scanned` truthy and `skipped` empty — and `normalize --check` certified
+    a corpus it had only partly read. Verified before the fix: 1 of 2 files scanned, exit 0."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        shutil.copytree(FIXTURE, self.tmp / "kb")
+        self.cfg = Config.load(self.tmp / "kb" / "library.toml")
+
+    def test_an_unlistable_shelf_is_recorded(self):
+        from unittest import mock
+        from klode.lib import normalize
+        real = os.scandir
+
+        def deny(path, *a, **k):
+            if str(path).endswith("books"):
+                raise PermissionError("locked shelf")
+            return real(path, *a, **k)
+
+        with mock.patch("os.scandir", side_effect=deny):
+            res = normalize.normalize(self.cfg, pattern="*/*.txt")
+        self.assertTrue(res.unreadable, "an unlistable shelf was scanned over in silence")
+
+    def test_an_absolute_pattern_is_refused(self):
+        """`glob` ignores `root_dir` for an absolute pattern, which puts the library prefix back
+        into the pattern string and re-arms every metacharacter in it."""
+        from klode.lib import normalize
+        res = normalize.normalize(self.cfg, pattern=str(self.cfg.lib / "*" / "*.txt"))
+        self.assertIn("absolute", res.refused or "")
+
+    def test_the_ordinary_scan_is_unaffected(self):
+        from klode.lib import normalize
+        res = normalize.normalize(self.cfg, pattern="*/*.txt")
+        self.assertEqual(res.scanned, 2)
+        self.assertFalse(res.unreadable)
+        self.assertIsNone(res.refused)
+
+
+class BuildRefusesEveryBlindEnumeration(unittest.TestCase):
+    """Three enumerations feed `build`, and all three could fail open independently. The first
+    guard covered cards only — a partial SHELF scan stays truthy, and a swallowed FRAMEWORK error
+    makes build write `framework: none` over links that exist."""
+
+    def _kb(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        shutil.copytree(FIXTURE, tmp / "kb")
+        return Config.load(tmp / "kb" / "library.toml")
+
+    def test_a_partial_shelf_scan_is_refused(self):
+        from unittest import mock
+        from klode.lib.config import ConfigError
+        cfg = self._kb()
+        real = build.glob_in
+        with mock.patch("klode.lib.build.glob_in",
+                        side_effect=lambda d, *p: real(d, *p)[:1] if "books" in str(p)
+                        else real(d, *p)):
+            with self.assertRaises(ConfigError) as cm:
+                build.build(cfg)
+        self.assertIn("source enumeration missed", str(cm.exception))
+
+    def test_a_blind_framework_scan_is_refused_before_it_rewrites_metadata(self):
+        from unittest import mock
+        from klode.lib.config import ConfigError
+        cfg = self._kb()
+        (cfg.frameworks / "vega.md").write_text(
+            "# Vega\n\n**Source:** `library/books/brevity.txt`\n", encoding="utf-8")
+        real = build.glob_in
+        with mock.patch("klode.lib.build.glob_in",
+                        side_effect=lambda d, *p: [] if str(d).endswith("frameworks")
+                        else real(d, *p)):
+            with self.assertRaises(ConfigError) as cm:
+                build.build(cfg)
+        self.assertIn("framework enumeration missed", str(cm.exception))
+
+    def test_a_normal_build_still_succeeds(self):
+        self.assertEqual(build.build(self._kb())["total"], 2)
+
+
 class TheEnumeratorTripwire(unittest.TestCase):
     """Fixing the cause removes today's failure; the tripwire is what stops a future cause from
     being silent again."""

@@ -265,6 +265,13 @@ def cmd_normalize(args) -> int:
             unmeasured.append(f"no file matched {args.glob!r} — nothing was checked")
         if res.skipped:
             unmeasured.append(f"{len(res.skipped)} file(s) could not be read and were skipped")
+        if getattr(res, "unreadable", None):
+            # A shelf `glob` could not list contributes ZERO matches and no error, so the gate
+            # certified a corpus it had only partly read — 1 of 2 files scanned, exit 0, nothing
+            # reported. An enumeration that could not run is unmeasured, not clean.
+            unmeasured.append(
+                f"{len(res.unreadable)} shelf/shelves could not be listed, so an unknown number "
+                f"of files were never scanned: {', '.join(res.unreadable[:3])}")
         if unmeasured and not getattr(args, "allow_unmeasured", False):
             for u in unmeasured:
                 print(f"UNMEASURED  {u}", file=sys.stderr)
