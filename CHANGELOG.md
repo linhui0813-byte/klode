@@ -3,13 +3,16 @@
 Notable changes per release. Versions follow semantic versioning, with the pre-1.0 convention that
 a **minor** bump may carry breaking changes.
 
-## 0.4.3 — 2026-08-14
+## 0.5.0 — 2026-08-15
 
-> # ⚠️ THIS PATCH RELEASE CONTAINS BREAKING CHANGES
+The same code as the yanked 0.4.3, renumbered so the version says what the release does. Semantic
+versioning with this project's pre-1.0 convention: **a minor bump may carry breaking changes**, and
+these are breaking.
+
+> # ⚠️ BREAKING CHANGES
 >
-> Released as a patch deliberately, which means a `klode>=0.4,<0.5` pin picks it up
-> automatically. **Read this section before upgrading.** Five kinds of input that worked on 0.4.2
-> now raise, and one class of verdict moves. Every one of them is a guard that was failing open.
+> **Read this section before upgrading.** Five kinds of input that worked on 0.4.2 now raise, and
+> one class of verdict moves. Every one of them is a guard that was failing open.
 >
 > | What now raises | Was | Why |
 > |---|---|---|
@@ -149,6 +152,14 @@ finding: a guard was added at the door that had been kicked in, and the other do
 - `PROMPT_VERSION`, with a test that hashes `STEPS_PROMPT`/`FORM_PROMPT` and fails when either
   changes without the constant moving — a prompt edit silently invalidates every calibration
   measured through the old wording.
+
+## 0.4.3 — 2026-08-14 — YANKED, superseded by 0.5.0
+
+**Do not use this version.** It carries every change listed under 0.5.0 above, but it was numbered
+as a patch and those changes are breaking — a `klode>=0.4,<0.5` pin would have picked them up
+silently. The identical code is published as **0.5.0**; 0.4.3 is yanked on PyPI and remains
+installable only by exact pin. Nothing was wrong with the code. The version number was wrong
+about it.
 
 ## 0.4.2 — 2026-08-13
 
