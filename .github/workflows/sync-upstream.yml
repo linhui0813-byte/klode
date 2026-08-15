@@ -8,8 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: sync-upstream-main
@@ -19,17 +18,31 @@ jobs:
   open-sync-pr:
     name: check xiaolai/klode and open a fork PR
     runs-on: ubuntu-latest
+    environment: upstream-sync
     env:
       UPSTREAM_REPOSITORY: xiaolai/klode
       BASE_BRANCH: main
       SYNC_BRANCH: automation/sync-upstream-main
       VERSION_FILE: klode/lib/__init__.py
-      GH_TOKEN: ${{ github.token }}
+      REVIEWER: linhui0813-byte
     steps:
+      - name: Create a short-lived Klode sync token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.KLODE_SYNC_APP_ID }}
+          private-key: ${{ secrets.KLODE_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: klode
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Check out the fork
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Fetch upstream and compare commits and versions
         id: compare
@@ -93,6 +106,8 @@ jobs:
       - name: Create or update the pull request inside this fork
         if: steps.compare.outputs.needs_sync == 'true'
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -134,12 +149,29 @@ jobs:
               --body-file "${body_file}"
             echo "Updated pull request #${pr_number}."
           else
-            gh pr create \
+            pr_url="$(gh pr create \
               --repo "${GITHUB_REPOSITORY}" \
               --base "${BASE_BRANCH}" \
               --head "${SYNC_BRANCH}" \
               --title "${title}" \
-              --body-file "${body_file}"
+              --body-file "${body_file}")"
+            pr_number="$(gh pr view "${pr_url}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json number \
+              --jq '.number')"
+            echo "Created pull request #${pr_number}."
+          fi
+
+          if gh pr view "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json reviewRequests \
+            --jq '.reviewRequests[].login' | grep -Fqx -- "${REVIEWER}"; then
+            echo "Review is already requested from ${REVIEWER}."
+          else
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --add-reviewer "${REVIEWER}"
+            echo "Requested review from ${REVIEWER}."
           fi
 
       - name: Report that the fork is current
