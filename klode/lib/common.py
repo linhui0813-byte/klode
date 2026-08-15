@@ -263,6 +263,42 @@ def occurs(needle: str, hays: tuple[str, str], *, regex: bool = False) -> bool:
 
 
 # ---- enumeration ----------------------------------------------------------
+def glob_in(directory, *parts: str) -> list[str]:
+    """`glob` rooted at `directory`, with every DIRECTORY segment escaped so that ONLY the final
+    pattern is live. Returns `str` paths, unsorted — callers sort where order matters.
+
+    `glob.glob(os.path.join(cfg.cards, "*.md"))` hands the whole joined string to `glob`, which
+    reads `[ ] * ?` anywhere in it — the directory prefix included. A library under `.../kb[1]/`
+    therefore matched NOTHING and enumerated zero cards, and `check` reported `OK: 0 errors` and
+    exited 0 over a citation that resolved nowhere: the `unmeasured` guard only fires `if cards:`,
+    so an empty card list is exactly the shape that slips past it. A shelf is a second injection
+    point, since config validation rejects only `/`, `""`, `.` and `..` — `shelves = ["books[1]"]`
+    loads fine.
+
+    The escape is per SEGMENT, not over the joined path, so a caller may still pass a live pattern
+    as the last part (`normalize` takes one from the user, and it may contain `/`).
+
+    Deliberately NOT `Path.glob`, which is immune to the directory problem but is not a
+    substitute: it returns dotfiles that `glob` excludes (an editor's `.#card.md` lock file is a
+    symlink to `user@host.pid`, which would be read as a card), it treats `**` as recursive where
+    `glob` without `recursive=True` does not, it declines to follow directory symlinks, and it
+    raises on an absolute pattern that `os.path.join` currently absorbs.
+
+    `root_dir=` rather than `glob.escape`, which was the first fix and was two-thirds of one.
+    Escaping produces a LIVE bracket expression (`[category]` becomes `[[]category]`), so glob
+    still has to LIST the parent directory to match it — and a parent that is traversable but not
+    listable then yields `[]` with no error, which is the same silent-empty failure by a different
+    route. Escaping also does nothing when the caller's final pattern is absolute, because
+    `os.path.join` discards the escaped root entirely. Keeping the directory out of the pattern
+    string closes both: there is nothing left in it to interpret.
+    """
+    *dirs, pattern = parts
+    root = os.path.join(str(directory), *dirs)
+    # results are relative to root_dir; join them back. An absolute pattern makes `root_dir`
+    # inert and returns absolute paths, which `os.path.join` passes through unchanged.
+    return [os.path.join(root, p) for p in glob.glob(pattern, root_dir=root)]
+
+
 def src_path_re(cfg: Config) -> re.Pattern[str]:
     """Regex matching a valid shelf-source path (`<lib>/<shelf>/<name>.txt`), built from
     the configured library dir + shelves so it can't false-match a foreign path."""
@@ -274,14 +310,20 @@ def shelf_txts(cfg: Config) -> list[str]:
     """Every source .txt across every shelf, absolute paths, sorted within each shelf."""
     out: list[str] = []
     for shelf in cfg.shelves:
-        out += sorted(glob.glob(os.path.join(cfg.lib, shelf, "*.txt")))
+        out += sorted(glob_in(cfg.lib, shelf, "*.txt"))
     return out
+
+
+# The generated board and the human README are not cards. One definition, shared by every
+# enumerator and by the tripwire below, so a caller cannot disagree with the guard about what
+# "no cards" means.
+NON_CARDS = ("INDEX.md", "README.md")
 
 
 def card_files(cfg: Config) -> list[str]:
     """Every card (`cards/<id>.md`), excluding the generated INDEX and README."""
-    return [p for p in sorted(glob.glob(os.path.join(cfg.cards, "*.md")))
-            if os.path.basename(p) not in ("INDEX.md", "README.md")]
+    return [p for p in sorted(glob_in(cfg.cards, "*.md"))
+            if os.path.basename(p) not in NON_CARDS]
 
 
 def read(path: str | Path) -> str:

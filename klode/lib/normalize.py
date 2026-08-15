@@ -20,7 +20,6 @@ the most-recent runs are kept.
 """
 from __future__ import annotations
 
-import glob
 import os
 import re
 import shutil
@@ -30,6 +29,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from .common import glob_in
 from .config import Config
 
 LIG_MAP = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl",
@@ -313,6 +313,8 @@ class NormResult:
     changed: int = 0
     dry_run: bool = True
     backup_dir: str | None = None
+    unreadable: list = field(default_factory=list)   # shelves glob could not list — a scan that
+    #                                                  could not run, never silently zero matches
     pruned: int = 0
     details: list[tuple[str, list[str]]] = field(default_factory=list)   # (relpath, flags)
     skipped: list[str] = field(default_factory=list)
@@ -337,8 +339,29 @@ def normalize(cfg: Config, *, pattern: str = "*/*.txt", apply: bool = False,
         res.skipped.append(f"no word list at {cfg.dict_path} — ctrl/ascii repair degraded (dry-run)")
 
     lib_real = os.path.realpath(cfg.lib)
+    # `glob` turns a directory it cannot read into ZERO matches, with no error anywhere. A shelf
+    # that goes unreadable mid-scan therefore left `scanned` truthy and `skipped` empty, and
+    # `normalize --check` certified a corpus it had only partly read — verified: 1 of 2 files
+    # scanned, exit 0, nothing reported. Listability is checked up front so the gap is stated.
+    for shelf in cfg.shelves:
+        d = os.path.join(cfg.lib, shelf)
+        if not os.path.isdir(d):
+            continue
+        try:
+            os.scandir(d).close()
+        except OSError as e:
+            res.unreadable.append(f"{shelf}: {e}")
+    # An ABSOLUTE pattern makes `glob` ignore `root_dir` entirely, which puts the library prefix
+    # back into the pattern string and re-arms every metacharacter in it. The pattern is relative
+    # to the library by definition, so an absolute one is a mistake worth naming.
+    if os.path.isabs(pattern):
+        res.refused = (f"pattern {pattern!r} is absolute; it must be relative to the library dir "
+                       f"({cfg.lib}) — an absolute pattern silently bypasses path handling")
+        return res
     files = []
-    for p in sorted(glob.glob(os.path.join(cfg.lib, pattern))):
+    # `pattern` is the USER's and stays live (it may carry `/`); `glob_in` keeps the
+    # library directory out of the pattern string entirely, so it needs no escaping
+    for p in sorted(glob_in(cfg.lib, pattern)):
         rp = os.path.realpath(p)
         if rp.startswith(lib_real + os.sep) and rp.endswith(".txt") and os.path.isfile(rp):
             files.append(p)

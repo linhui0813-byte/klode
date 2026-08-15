@@ -45,6 +45,27 @@ class ConfigError(Exception):
     """A `library.toml` is missing, malformed, or internally inconsistent."""
 
 
+def _as_path(value, label: str) -> Path | None:
+    """Coerce a public path parameter, RESOLVED, or None — failing as a `ConfigError`.
+
+    `Config.load` and `Config.find` are the public facade's entry points and the obvious way to
+    call them is with a string. Every one of them did `.resolve()` on the argument, so a `str`
+    raised `AttributeError: 'str' object has no attribute 'resolve'` — three modules from anything
+    a caller could act on, and precisely the confusing-error-deep-inside failure this module opens
+    by promising not to produce. Resolution itself can also raise a bare `ValueError` (an embedded
+    null byte), which escaped the same contract.
+    """
+    if value is None:
+        return None
+    try:
+        return Path(value).resolve()
+    except TypeError as e:
+        raise ConfigError(f"{label} must be a path or a string, got "
+                          f"{type(value).__name__}") from e
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"{label} {value!r} is not a usable path — {e}") from e
+
+
 @dataclass(frozen=True)
 class Config:
     # --- provenance ---
@@ -85,20 +106,34 @@ class Config:
 
     # ------------------------------------------------------------------
     @classmethod
-    def find(cls, start: Path | None = None) -> Path:
+    def find(cls, start: Path | str | None = None) -> Path:
         """Walk up from `start` (default: cwd) to the nearest `library.toml`."""
-        here = (start or Path.cwd()).resolve()
+        here = _as_path(start, "start")
+        if here is None:
+            try:
+                here = _as_path(Path.cwd(), "the current directory")
+            except OSError as e:
+                # A deleted or unreadable cwd is exactly when someone is debugging something else;
+                # `FileNotFoundError` from inside a config loader is not the clue they need.
+                raise ConfigError(f"cannot determine the current directory ({e}) — pass an "
+                                  f"explicit path to {CONFIG_NAME}") from e
         for d in (here, *here.parents):
             cand = d / CONFIG_NAME
             if cand.is_file():
-                return cand
+                # RESOLVED, because `load` resolves an explicitly-passed path and the two must
+                # agree. When I moved that `.resolve()` into `_as_path` it stopped covering the
+                # discovered path, so a `library.toml` that is itself a SYMLINK anchored every
+                # relative setting at the link's directory when found and at the target's when
+                # named — the same file, two different trees, depending how you opened it.
+                return _as_path(cand, "discovered config")
         raise ConfigError(
             f"no {CONFIG_NAME} found in {here} or any parent — run `klode init` to scaffold one"
         )
 
     @classmethod
-    def load(cls, config_path: Path | None = None, *, start: Path | None = None) -> "Config":
-        path = (config_path or cls.find(start)).resolve()
+    def load(cls, config_path: Path | str | None = None, *,
+             start: Path | str | None = None) -> "Config":
+        path = _as_path(config_path, "config_path") or cls.find(start)
         try:
             with open(path, "rb") as f:
                 raw = tomllib.load(f)
@@ -121,7 +156,7 @@ class Config:
 
         lib_section = _table("library")
         lib_dirname = str(lib_section.get("dir", "library"))
-        lib = (root / lib_dirname).resolve()
+        lib = _as_path(root / lib_dirname, "[library].dir")
         try:
             lib_rel = lib.relative_to(root).as_posix()
         except ValueError:
@@ -129,7 +164,7 @@ class Config:
                 f"[library].dir ({lib_dirname!r}) must be inside the config directory {root}"
             )
 
-        cards = (lib / str(lib_section.get("cards", "cards"))).resolve()
+        cards = _as_path(lib / str(lib_section.get("cards", "cards")), "[library].cards")
 
         raw_shelves = lib_section.get("shelves", [])
         if raw_shelves and not isinstance(raw_shelves, list):
@@ -141,14 +176,22 @@ class Config:
         for s in shelves:
             if not isinstance(s, str) or "/" in s or s in ("", ".", ".."):
                 raise ConfigError(f"[library].shelves entry {s!r} must be a simple directory name")
+            # A shelf name reaches `git ls-files` as a pathspec. `--` at the call site stops it
+            # being read as an option; refusing the shape here means the guard is not the only
+            # thing standing between a shelf called `--others` and a silent copyright leak.
+            if s.startswith("-"):
+                raise ConfigError(f"[library].shelves entry {s!r} must not begin with '-' — it is "
+                                  "passed to git as a path, where a leading dash reads as a flag")
 
         bib_section = _table("bibliography")
         bib_enabled = bool(bib_section.get("enabled", True))
-        bib = (lib / str(bib_section.get("path", "BIBLIOGRAPHY.md"))).resolve() if bib_enabled else None
+        bib = (_as_path(lib / str(bib_section.get("path", "BIBLIOGRAPHY.md")),
+                        "[bibliography].path") if bib_enabled else None)
 
         fw_section = _table("frameworks")
         fw_enabled = bool(fw_section.get("enabled", False))
-        frameworks = (lib / str(fw_section.get("dir", "frameworks"))).resolve() if fw_enabled else None
+        frameworks = (_as_path(lib / str(fw_section.get("dir", "frameworks")),
+                               "[frameworks].dir") if fw_enabled else None)
         syntheses = (
             (frameworks / str(fw_section.get("syntheses", "_syntheses"))).resolve()
             if fw_enabled and frameworks else None
@@ -172,11 +215,26 @@ class Config:
         for d in extra:
             if not isinstance(d, str) or "/" in d or d in ("", ".", ".."):
                 raise ConfigError(f"[copyright].extra_guard_dirs entry {d!r} must be a simple directory name")
+            if d.startswith("-"):                     # same pathspec rule as [library].shelves
+                raise ConfigError(f"[copyright].extra_guard_dirs entry {d!r} must not begin with "
+                                  "'-' — it is passed to git as a path, where a leading dash "
+                                  "reads as a flag")
         guard = list(shelves) + [str(d) for d in extra]
         try:
             guard_relpaths = tuple((lib / g).resolve().relative_to(root).as_posix() for g in guard)
         except ValueError as e:
             raise ConfigError(f"a guard dir resolves outside the library root: {e}")
+        # Validate the value git will ACTUALLY receive. Checking the raw shelf names left the
+        # composed path unguarded: `[library].dir = "--format="` with an ordinary shelf produced
+        # the pathspec `--format=/books`, which `git ls-files` accepts as an option and which
+        # hides every tracked file. Whatever assembles a pathspec, the pathspec is what must not
+        # look like a flag.
+        for rel in guard_relpaths:
+            if rel.startswith("-"):
+                raise ConfigError(
+                    f"the copyright guard would pass {rel!r} to git as a path, where a leading "
+                    "dash reads as a flag — rename [library].dir or the shelf so the composed "
+                    "path does not begin with '-'")
 
         # identity — self-describing KB metadata, all optional and backward-compatible.
         # A config with no [library].id still loads: id falls back to a slug of the dir name.
@@ -215,7 +273,7 @@ class Config:
 
         nz = _table("normalize")
         backup_raw = str(nz.get("backup_dir", "") or "").strip()
-        backup_dir = (root / backup_raw).resolve() if backup_raw else None
+        backup_dir = _as_path(root / backup_raw, "[normalize].backup_dir") if backup_raw else None
         try:
             backup_keep = int(nz.get("backup_keep", 3))
         except (TypeError, ValueError):

@@ -648,6 +648,113 @@ class SecretsStayOut(unittest.TestCase):
         self.assertEqual(spec.env, "KLODE_DOCLING_URL")     # the env override still wins
         self.assertIsNone(spec.default)                     # absent, never a guessed localhost
 
+    def test_an_integer_spelling_of_a_public_address_is_not_a_container_name(self):
+        """`http://134744072` resolves to 8.8.8.8 and was ACCEPTED: it carries no dot, so the
+        single-label rule that exists to allow `http://docling` classified it as a container name
+        before `ipaddress` was ever consulted. Whole documents were uploadable in cleartext to a
+        public address with no opt-in at all."""
+        for host in ("134744072", "0x08080808", "0xd8ef2601", "3627734529"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_the_container_name_allowance_survives_the_fix(self):
+        """Over-tightening breaks the documented Docker/k8s deployment, which is the whole reason
+        the loose single-label rule was written. A name that cannot be an address still passes."""
+        for host in ("docling", "docling-serve", "marker", "svc1"):
+            with self.subTest(host=host):
+                url = f"http://{host}:15001"
+                r = settings.resolve(None, file_values={"ingest.docling_url": url})
+                self.assertEqual(r.value("ingest.docling_url"), url)
+
+    def test_host_classification_agrees_with_ipaddress_for_every_spelling(self):
+        """The assertion, not just the fix: whatever spelling a host wears, if it names an address
+        then `_is_private_host` must answer for that ADDRESS, never for its shape."""
+        import ipaddress
+        for n in (0x08080808, 0x0A000005, 0x7F000001, 0xC0A80001, 0x64400001, 1, 0xFFFFFFFF):
+            ip = ipaddress.IPv4Address(n)
+            expected = settings._is_private_ip(ip)
+            for spelling in (str(ip), str(n), hex(n)):
+                with self.subTest(spelling=spelling, ip=str(ip)):
+                    self.assertEqual(settings._is_private_host(spelling), expected,
+                                     f"{spelling} spells {ip}, classified inconsistently")
+
+    def test_a_leading_zero_integer_is_refused_because_it_is_ambiguous(self):
+        """`0170000000` is 10.33.254.128 to Python's `int()` — private, so the guard allowed it —
+        and 1.224.0.0 to the resolver, which reads a leading zero as octal. The guard classified
+        one address while the socket went to another. There is no correct value to return, which
+        is exactly why the answer must be "not classifiable", and unclassifiable must mean
+        refused rather than falling through to the container-name rule."""
+        for host in ("0170000000", "010", "0177001", "00134744072"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_a_percent_encoded_host_is_classified_as_what_will_be_dialled(self):
+        """`urlsplit().hostname` keeps percent-escapes, so `8%2e8%2e8%2e8` reached the classifier
+        with no dot in it, took the single-label branch, and was allowed — while urllib decodes it
+        to 8.8.8.8 before opening the socket."""
+        for host in ("8%2e8%2e8%2e8", "8%2E8%2E8%2E8"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    settings.resolve(None, file_values={
+                        "ingest.docling_url": f"http://{host}:15001"})
+
+    def test_no_numeric_looking_host_reaches_the_container_name_rule(self):
+        """The container-name rule means "this can only be a local name". A string of digits is
+        never that, so it must not be able to reach it by failing every earlier test."""
+        for host in ("0170000000", "0x", "0b", "007"):
+            with self.subTest(host=host):
+                if host.isdigit() or host[:2] in ("0x", "0o", "0b"):
+                    self.assertFalse(settings._is_private_host(host),
+                                     f"{host} was classified as a container name")
+
+    def test_an_ambiguous_dotted_spelling_fails_closed(self):
+        """A resolver reads `010.010.010.010` as octal (8.8.8.8); Python's `ipaddress` refuses the
+        leading zeros outright. An ambiguous spelling must be treated as public, not guessed."""
+        self.assertFalse(settings._is_private_host("010.010.010.010"))
+        self.assertFalse(settings._is_private_host("0300.0250.0010.0010"))
+
+
+class ARemedyMustBeRunnableAsPrinted(_EnvIsolated):
+    """The plaintext-http refusal told the user to set `[ingest].allow_insecure_http = true`. That
+    key is not in SPEC, unknown keys are rejected, so following the instruction made the whole
+    settings file fail to load — every settings-resolving command broken, by the documented fix.
+
+    It also could not have worked as a setting: `_validate_url` reads the environment directly, so
+    adding the key would have resolved it and changed nothing about transport. And a value in the
+    file is a WIDER grant than the variable — it covers every URL setting, including ones added in
+    a later release, with no re-consent. So the message was wrong, not the schema.
+    """
+
+    def test_the_named_escape_hatch_actually_permits_the_endpoint(self):
+        url = "http://docling.example.com:15001"
+        with self.assertRaises(ValueError) as cm:
+            settings.resolve(None, file_values={"ingest.docling_url": url})
+        self.assertIn("KLODE_ALLOW_INSECURE_HTTP", str(cm.exception))
+        os.environ["KLODE_ALLOW_INSECURE_HTTP"] = "1"
+        self.addCleanup(os.environ.pop, "KLODE_ALLOW_INSECURE_HTTP", None)
+        r = settings.resolve(None, file_values={"ingest.docling_url": url})
+        self.assertEqual(r.value("ingest.docling_url"), url)
+
+    def test_no_message_or_help_text_names_a_setting_that_does_not_exist(self):
+        """The generic guard. Any `[section].key` token appearing in SPEC help or in a message this
+        module raises must be a real setting — otherwise the tool is documenting a remedy it will
+        reject, which is how the original defect got written and stayed."""
+        import pathlib
+        import re
+        known = {f"{s.section}.{s.key}" for s in settings.SPEC}
+        sections = {s.section for s in settings.SPEC}
+        src = pathlib.Path(settings.__file__).read_text(encoding="utf-8")
+        offenders = sorted({
+            f"[{sec}].{key}" for sec, key in re.findall(r"\[(\w+)\]\.(\w+)", src)
+            if sec in sections and f"{sec}.{key}" not in known
+        })
+        self.assertEqual(offenders, [], "settings.py names setting(s) that do not exist: "
+                                        + ", ".join(offenders))
+
 
 if __name__ == "__main__":
     unittest.main()

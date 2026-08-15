@@ -81,8 +81,11 @@ SPEC: tuple[Spec, ...] = (
          "default on purpose (self-enhancement bias: it must differ from whatever produced the "
          "draft)"),
     Spec("judge", "permutations", "KLODE_JUDGE_PERMUTATIONS", 2, int,
-         "how many opposed level orders to average over, against position bias. Each costs an API "
-         "call under --live-judge: 1 + permutations per criterion", lo=1, hi=16),
+         "how many opposed level orders to average over, against position bias. 1 (one forward "
+         "pass, explicitly undebiased) or an even number to 16 — an odd count presents one order "
+         "more often and keeps the bias the average exists to cancel. Each costs an API call "
+         "under --live-judge: 1 + permutations per criterion",
+         choices=(1, 2, 4, 6, 8, 10, 12, 14, 16)),
     Spec("judge", "hurdle", "KLODE_JUDGE_HURDLE", 60, int,
          "Go/Recycle threshold, 0..100 — the mean criterion percentage a draft must reach",
          lo=0, hi=100),
@@ -294,7 +297,10 @@ def _validate_url(spec: Spec, value: str, where: str) -> None:
             f"{label} uses plaintext http to a host that may be public ({u.hostname}). klode "
             "uploads whole documents to this endpoint. Use https, point it at an address that "
             "cannot be public (loopback, RFC1918, tailnet 100.64/10, or a single-label name like "
-            "`docling`), or set [ingest].allow_insecure_http = true to accept the risk knowingly.")
+            "`docling`), or export KLODE_ALLOW_INSECURE_HTTP=1 to accept the risk knowingly. "
+            "That opt-out is an environment variable and NOT a setting on purpose: a value "
+            "in this file would go on authorising cleartext uploads for every URL setting, "
+            "including ones added in a later release, long after the session that needed it.")
 
 
 def _insecure_http_allowed() -> bool:
@@ -302,33 +308,94 @@ def _insecure_http_allowed() -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _is_private_host(host: str | None) -> bool:
-    """Is this destination on a network where TLS is not the meaningful control?"""
-    if not host:
-        return False
-    h = host.strip("[]").lower()
-    # RFC 2606 / RFC 6761 reserved names can never resolve to a real public host, so cleartext to
-    # one leaks nothing. `.test` in particular is what a test suite is supposed to use.
-    if h == "localhost" or h.endswith((".local", ".internal", ".lan", ".home.arpa",
-                                       ".test", ".example", ".invalid", ".localhost")):
-        return True
-    # A SINGLE-LABEL name (`docling`, `docling-serve`) has no public DNS answer — it can only be
-    # resolved by a container network, a hosts file, or a local search domain. Rejecting these
-    # broke the ordinary Docker and Kubernetes deployment, which was the point of the setting.
-    # Note the limit, stated rather than hidden: a lexical rule cannot prove where a name RESOLVES;
-    # `[ingest].allow_insecure_http` exists for the cases it cannot classify.
-    if "." not in h:
-        return True
+def _numeric_host(h: str):
+    """The address a host SPELLS, for any spelling a resolver accepts — or None when it names
+    nothing numeric.
+
+    `ipaddress` parses only the canonical forms, and the single-label rule below reads anything
+    without a dot as a container name. A bare integer has no dot, so `http://134744072` took that
+    branch and was classified private — while resolving, in fact, to 8.8.8.8. Same for the hex
+    literal `0x08080808`. Whole documents were uploadable in cleartext to a public address with no
+    opt-in, past the one guard that exists to stop it.
+
+    Non-canonical DOTTED forms (`010.010.010.010`, where a resolver reads leading zeros as octal
+    but Python refuses them) deliberately return None: they fall through to the dotted branch and
+    are treated as a public name. That is the fail-closed reading of an ambiguous spelling.
+    """
     import ipaddress
     try:
-        ip = ipaddress.ip_address(h)
+        return ipaddress.ip_address(h)
     except ValueError:
-        return False                                  # a public DNS name
+        pass
+    if h[:2] in ("0x", "0o", "0b"):
+        try:
+            n = int(h, 0)
+        except ValueError:
+            return None
+    else:
+        if not h.isdigit():
+            return None
+        # A BARE decimal with a leading zero is read as octal by the resolver and as decimal by
+        # Python — two different addresses from one string. `0170000000` is 10.33.254.128 to
+        # `int()` (private, so the guard allowed it) and 1.224.0.0 to `getaddrinfo` (public, so
+        # that is where the document went). There is no right answer to return here, which is
+        # exactly why the answer must be "not classifiable".
+        if len(h) > 1 and h[0] == "0":
+            return None
+        n = int(h)
+    if 0 <= n <= 0xFFFFFFFF:
+        return ipaddress.IPv4Address(n)
+    if 0 <= n < 2 ** 128:
+        return ipaddress.IPv6Address(n)
+    return None
+
+
+def _is_private_ip(ip) -> bool:
+    import ipaddress
     return bool(ip.is_private or ip.is_loopback or ip.is_link_local
                 # 100.64/10 is CGNAT shared address space — where tailscale/headscale live. Python
                 # does not class it private, and it is exactly the documented deployment.
                 or ip in ipaddress.ip_network("100.64.0.0/10")
                 or (ip.version == 6 and ip in ipaddress.ip_network("fd00::/8")))
+
+
+def _is_private_host(host: str | None) -> bool:
+    """Is this destination on a network where TLS is not the meaningful control?"""
+    if not host:
+        return False
+    # Classify what will actually be CONTACTED. `urlsplit().hostname` keeps percent-escapes, so
+    # `8%2e8%2e8%2e8` arrived here with no dot at all, took the single-label branch, and was
+    # allowed — while urllib decodes it to 8.8.8.8 before opening the socket. Decoding first means
+    # the string being judged is the string being dialled. (An IPv6 zone id like `fe80::1%eth0`
+    # is not a valid escape sequence, so `unquote` leaves it alone.)
+    from urllib.parse import unquote
+    h = unquote(host).strip("[]").lower()
+    # RFC 2606 / RFC 6761 reserved names can never resolve to a real public host, so cleartext to
+    # one leaks nothing. `.test` in particular is what a test suite is supposed to use.
+    if h == "localhost" or h.endswith((".local", ".internal", ".lan", ".home.arpa",
+                                       ".test", ".example", ".invalid", ".localhost")):
+        return True
+    # Classify by ADDRESS before falling back to any name rule: a host that spells an address is an
+    # address, whatever spelling it wears. This must precede the single-label branch below, which
+    # is what the integer spellings were escaping through.
+    ip = _numeric_host(h)
+    if ip is not None:
+        return _is_private_ip(ip)
+    # A host that LOOKS numeric but could not be pinned to one address must not fall through to
+    # the single-label rule below — that rule means "this can only be a container name", and a
+    # string of digits is not a container name. `0170000000` reached it and was allowed as
+    # private while resolving to public 1.224.0.0. Unclassifiable has to mean refused, not
+    # "try the next branch and see if it says yes".
+    if h.isdigit() or h[:2] in ("0x", "0o", "0b"):
+        return False
+    # A SINGLE-LABEL name (`docling`, `docling-serve`) has no public DNS answer — it can only be
+    # resolved by a container network, a hosts file, or a local search domain. Rejecting these
+    # broke the ordinary Docker and Kubernetes deployment, which was the point of the setting.
+    # Note the limit, stated rather than hidden: a lexical rule cannot prove where a name RESOLVES;
+    # `KLODE_ALLOW_INSECURE_HTTP` exists for the cases it cannot classify.
+    if "." not in h:
+        return True
+    return False                                      # a public DNS name
 
 
 def _coerce(spec: Spec, value, where: str):

@@ -16,12 +16,12 @@ Idempotent. Emits `cards/INDEX.md` (the human board) and returns a coverage repo
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import re
 
-from .common import MARK, body_after_marker, fm_get, front_matter, read
+from .common import (MARK, NON_CARDS, body_after_marker, fm_get, front_matter,
+                      glob_in, read)
 from .config import Config, ConfigError
 
 
@@ -44,7 +44,7 @@ def framework_source_map(cfg: Config) -> dict[str, str]:
     # charset must match common.src_path_re, else an uppercase/underscore source (e.g. Booth_1961.txt)
     # passes `klode check` but is invisible here — its framework link and consult de-dup silently break
     src_re = re.compile(rf"{re.escape(cfg.lib_rel)}/(?:{shelves})/[A-Za-z0-9._-]+\.txt")
-    for p in glob.glob(os.path.join(cfg.frameworks, "*.md")):
+    for p in glob_in(cfg.frameworks, "*.md"):
         b = os.path.basename(p)
         if b == "README.md":
             continue
@@ -92,7 +92,7 @@ def _enumerate_sources(cfg: Config) -> list[dict]:
     fwmap = framework_source_map(cfg)
     sources = []
     for shelf in cfg.shelves:
-        for p in sorted(glob.glob(os.path.join(cfg.lib, shelf, "*.txt"))):
+        for p in sorted(glob_in(cfg.lib, shelf, "*.txt")):
             stem = os.path.basename(p)[:-4]
             rel = f"{cfg.lib_rel}/{shelf}/{stem}.txt"
             bib = bib_line_for(cfg, stem)
@@ -106,6 +106,72 @@ def _enumerate_sources(cfg: Config) -> list[dict]:
     return sources
 
 
+def _on_disk(directory, suffix: str, exclude=()) -> list[str] | None:
+    """Names in `directory` matching `suffix`, by the same rules `glob` applies (no dotfiles,
+    case-insensitive suffix — Windows globs `CARD.MD` against `*.md` while `endswith` does not).
+    None when the directory cannot be read."""
+    try:
+        return [e.name for e in os.scandir(directory)
+                if e.is_file() and e.name.lower().endswith(suffix)
+                and not e.name.startswith(".") and e.name not in exclude]
+    except OSError:
+        return None
+
+
+def _refuse_if_enumeration_disagrees(cfg: Config, existing: list, sources: list) -> None:
+    """Refuse to rewrite the board from an enumeration that disagrees with the disk.
+
+    `check` only reports; THIS rewrites INDEX.md and every card, so the write side is where a
+    blind enumeration becomes irreversible. Three enumerations feed it and all three could fail
+    open independently:
+
+      * cards — a metacharacter path returned [] and the board was overwritten empty;
+      * SOURCES — a partial shelf scan stays truthy, so `sources` looked fine and the board was
+        rebuilt missing whatever the scan dropped, with no guard firing at all;
+      * frameworks — a swallowed read error becomes an empty map, and build then writes
+        `framework: none` over valid card metadata and drops the board links.
+    """
+    if cfg.cards.is_dir() and not existing:
+        names = _on_disk(cfg.cards, ".md", NON_CARDS)
+        if names is None:
+            raise ConfigError(f"cannot read the cards directory {cfg.cards} — refusing to rewrite "
+                              "the board from an enumeration that could not run")
+        if names:
+            raise ConfigError(
+                f"card enumeration returned nothing while {len(names)} card file(s) sit in "
+                f"{cfg.cards} ({', '.join(sorted(names)[:3])}…) — refusing to rewrite the board "
+                "from an enumeration that disagrees with the directory. This is a bug in klode.")
+
+    seen = {s["id"] for s in sources}
+    for shelf in cfg.shelves:
+        d = cfg.lib / shelf
+        if not d.is_dir():
+            continue
+        names = _on_disk(d, ".txt")
+        if names is None:
+            raise ConfigError(f"cannot read the shelf directory {d} — refusing to rewrite the "
+                              "board from a corpus scan that could not run")
+        missed = {n[:-4] for n in names} - seen
+        if missed:
+            raise ConfigError(
+                f"source enumeration missed {len(missed)} file(s) in {d} "
+                f"({', '.join(sorted(missed)[:3])}…) — refusing to rebuild the board from a "
+                "partial corpus scan. This is a bug in klode, not an incomplete shelf.")
+
+    if cfg.fw_enabled and cfg.frameworks and cfg.frameworks.is_dir():
+        names = _on_disk(cfg.frameworks, ".md", ("README.md",))
+        if names is None:
+            raise ConfigError(f"cannot read the frameworks directory {cfg.frameworks} — refusing "
+                              "to rewrite card metadata from an enumeration that could not run")
+        enumerated = {os.path.basename(p) for p in glob_in(cfg.frameworks, "*.md")}
+        missed = set(names) - enumerated
+        if missed:
+            raise ConfigError(
+                f"framework enumeration missed {len(missed)} file(s) in {cfg.frameworks} "
+                f"({', '.join(sorted(missed)[:3])}…) — refusing to rewrite cards, which would "
+                "record `framework: none` over links that exist. This is a bug in klode.")
+
+
 def build(cfg: Config, *, stamp: bool = False) -> dict:
     """Scaffold/refresh every card and the board. Returns a stats dict. `stamp` (re)computes each
     installed source's freshness hash — the author's "I re-verified against the current source"
@@ -113,8 +179,15 @@ def build(cfg: Config, *, stamp: bool = False) -> dict:
     os.makedirs(cfg.cards, exist_ok=True)
     sources = _enumerate_sources(cfg)
 
-    existing = [p for p in glob.glob(os.path.join(cfg.cards, "*.md"))
-                if os.path.basename(p) not in ("INDEX.md", "README.md")]
+    existing = [p for p in glob_in(cfg.cards, "*.md")
+                if os.path.basename(p) not in NON_CARDS]
+    # The write-side of the enumeration tripwire, and the one that actually matters. `check` only
+    # reports; THIS rewrites INDEX.md. The guard below covers "no sources but cards exist"; it
+    # cannot see the case where BOTH enumerations come back empty because enumeration itself
+    # failed — which is exactly what a metacharacter path did, and what an unreadable directory
+    # would still do. Verified: with enumeration stubbed empty, build overwrote a 2-card INDEX
+    # with an empty one and reported success.
+    _refuse_if_enumeration_disagrees(cfg, existing, sources)
     if not sources and existing:
         # Fresh clone: the git-ignored corpus is not installed. Do NOT rewrite cards or overwrite
         # the tracked INDEX.md with an empty board — that is silent data loss AND would make the
