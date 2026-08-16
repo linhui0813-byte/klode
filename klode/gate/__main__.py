@@ -24,7 +24,16 @@ from . import authoring, spec as _spec
 
 
 def _cfg(args):
-    return lib.Config.load(Path(args.config))
+    """Load the KB, reporting a bad `-c` as a message rather than a traceback.
+
+    `ConfigError` is raised precisely so a missing or malformed `library.toml` arrives as one
+    readable line — which is what `klode.lib`'s CLI prints. This entry point let it escape, so the
+    same mistake produced a clean sentence from one command and 25 lines of stack from the other.
+    """
+    try:
+        return lib.Config.load(Path(args.config))
+    except lib.ConfigError as e:
+        raise SystemExit(f"config error: {e}")
 
 
 def _target(cfg, dimension: str) -> Path:
@@ -121,22 +130,51 @@ def cmd_check(args) -> int:
     return 0
 
 
-def _load_doc(path: Path) -> dict:
+def _load_doc(path: Path, *, allow_stale_approval: bool = False) -> dict:
     """Read + structurally validate a rubric before mutating it. Rewriting raw JSON blind meant a
     non-object file raised AttributeError, and a structurally invalid rubric could be re-pinned and
-    reported as done."""
+    reported as done.
+
+    `allow_stale_approval` demotes the doc to `candidate` BEFORE the structural parse. Without it,
+    the approval-digest check inside `parse` refuses an already-approved rubric whose body was
+    edited — which is right for a reader, and fatal for the two commands whose whole job is to
+    rewrite that approval. `approve` and `repin` both pop it; nothing else does, so an edited
+    rubric is still refused everywhere it would be READ.
+    """
     if not path.is_file():
         raise SystemExit(f"no rubric at {path}")
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_spec._no_duplicate_keys)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise SystemExit(f"{path}: cannot be read as JSON — {e}")
-    except _spec.SpecError as e:
-        raise SystemExit(f"{path}: {e}")
+        size = path.stat().st_size
+        if size > _spec.MAX_SPEC_BYTES:
+            raise SystemExit(f"{path}: {size} bytes exceeds the {_spec.MAX_SPEC_BYTES}-byte "
+                             "rubric limit")
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise SystemExit(f"{path}: cannot be read — {e}")
+    except UnicodeDecodeError as e:
+        raise SystemExit(f"{path}: is not valid UTF-8 — {e}")
     try:
-        _spec.parse(doc)                      # structure only; the corpus may legitimately have moved
+        doc = json.loads(raw, object_pairs_hook=_spec._no_duplicate_keys)
     except _spec.SpecError as e:
-        # an already-approved rubric whose body was edited fails here, which is the point
+        raise SystemExit(f"{path}: {e}")      # the duplicate-key hook, already diagnosed
+    except ValueError as e:
+        # JSONDecodeError subclasses ValueError, but so does the int digit-conversion limit a
+        # 5000-digit number trips. `spec.load` already caught both; this reader of the same file
+        # caught only the subclass, and the writer is the side that must not be the weaker one.
+        raise SystemExit(f"{path}: cannot be read as JSON — {e}")
+    except RecursionError:
+        raise SystemExit(f"{path}: JSON is nested too deeply to parse safely")
+    # Demote a COPY, never the caller's document. Mutating `doc` here silenced `cmd_repin`'s
+    # "admission reset to 'candidate'" notice, because that branch tests the admission this
+    # function had already overwritten — so repin revoked a human's approval and said nothing.
+    # The bypass is about what gets VALIDATED; what the caller then writes is the caller's call.
+    probe = doc
+    if allow_stale_approval and isinstance(doc, dict):
+        probe = {**doc, "admission": "candidate"}
+        probe.pop("approved_digest", None)
+    try:
+        _spec.parse(probe)                    # structure only; the corpus may legitimately have moved
+    except _spec.SpecError as e:
         raise SystemExit(f"{path}: not a valid rubric, refusing to rewrite it — {e}")
     return doc
 
@@ -144,7 +182,9 @@ def _load_doc(path: Path) -> dict:
 def cmd_repin(args) -> int:
     cfg = _cfg(args)
     path = _target(cfg, args.dimension)
-    doc = _load_doc(path)
+    # allow_stale_approval: repin RESETS admission to candidate a few lines below, so refusing an
+    # edited body here left a moved corpus plus an edited rubric with no way back at all.
+    doc = _load_doc(path, allow_stale_approval=True)
     doc["fingerprint"] = authoring.fingerprint(cfg, doc.get("panel") or [])
     # Re-pinning asserts a human re-read the sources against the rubric. Silently keeping the
     # approval would let a source change slip into canon under an old human's signature.
@@ -164,7 +204,12 @@ def cmd_approve(args) -> int:
     BYTES have not changed since approval, so approve-then-edit is detected instead of inherited."""
     cfg = _cfg(args)
     path = _target(cfg, args.dimension)
-    doc = _load_doc(path)
+    # The demotion below used to sit AFTER this load, so `parse` refused the stale digest and
+    # `approve` could never re-approve an edited rubric — the one state its own error message
+    # tells you to run it in. An ordinary edit to a level descriptor bricked the rubric: the gate
+    # refused to score it, approve and repin both refused to rewrite it, and the only way out was
+    # hand-deleting `approved_digest` from the JSON, which nothing documented.
+    doc = _load_doc(path, allow_stale_approval=True)
     doc["admission"] = "candidate"                        # digest covers the body, not the verdict
     doc.pop("approved_digest", None)
     try:

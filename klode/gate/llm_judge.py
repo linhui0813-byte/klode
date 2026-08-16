@@ -12,8 +12,9 @@ plus a note. Steps are derived once per criterion and reused.
 **Balanced permutation.** Each criterion is scored more than once with the level descriptors
 presented in a different order, and the results averaged. Position bias is the most severe defect in
 rubric-judge studies: the same draft scores differently depending on where a band sits in the list.
-Averaging over reversed orders cancels the first-order effect. It does not cancel every bias, which
-is why the third thing exists.
+Averaging over reversed orders cancels the first-order effect — CONDITIONALLY, on the two orders
+being presented equally often, which is why `permutations` must be 1 or even and an odd count is
+refused. It does not cancel every bias, which is why the third thing exists.
 
 **Calibration gating — the part that matters.** A judge that has not been measured against human
 scores on THIS rubric cannot report an authoritative verdict. `calibrated_for()` answers for one
@@ -48,25 +49,60 @@ class JudgeError(RuntimeError):
     invents a score when the model failed is worse than one that abstains."""
 
 
+# Bumped whenever STEPS_PROMPT or FORM_PROMPT changes. Those prompts ARE the instrument: reword
+# one and the judge answers differently, so an agreement number measured through the old wording
+# does not describe the new one. `tests/test_llm_judge.py` pins the prompts to this constant, so a
+# prompt edit that forgets to bump it fails there rather than silently inheriting a calibration.
+PROMPT_VERSION = "1"
+
+
 @dataclass(frozen=True)
 class Calibration:
-    """Measured agreement between this judge and human raters, on ONE rubric.
+    """Measured agreement between this judge and human raters, on ONE rubric, through ONE judge.
 
     Not a claim — a record. `rubric_digest` is `spec.rubric_identity(spec)` of the rubric the
     measurement was taken against; `agreement` is quadratic-weighted kappa against human scores,
-    the same statistic `eval/rate.py` reports for two humans."""
+    the same statistic `eval/rate.py` reports for two humans.
+
+    The instrument is BOTH halves. This class pinned only the rubric, on the reasoning that
+    rewording a level descriptor produces a different instrument — which is true, and equally true
+    of the judge doing the reading. A record measured with one model at `permutations=2` returned
+    `covers() -> True` for a different model running undebiased at `permutations=1`, and
+    `calibrated` is the single bit the review service uses to drop `non_production`. So `model`,
+    `permutations` and `prompt_version` are part of the identity now.
+
+    They default to None so an existing record still constructs — and then fails closed, since None
+    matches no live judge. A stored calibration that stops claiming coverage is the correct
+    migration; one that keeps claiming it for an unmeasured instrument is the defect.
+    """
     rubric_digest: str
     n: int                       # human-scored drafts the agreement was measured over
     agreement: float             # QWK vs human
     bar: float = 0.6
     min_n: int = 20
     measured_on: str = ""        # ISO date; provenance, not logic
+    model: str | None = None            # the judge model the agreement was measured through
+    permutations: int | None = None     # the debiasing policy in force during measurement
+    prompt_version: str | None = None   # PROMPT_VERSION at measurement time
 
     def clears(self) -> bool:
         return self.n >= self.min_n and self.agreement >= self.bar
 
-    def covers(self, rubric_digest: str) -> bool:
-        return self.clears() and rubric_digest == self.rubric_digest
+    def covers(self, rubric_digest: str, *, model: str | None = None,
+               permutations: int | None = None) -> bool:
+        """True only when this record was measured on THIS rubric, through THIS judge.
+
+        A missing field on either side means "not measured for that", so it fails closed rather
+        than matching by omission."""
+        if not (self.clears() and rubric_digest == self.rubric_digest):
+            return False
+        if self.prompt_version != PROMPT_VERSION:
+            return False
+        # `type(...) is int`, not `isinstance`/`==`: Python equality makes `True == 1` and
+        # `2.0 == 2`, so a record carrying either covered a live policy the judge itself refuses
+        # to be constructed with.
+        return (self.model is not None and self.model == model
+                and type(self.permutations) is int and self.permutations == permutations)
 
 
 def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
@@ -93,10 +129,15 @@ def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
             # (ConnectionResetError, timeout) that URLError does not cover, and an uncaught one
             # crashes the review with a traceback instead of the documented JudgeError.
             raise JudgeError(f"judge transport failed: {e}") from e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            # HTTP 200 only says bytes arrived. Invalid UTF-8/JSON is still a transport failure and
+            # must stay behind the same fail-loud JudgeError boundary as a broken response shape.
+            raise JudgeError(f"unexpected model response encoding: {e}") from e
         try:
             return "".join(b.get("text", "") for b in payload["content"])
-        except (KeyError, TypeError) as e:
+        except (AttributeError, KeyError, TypeError) as e:
             raise JudgeError(f"unexpected model response shape: {payload!r:.200}") from e
+    call.model = model      # declared, so a judge can verify its label matches the transport
     return call
 
 
@@ -158,10 +199,25 @@ reward or penalize anything the criterion does not mention. Output ONLY a JSON o
 class LLMJudge:
     """A `Judge` that asks a model, twice per criterion, in opposed level orders."""
 
+    # `1` (one forward pass, explicitly undebiased and cheap) or an EVEN count. `reverse=bool(i%2)`
+    # splits an odd count unevenly — at 3 it is two forward runs and one reversed — so the mean
+    # keeps a share of the position bias the averaging exists to cancel, at 1.5x the API cost. The
+    # trap is that 3 looks more thorough than 2 and is strictly less debiased.
+    VALID_PERMUTATIONS = (1,) + tuple(range(2, 17, 2))
+
     def __init__(self, transport, *, model: str = "", permutations: int = 2,
                  calibration: "Calibration | None" = None):
-        if permutations < 1:
-            raise ValueError(f"permutations must be >= 1, got {permutations}")
+        # `permutations < 1` was the whole guard, and `True < 1` is False — so `permutations=True`
+        # constructed and silently ran ONE forward pass, and `2.0` got as far as `range()` before
+        # failing with a TypeError from somewhere unrelated-looking.
+        if isinstance(permutations, bool) or not isinstance(permutations, int):
+            raise ValueError(f"permutations must be an integer, got {permutations!r}")
+        if permutations not in self.VALID_PERMUTATIONS:
+            raise ValueError(
+                f"permutations must be 1 (one forward pass, explicitly undebiased) or an even "
+                f"number up to 16 — got {permutations}. An odd count above 1 presents one order "
+                f"more often than the other, so it retains the position bias the average exists "
+                f"to cancel while costing more than the even count below it.")
         if not model or not model.strip():
             # There is no default model ON PURPOSE (self-enhancement bias: the judge must differ
             # from whatever produced the draft), but "no default" is only meaningful if the empty
@@ -170,6 +226,17 @@ class LLMJudge:
             raise ValueError("LLMJudge requires an explicit `model` — pick one from a DIFFERENT "
                              "family than whatever produced the draft (self-enhancement bias); "
                              "there is deliberately no default")
+        # `self.model` is the label a Calibration is matched against, and it was only ever a
+        # CLAIM: the transport is injectable, so it could send a different model entirely and the
+        # record would still certify. A transport that declares its model is now checked against
+        # the label. One that declares nothing keeps the weaker property — stated here rather than
+        # implied, because it is the seam a wrong calibration would come through.
+        declared = getattr(transport, "model", None)
+        if declared is not None and declared != model:
+            raise ValueError(
+                f"transport sends model {declared!r} but the judge is labelled {model!r} — the "
+                "label is what a Calibration is matched against, so a mismatch would certify a "
+                "judge nobody measured")
         self._call = transport
         self.model = model
         self._permutations = permutations
@@ -179,23 +246,49 @@ class LLMJudge:
     # -- calibration -------------------------------------------------------
     @property
     def calibrated(self) -> bool:
-        return bool(self.calibration and self.calibration.clears())
+        """Instrument-aware, like `calibrated_for`. This checked only that the RECORD cleared its
+        bar, so a direct consumer got True for a legacy record, the wrong model, the wrong
+        permutation policy, or a stale prompt version — every case `calibrated_for` refuses. Two
+        properties on one object disagreeing about whether the judge is calibrated is worse than
+        either answer."""
+        c = self.calibration
+        return bool(c and c.clears() and c.prompt_version == PROMPT_VERSION
+                    and c.model is not None and c.model == self.model
+                    and type(c.permutations) is int and c.permutations == self._permutations)
 
     def calibrated_for(self, rubric_digest: str) -> bool:
-        """True only when the calibration was measured on THIS rubric and cleared its bar."""
-        return bool(self.calibration and self.calibration.covers(rubric_digest))
+        """True only when the calibration was measured on THIS rubric, through THIS judge —
+        same model, same permutation policy, same prompt version — and cleared its bar."""
+        return bool(self.calibration and self.calibration.covers(
+            rubric_digest, model=self.model, permutations=self._permutations))
 
     # -- scoring -----------------------------------------------------------
+    @staticmethod
+    def _criterion_key(item) -> str:
+        """Cache key: the criterion's CONTENT, not merely its id.
+
+        A criterion id is deliberately stable across rubric revisions — that is what makes human
+        labels collected against it survive an edit. Caching steps by id alone therefore reused the
+        steps derived for the OLD wording after the statement, guidance or levels changed, so the
+        revised criterion was scored against a standard nobody wrote for it. Verified: two
+        different statements sharing an id produced ONE steps derivation, and the second form
+        carried the first's steps."""
+        import hashlib
+        levels = "|".join(f"{lv.score}={lv.descriptor.value}" for lv in item.levels)
+        blob = f"{item.id}\x00{item.statement}\x00{item.guidance or ''}\x00{levels}"
+        return hashlib.sha256(blob.encode()).hexdigest()
+
     def steps_for(self, item) -> str:
         """Step 1, memoized: the criterion's evaluation steps, derived without the draft in view."""
-        if item.id not in self._steps:
+        key = self._criterion_key(item)
+        if key not in self._steps:
             out = self._call(STEPS_PROMPT.format(
                 statement=item.statement, guidance=item.guidance or "(none)",
                 levels=_levels_block(item, reverse=False), evidence=_evidence_block(item)))
             if not (out or "").strip():
                 raise JudgeError(f"{item.id}: the model returned no evaluation steps")
-            self._steps[item.id] = out.strip()
-        return self._steps[item.id]
+            self._steps[key] = out.strip()
+        return self._steps[key]
 
     def _one(self, draft: str, item, steps: str, *, reverse: bool) -> tuple[int, str]:
         hi = item.max_score

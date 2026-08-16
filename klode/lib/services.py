@@ -640,8 +640,16 @@ def _svc_review(cfg, params: dict) -> core.ReviewResult:
     identity = type(judge).__name__
     if params.get("refuse_non_production"):                    # a caller may refuse non-production output
         return core.ReviewResult(CapabilityStatus.UNAVAILABLE, judge_identity=identity)
+    # NOT `int(...)`. Truncation always moves a fractional hurdle DOWN — ask for 59.6 and the gate
+    # silently applies 59, so a draft scoring 59.52 passes a bar it did not clear. `int(False)` is
+    # 0, which passes everything. `review_draft` refuses both, but this coercion ran first and
+    # turned them into valid integers before the guard could see them, which made the guard
+    # decorative on the one path (MCP and CLI) that real callers use.
+    raw_hurdle = params.get("hurdle", 60)
+    if isinstance(raw_hurdle, bool) or not isinstance(raw_hurdle, int):
+        raise ValueError(f"hurdle must be an integer percentage, got {raw_hurdle!r}")
     v = gate.review_draft(cfg, params.get("draft", ""), params.get("dimension", ""),
-                          judge, hurdle=int(params.get("hurdle", 60)))
+                          judge, hurdle=raw_hurdle)
     return core.ReviewResult(
         capability=CapabilityStatus.EXPERIMENTAL,
         judge_identity=identity,

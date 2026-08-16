@@ -83,7 +83,7 @@ def retrieve_evidence(cfg, card, question, *, full_text=False, context_lines=2, 
     return services.retrieve_evidence(cfg, card, question, full_text=full_text,
                                       context_lines=context_lines, limit=limit)
 
-__version__ = "0.4.2"      # the single source of truth: pyproject reads this; mcp_server derives from it
+__version__ = "0.5.0"      # the single source of truth: pyproject reads this; mcp_server derives from it
 
 __all__ = [
     "Config", "ConfigError",

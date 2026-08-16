@@ -23,7 +23,6 @@ card->source and rot checks are skipped rather than false-failing every commit.
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import re
@@ -31,7 +30,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 
-from .common import (card_files, front_matter, fm_get, haystacks,
+from .common import (NON_CARDS, card_files, front_matter, fm_get, glob_in, haystacks,
                      parse_markers, read, read_lenient, resolve, shelf_txts, src_path_re)
 from .config import Config
 
@@ -64,11 +63,60 @@ class Report:
         return bool(self.unmeasured) and not self.errors
 
 
+def _check_enumerator_agrees_with_disk(cfg: Config, r: Report) -> None:
+    """The assertion the glob-escaping fix leaves behind.
+
+    A path metacharacter in the library directory made `card_files` return `[]` for a shelf full of
+    cards, and because `unmeasured` is only recorded `if cards:`, `check` reported `OK: 0 errors`
+    and exited 0 over a rotted citation. The fix removes today's cause; this stops any future cause
+    from being silent, because an enumerator that disagrees with the directory is a bug, never an
+    empty library.
+
+    Compared against the SAME exclusion set `card_files` uses — a directory holding only `INDEX.md`
+    and `README.md` genuinely has no cards and must not fire. An unreadable directory is reported
+    as its own error rather than raised: this is a linter, and it does not get to crash.
+    """
+    def _sweep(label: str, directory, enumerated: set[str], exclude: tuple = ()) -> None:
+        if directory is None or not directory.is_dir():
+            return
+        try:
+            # The SAME rules the enumerator applies, or the comparison is between two different
+            # questions: `*.md`, not a dotfile (glob excludes those), minus any generated files.
+            on_disk = {e.name for e in os.scandir(directory)
+                       if e.is_file() and e.name.endswith(".md")
+                       and not e.name.startswith(".") and e.name not in exclude}
+        except OSError as e:
+            r.errors.append(f"[A] cannot read the {label} directory {directory}: {e}")
+            return
+        missed = on_disk - enumerated
+        if missed:
+            # Compared as SETS, not counts. A zero-vs-nonzero test caught the total failure that
+            # prompted it and nothing else: enumerate one card of two and the run reported
+            # ok=True, errors=[], unmeasured=[] while never reading the one it skipped. Partial
+            # blindness is the worse shape, because the number on screen looks plausible.
+            r.errors.append(
+                f"[A] {label} enumeration missed {len(missed)} file(s) present in {directory} "
+                f"({', '.join(sorted(missed)[:3])}{'…' if len(missed) > 3 else ''}) — the "
+                "enumerator disagrees with the directory, so those citations were NOT checked. "
+                "This is a bug in klode, not an empty library.")
+
+    _sweep("card", cfg.cards, {os.path.basename(p) for p in card_files(cfg)}, NON_CARDS)
+    if cfg.fw_enabled:
+        # The frameworks and syntheses loops had no guard of their own: `glob` turns a
+        # directory-read error into `[]`, and those loops record neither an error nor
+        # `unmeasured`, so an entire enabled citation layer could be skipped in silence. The
+        # cards tripwire did not cover them; a guard that protects one of three enumerators is
+        # the same defect with better odds.
+        for label, d in (("framework", cfg.frameworks), ("synthesis", cfg.syntheses)):
+            _sweep(label, d, {os.path.basename(p) for p in glob_in(d, "*.md")} if d else set())
+
+
 def check(cfg: Config, *, strict: bool = False, entail=None, entail_threshold: float = 0.5,
           today: date | None = None) -> Report:
     r = Report()
     r.n_cards = len(card_files(cfg))
     r.n_txts = len(shelf_txts(cfg))
+    _check_enumerator_agrees_with_disk(cfg, r)
     _check_orphans_and_rot(cfg, r, strict)
     if cfg.bib_enabled:
         _check_bibliography(cfg, r)
@@ -232,7 +280,7 @@ def _check_orphans_and_rot(cfg: Config, r: Report, strict: bool = False) -> None
 
 def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
     # F (frameworks). each framework card's grep markers vs every source .txt it references.
-    for p in sorted(glob.glob(os.path.join(cfg.frameworks, "*.md"))):
+    for p in sorted(glob_in(cfg.frameworks, "*.md")):
         if os.path.basename(p) == "README.md":
             continue
         text = read(p)
@@ -242,8 +290,10 @@ def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
         srcs = [os.path.join(cfg.root, s) for s in set(SRC_RE.findall(text))]
         srcs = [s for s in srcs if os.path.exists(s)]
         if not srcs:
-            r.warns.append(f"[F] framework card has grep markers but no resolvable source path: "
-                           f"{os.path.relpath(p, cfg.root)}")
+            r.unmeasured.append(
+                f"[F] citation-rot was NOT checked for framework card with grep markers but no "
+                f"resolvable installed source path: {os.path.relpath(p, cfg.root)}. Add a valid "
+                "source path, install the source, or pass --allow-unmeasured to accept the gap knowingly.")
             continue
         hays = []
         for s in srcs:
@@ -268,11 +318,11 @@ def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
             crel = fm_get(front_matter(read(cp)), "file")
             if crel:
                 card_src.setdefault(os.path.basename(cp)[:-3], []).append(os.path.join(cfg.root, crel))
-        for cp in glob.glob(os.path.join(cfg.frameworks, "*.md")):
+        for cp in glob_in(cfg.frameworks, "*.md"):
             stem = os.path.basename(cp)[:-3]
             for s in set(SRC_RE.findall(read(cp))):
                 card_src.setdefault(stem, []).append(os.path.join(cfg.root, s))
-        for p in sorted(glob.glob(os.path.join(cfg.syntheses, "*.md"))):
+        for p in sorted(glob_in(cfg.syntheses, "*.md")):
             if os.path.basename(p) in ("README.md", "GATE-TRIAGE.md"):
                 continue
             text = read(p)
@@ -360,15 +410,35 @@ def _check_index_fresh(cfg: Config, r: Report) -> None:
                         f"({', '.join(sorted(extra)[:5])}) -> run `klode build`")
 
 
+def _clean_git_env() -> dict:
+    """The ambient environment minus the variables that re-point git at a different repository.
+
+    `GIT_INDEX_FILE` is the sharp one: `rev-parse` still answers "yes, a work tree", and then
+    `ls-files` reads the alternate index and finds nothing. Verified against this repo — with it
+    set to a nonexistent path the guard returned errors=[], notes=[], ok=True while two corpus
+    .txt files were tracked in the real index. A leak guard that inherits its target from the
+    environment is not a guard.
+    """
+    return {k: v for k, v in os.environ.items()
+            if k not in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                         "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE")}
+
+
 def _check_copyright_leak(cfg: Config, r: Report) -> None:
     """Guarded shelf .txt/.pdf must never be git-tracked. The guard must not fail OPEN: inside a git
     repo a failing `git ls-files` is an ERROR; outside a repo there is no git to leak into, so the
     guard is N/A and only noted."""
     try:
         inside = subprocess.run(["git", "-C", str(cfg.root), "rev-parse", "--is-inside-work-tree"],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=_clean_git_env())
     except FileNotFoundError:
-        r.notes.append("[E] git not found on PATH — copyright-leak guard N/A (nothing to leak into)")
+        # Absence of the BINARY says nothing about absence of the REPOSITORY. Reported as N/A,
+        # this read as "nothing to leak into" while a checkout with tracked corpus files sat right
+        # there. It is a check that could not run, which is what `unmeasured` is for.
+        r.unmeasured.append("[E] git is not on PATH, so the copyright-leak guard could not run. "
+                            "A tracked corpus file would go unreported. Install git, or pass "
+                            "--allow-unmeasured to accept the gap knowingly.")
         return
     out = inside.stdout.strip()
     # "not a git repository" (rc=128) is a genuine N/A; a DIFFERENT git error (e.g. dubious ownership,
@@ -385,13 +455,31 @@ def _check_copyright_leak(cfg: Config, r: Report) -> None:
         return
     try:
         tracked = subprocess.run(
-            ["git", "-C", str(cfg.root), "ls-files", "-z", *cfg.guard_relpaths],   # -z: no C-quoting of non-ASCII names
-            capture_output=True, text=True, check=True).stdout.split("\0")
+            # -z: no C-quoting of non-ASCII names.
+            # --literal-pathspecs: a shelf name is a NAME, not a pattern. It is a MAIN git option
+            #   and must precede the subcommand — after it, `ls-files` exits 129 and the guard
+            #   errors on every run. Measured effect: with a shelf literally named `books*`, the
+            #   pathspec also matched a sibling `booksOTHER/`, so unrelated tracked files were
+            #   reported as copyright leaks. A guard that cries wolf gets ignored, which is how it
+            #   eventually fails open in practice.
+            # --: everything after this is a path, never an option. Config validation rejects only
+            #   `/`, `""`, `.` and `..`, so `shelves = ["--others"]` loads; with `[library].dir`
+            #   empty the relpath IS `--others`, git consumed it as an OPTION, and the guard
+            #   listed untracked files instead of the tracked corpus it exists to catch — rc 0,
+            #   no leak reported, a copyrighted source sitting in the index.
+            ["git", "-C", str(cfg.root), "--literal-pathspecs", "ls-files", "-z", "--",
+             *cfg.guard_relpaths],
+            capture_output=True, text=True, check=True, env=_clean_git_env()).stdout.split("\0")
     except Exception as e:
         r.errors.append(f"[E] could not run git ls-files ({e}); the copyright-leak guard must not fail open")
         return
     for f in (f for f in tracked if f and f.lower().endswith((".txt", ".pdf"))):   # case-insensitive: .TXT must not slip
         r.errors.append(f"[E copyright-leak] corpus file is git-tracked (must be ignored): {f}")
-    for d in glob.glob(os.path.join(cfg.lib, ".normalize-backup-*")):
+    # `normalize.py` writes `normalize-backup-<stamp>` with NO leading dot; this swept for
+    # `.normalize-backup-*` and therefore matched nothing, ever. A guard that has never fired is
+    # indistinguishable from a guard that is working, which is why it survived. `[normalize].
+    # backup_dir` may legitimately point inside the library, so an in-tree backup full of copied
+    # copyrighted sources is reachable and was going unreported.
+    for d in glob_in(cfg.lib, "normalize-backup-*") + glob_in(cfg.lib, ".normalize-backup-*"):
         r.errors.append(f"[E] in-tree normalize backup present (should live outside the repo): "
                         f"{os.path.relpath(d, cfg.root)}")

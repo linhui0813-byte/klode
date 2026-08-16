@@ -16,6 +16,163 @@ a **minor** bump may carry breaking changes.
 - **Honest terminal status** — an exhausted fallback returns `INSUFFICIENT_EVIDENCE` and explicitly
   says not to answer from recall. `EVIDENCE_FOUND` remains retrieval-only, never an entailment claim.
 
+## 0.5.0 — 2026-08-15
+
+The same code as the yanked 0.4.3, renumbered so the version says what the release does. Semantic
+versioning with this project's pre-1.0 convention: **a minor bump may carry breaking changes**, and
+these are breaking.
+
+> # ⚠️ BREAKING CHANGES
+>
+> **Read this section before upgrading.** Five kinds of input that worked on 0.4.2 now raise, and
+> one class of verdict moves. Every one of them is a guard that was failing open.
+>
+> | What now raises | Was | Why |
+> |---|---|---|
+> | `permutations` of 3, 5, 7… (constructor **and** `[judge].permutations`) | accepted | an odd count presents one level order more often, so it keeps the position bias the average exists to cancel — at higher cost than the even number below it. Use 1 (explicitly undebiased) or an even number to 16. |
+> | a non-integer `hurdle` — `59.6`, `True`, `"60"` — via the API **or** the review service | accepted, truncated | truncation only ever moves the bar DOWN. `int(59.6)` is 59, so a draft scoring 59.52 passed a bar it did not clear. |
+> | a shelf or `extra_guard_dirs` entry beginning with `-` | accepted | it reaches `git ls-files` as a pathspec, where a leading dash reads as a flag and silently switches off the copyright-leak guard. |
+> | an absolute `--pattern` to `klode normalize` | accepted, scanned nothing | `glob` ignores `root_dir` for an absolute pattern, which re-arms every metacharacter in the library path. |
+> | `klode build` when enumeration disagrees with the disk | rewrote the board | it overwrote `INDEX.md` with an empty board and reported success. It now refuses and leaves the board untouched. |
+>
+> **Verdicts move.** The gate compared a **rounded** score against the hurdle, so any draft within
+> half a point below it was passed. A draft that scored Go at the boundary now scores **Recycle**.
+> The error ran one way only — across two-criterion rubrics with maxima 2..10 there are twelve
+> false-Go configurations and no false-Recycle — so **no verdict moves from Recycle to Go**.
+> Rubrics whose criteria all share one scale (the common case) cannot produce a fractional mean and
+> are unaffected.
+>
+> **Stored calibrations stop claiming coverage.** `Calibration` now pins the **judge** — model,
+> permutation policy, prompt version — as well as the rubric. Existing records still construct and
+> report `calibrated=False` until re-measured, because a record measured through one model at
+> `permutations=2` was being claimed by a different model running undebiased. `Calibration.covers()`
+> takes two new keyword arguments.
+
+An audit of the whole repo, adversarially reviewed before any of it was written, then independently
+re-audited file by file — twice. The re-audits found **22 further defects, ten of them inside
+guards written earlier in the same effort**; those are listed under their own heading below. Three
+findings came from the adversarial review rather than the audit, and two of my own proposed fixes
+were wrong and were replaced after the checks meant to confirm them failed instead.
+
+### Security
+
+- **A public address spelled as an integer bypassed the plaintext-transport guard.**
+  `http://134744072` resolves to `8.8.8.8` and was accepted: it carries no dot, so the single-label
+  rule that exists to permit `http://docling` classified it as a container name before `ipaddress`
+  was consulted. `klode ingest` uploads whole documents to that endpoint. No opt-in was required —
+  the guard simply never fired. Classification is now by address, for any spelling, ahead of every
+  name rule. Ambiguous dotted forms (`010.010.010.010`, octal to a resolver, refused by Python)
+  still fail closed as public.
+- **A shelf name could switch off the copyright-leak guard.** `git ls-files -z <paths>` had no
+  `--`, so a shelf called `--others` was consumed as an option: git listed untracked files,
+  returned 0, and the guard reported no leak with a copyrighted source tracked in the index.
+  Closed at the call site and at the config boundary, which no longer accepts a shelf or
+  `extra_guard_dirs` entry beginning with `-`. `--literal-pathspecs` also stops a shelf named
+  `books*` dragging a sibling `booksOTHER/` into the report.
+
+### Fixed
+
+- **A glob metacharacter in a library path made the fail-closed linter pass green.**
+  `glob.glob(os.path.join(cfg.cards, "*.md"))` reads `[ ] * ?` anywhere in the joined string,
+  directory prefix included, so a KB under `.../kb[1]/` enumerated zero cards — and `unmeasured` is
+  recorded only `if cards:`, so an empty list is the one shape that slips past the abstention
+  guard. `klode check` exited **0** with `OK: 0 errors` over a citation resolving nowhere, and
+  `klode build` rewrote `INDEX.md` to empty. A shelf name is a second injection point. Enumeration
+  returning nothing while card files sit on disk is now a loud error naming itself as a bug.
+- **An edited rubric could not be re-approved by the command its own error named.** `approve` and
+  `repin` both ran the approval-digest check on the unmodified document, so the stale digest that
+  sent you there was what refused you. Rewording one level descriptor bricked the rubric, with no
+  documented way out. Both now demote before parsing; every reader still refuses an edited rubric.
+- **The Go/Recycle threshold was applied to a rounded score.** See the warning above. The
+  comparison is now exact and the displayed score is the floor — for an integer hurdle
+  `floor(x) >= h` exactly when `x >= h`, so the number shown can never contradict the decision.
+  `hurdle` must now be an integer, which that property depends on.
+- **`judge.permutations` accepted odd counts that unbalanced the debiasing.** At 3 the split is two
+  forward runs to one reversed, so the average keeps the position bias it exists to cancel, at 1.5×
+  the cost of the 2 that would have cancelled it. The domain is now 1 or an even number to 16. The
+  constructor also accepted `True` (which ran one silent forward pass), `2.0`, and 17.
+- **The plaintext refusal prescribed `[ingest].allow_insecure_http`,** which is not a setting —
+  writing it made the settings file fail to load. It could not have worked as a setting either, and
+  a persisted value grants more than the variable does. The message now names
+  `KLODE_ALLOW_INSECURE_HTTP` and says why it is deliberately not a setting.
+- **Every release so far was published without the suite having run on it.** `tests.yml` triggers
+  on `branches: ["**"]`, which does not match a tag ref, and `publish` needed only `build`.
+  `workflow.yml` now calls `tests.yml`.
+- **Four CLI hints named `lib`,** the tool klode was ported from — runnable only on the machine
+  klode was written on.
+- **`Config.load("path")` raised `AttributeError`** on a string, at the front door of the public
+  facade, in the module that opens by promising not to fail confusingly. All three path parameters
+  coerce now.
+- **`klode.gate` printed 25 lines of stack for a bad `-c`** where `klode.lib` prints one line.
+
+### Fixed — found by the independent re-audits, in guards written earlier in this same release
+
+Ten of these were in code added above. They are listed separately because the pattern is the
+finding: a guard was added at the door that had been kicked in, and the other doors were left.
+
+- **The plaintext-transport guard classified a different address from the one dialled.**
+  `0170000000` is 10.33.254.128 to Python's `int()` and **1.224.0.0 to the resolver**, which reads
+  a leading zero as octal. The first fix handled the *dotted* octal form only. Separately,
+  `urlsplit().hostname` keeps percent-escapes, so `8%2e8%2e8%2e8` reached the classifier with no
+  dot, took the container-name branch, and was allowed — while urllib decodes it to 8.8.8.8 before
+  connecting. Hosts are decoded first, and anything numeric-looking that cannot be pinned to one
+  address is refused rather than falling through.
+- **The enumeration tripwire only rejected a count of ZERO.** One card of two enumerated passed
+  clean — `ok=True`, `errors=[]`, one card never read. Partial blindness is the worse shape,
+  because the number on screen looks plausible. Compared as sets now, and it covers the frameworks
+  and syntheses layers, which had no guard of their own at all.
+- **`build` still destroyed the board.** `check` only reports; `build` rewrites `INDEX.md`. All
+  three of its enumerations could fail open independently — a partial *shelf* scan stayed truthy
+  and rebuilt the board missing files, and a swallowed *frameworks* error made it write
+  `framework: none` over links that exist.
+- **`normalize --check` certified a corpus it had read half of.** `glob` turns an unreadable
+  directory into zero matches with no error, so an unreadable shelf left `scanned` truthy and
+  `skipped` empty: 1 of 2 files scanned, exit 0, nothing reported.
+- **The copyright-leak guard could be redirected by inherited environment.** `GIT_INDEX_FILE`
+  makes `rev-parse` still answer "yes, a work tree" while `ls-files` reads an empty index —
+  verified against this repository: `ok=True` with two corpus files tracked. Git env is scrubbed.
+  A missing git *binary* was also reported as a clean N/A, which says nothing about whether the
+  repository exists; it is `unmeasured` now.
+- **The in-tree backup sweep had never matched anything.** It looked for `.normalize-backup-*`
+  while `normalize` writes `normalize-backup-<stamp>`. A guard that has never fired is
+  indistinguishable from one that works.
+- **The rounding fix was incomplete in two further places.** The review *service* re-truncated the
+  hurdle with `int(...)` before the guard could see it, and `Line.pct` kept the round-vs-exact
+  contradiction, displaying a criterion at the hurdle while classifying it a defect below it.
+- **The judge cached evaluation steps by criterion id** — an id that is deliberately *stable*
+  across rubric revisions, which is what makes human labels survive an edit. A revised criterion
+  was therefore scored against steps derived for the old wording. Keyed by content now.
+- **`LLMJudge.model` was only a claim.** The transport is injectable and could send a different
+  model entirely while the calibration still certified. The default transport declares its model
+  and a mismatch is refused; a transport that declares nothing keeps the weaker property, stated
+  rather than implied.
+- **`glob.escape` was two-thirds of a fix.** An escaped `[category]` is still a live bracket
+  expression, so `glob` must *list the parent* to match it — an unlistable parent then gives `[]`
+  with no error, the same silent empty by another route. `root_dir=` keeps the directory out of
+  the pattern entirely.
+- Smaller ones in the same sweep: a shelf name check that missed the composed pathspec
+  (`[library].dir = "--format="`); `Path.cwd()` outside the coercion helper leaking
+  `FileNotFoundError`; TOML-derived paths leaking `ValueError`; `calibrated` and `calibrated_for`
+  disagreeing with each other; and `True == 1` / `2.0 == 2` letting a malformed calibration record
+  match a live policy.
+
+### Added
+
+- `tests/fixtures/kb-fixture/library/frameworks/_criteria/mixed-scale.json` — the first fixture
+  rubric whose criteria use **different** behavioral scales (0..3 and 0..7). Both existing rubrics
+  are uniform, and a uniform rubric's mean always lands on an integer percentage, which is why the
+  verdict-rounding defect was invisible to the whole suite. Checked by CI so it cannot drift back.
+- `PROMPT_VERSION`, with a test that hashes `STEPS_PROMPT`/`FORM_PROMPT` and fails when either
+  changes without the constant moving — a prompt edit silently invalidates every calibration
+  measured through the old wording.
+
+## 0.4.3 — 2026-08-14 — YANKED, superseded by 0.5.0
+
+**Do not use this version.** It carries every change listed under 0.5.0 above, but it was numbered
+as a patch and those changes are breaking — a `klode>=0.4,<0.5` pin would have picked them up
+silently. The identical code is published as **0.5.0**; 0.4.3 is yanked on PyPI and remains
+installable only by exact pin. Nothing was wrong with the code. The version number was wrong
+about it.
 ## 0.4.2 — 2026-08-13
 
 Documentation only — no behaviour change. Cut as its own release because the thing it fixes is a
