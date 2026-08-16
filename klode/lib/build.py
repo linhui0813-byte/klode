@@ -69,11 +69,14 @@ def bib_line_for(cfg: Config, stem: str) -> str | None:
     if not (cfg.bib and cfg.bib.exists()):
         return None
     matches = []
+    filename = re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(stem)}\.txt"
+                          r"(?![A-Za-z0-9._-])")
     with open(cfg.bib, encoding="utf-8") as f:
         for line in f:
             # boundary-anchored: `plato` must NOT match a `plato-republic` row (prefix collision
-            # would give plato.md the wrong title + bibliography line, and defeat the G mirror check)
-            if f"{stem}.txt" in line or re.search(rf"`{re.escape(stem)}(?=[.`])", line):
+            # would give plato.md the wrong title + bibliography line, and defeat the G mirror
+            # check). The left boundary matters too: `booth.txt` is a suffix of `xbooth.txt`.
+            if filename.search(line) or re.search(rf"`{re.escape(stem)}(?=[.`])", line):
                 matches.append(line.strip())
     if not matches:
         return None
@@ -206,10 +209,16 @@ def build(cfg: Config, *, stamp: bool = False) -> dict:
         if os.path.exists(path):
             old = read(path)
             old_body = body_after_marker(old)
-            if old_body is None and "\n## Thin" in old:
+            # `## Content` belongs to the generated head. If a marker was lost, start at the first
+            # other H2 so rebuilding does not duplicate that managed section into the human body.
+            body_heading = (re.search(r"(?m)^##[ \t]+(?!Content[ \t]*$)", old)
+                            if old_body is None else None)
+            if body_heading is not None:
                 # Fail-safe: no recognized marker, but the card already has a body — NEVER
-                # stub over hand-written content. Salvage everything from the first heading.
-                old_body = old[old.index("\n## Thin"):]
+                # stub over hand-written content. Salvage everything from the first body heading,
+                # whatever the human called it; requiring the literal heading `Thin` lost Notes,
+                # Summary, and other valid hand-written sections.
+                old_body = old[body_heading.start():]
             fm = front_matter(old)
             mz = re.search(r"^zoom:\s*(\w+)", fm, re.M)
             if mz:

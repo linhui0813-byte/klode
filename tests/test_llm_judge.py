@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -448,6 +449,25 @@ class ReviewServiceHonesty(unittest.TestCase):
 
 
 class Transport(unittest.TestCase):
+    class _Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.body
+
+    def _call_with_body(self, body):
+        with unittest.mock.patch.dict("os.environ", {"KLODE_TEST_KEY": "test-only"}), \
+                unittest.mock.patch("urllib.request.urlopen",
+                                    return_value=self._Response(body)):
+            return anthropic_transport("m", api_key_env="KLODE_TEST_KEY")("prompt")
+
     def test_a_missing_api_key_fails_loud_without_a_request(self):
         import os
         saved = os.environ.pop("KLODE_TEST_KEY", None)
@@ -458,6 +478,17 @@ class Transport(unittest.TestCase):
         finally:
             if saved is not None:
                 os.environ["KLODE_TEST_KEY"] = saved
+
+    def test_invalid_utf8_or_json_stays_behind_judgeerror(self):
+        for body in (b"\xff", b"not json"):
+            with self.subTest(body=body), self.assertRaises(JudgeError) as e:
+                self._call_with_body(body)
+            self.assertIn("unexpected model response", str(e.exception))
+
+    def test_non_object_content_item_stays_behind_judgeerror(self):
+        with self.assertRaises(JudgeError) as e:
+            self._call_with_body(b'{"content":["not an object"]}')
+        self.assertIn("response shape", str(e.exception))
 
     def test_the_judge_requires_an_explicit_model_choice(self):
         # Self-enhancement bias: the judge must be a different model than the author, so the

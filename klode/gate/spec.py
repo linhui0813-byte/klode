@@ -77,7 +77,7 @@ _GROUNDED = (lib.EvidenceResolution.FOUND, lib.EvidenceResolution.FOLDED_ONLY)
 # A stable id: visible, no separators or dots-only-numbers, not purely numeric. `^C\d+$` alone
 # rejected one shape and let `c1`, `1`, `criterion-1` through — all just as positional.
 _ID_RE = re.compile(r"^(?!\d+$)[A-Za-z][A-Za-z0-9._-]*$")
-_POSITIONAL_ID = re.compile(r"^[A-Za-z]\d+[a-z]?$")     # C1, c1, C1a — a slot number wearing a letter
+_POSITIONAL_ID = re.compile(r"^[A-Za-z]\d+[A-Za-z]?$")  # C1, c1, C1a/C1A — a slot number wearing a letter
 _DIMENSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")  # also the path component, so: no dots, no seps
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_SPEC_BYTES = 4 * 1024 * 1024                         # a rubric is prose, not a dataset

@@ -68,7 +68,7 @@ class ATrackedCorpusFileIsAlwaysReported(_Repo):
             '[library]\nid = "t"\ndir = "--format="\nshelves = ["books"]\n', encoding="utf-8")
         with self.assertRaises(ConfigError) as cm:
             Config.load(self.tmp / "library.toml")
-        self.assertIn("leading", str(cm.exception).lower() + " leading")
+        self.assertIn("leading", str(cm.exception).lower())
 
     def test_a_leading_dash_is_refused_in_extra_guard_dirs_too(self):
         (self.tmp / "library" / "books").mkdir(parents=True)

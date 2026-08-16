@@ -290,8 +290,10 @@ def _check_frameworks(cfg, r, SRC_RE, hay_cache, cards, corpus_present):
         srcs = [os.path.join(cfg.root, s) for s in set(SRC_RE.findall(text))]
         srcs = [s for s in srcs if os.path.exists(s)]
         if not srcs:
-            r.warns.append(f"[F] framework card has grep markers but no resolvable source path: "
-                           f"{os.path.relpath(p, cfg.root)}")
+            r.unmeasured.append(
+                f"[F] citation-rot was NOT checked for framework card with grep markers but no "
+                f"resolvable installed source path: {os.path.relpath(p, cfg.root)}. Add a valid "
+                "source path, install the source, or pass --allow-unmeasured to accept the gap knowingly.")
             continue
         hays = []
         for s in srcs:

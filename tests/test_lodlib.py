@@ -129,6 +129,37 @@ class BuildTests(TempLibTest):
         self.assertEqual(before, after)            # hand-written Thin survived, byte-for-byte
         self.assertIn("quick brown fox", after)
 
+    def test_bibliography_filename_suffix_does_not_select_the_wrong_row(self):
+        self.cfg.bib.write_text(
+            "| Wrong Author — Wrong Book | `xfoo.txt` | wrong |\n"
+            "| Foo Bar — A Book | `foo.txt` | right |\n", encoding="utf-8")
+        build(self.cfg)
+        card = (self.cfg.cards / "foo.md").read_text(encoding="utf-8")
+        self.assertIn("Foo Bar — A Book", card)
+        self.assertNotIn("Wrong Author", card)
+
+    def test_markerless_card_preserves_a_handwritten_non_thin_section(self):
+        self.cfg.cards.mkdir(parents=True)
+        path = self.cfg.cards / "foo.md"
+        path.write_text(
+            "---\nid: foo\nshelf: books\nfile: library/books/foo.txt\n---\n"
+            "# Foo\n\n## Notes\nprecious hand-written analysis\n", encoding="utf-8")
+        build(self.cfg)
+        rebuilt = path.read_text(encoding="utf-8")
+        self.assertIn("## Notes\nprecious hand-written analysis", rebuilt)
+        self.assertNotIn("L1 owed", rebuilt)
+
+    def test_lost_marker_does_not_duplicate_the_managed_content_section(self):
+        from klode.lib.common import MARK
+        build(self.cfg)
+        path = self.cfg.cards / "foo.md"
+        path.write_text(path.read_text(encoding="utf-8").replace(MARK + "\n", ""),
+                        encoding="utf-8")
+        build(self.cfg)
+        rebuilt = path.read_text(encoding="utf-8")
+        self.assertEqual(rebuilt.count("## Content"), 1)
+        self.assertIn("## Thin", rebuilt)
+
 
 # ---------------------------------------------------------------------------
 class CheckTests(TempLibTest):
@@ -285,6 +316,24 @@ class SynthesisFCheckTests(unittest.TestCase):
     def test_fabricated_quote_is_flagged(self):
         r = check(self._synthesis_with_anchor("a fabricated phrase absent from every source"))
         self.assertTrue(any("citation-rot" in w for w in r.warns), msg=f"warns={r.warns}")
+
+    def test_framework_markers_without_a_source_are_unmeasured_not_clean(self):
+        orphan = self.tmp / "library" / "frameworks" / "orphan.md"
+        orphan.write_text(
+            "# Framework Card — Orphan\n\nA claim (search: `jumps over the lazy dog`).\n",
+            encoding="utf-8")
+        r = check(Config.load(self.cfg_path))
+        self.assertFalse(r.ok)
+        self.assertTrue(any("orphan.md" in u for u in r.unmeasured), msg=r.unmeasured)
+
+    def test_embedded_foreign_path_is_not_treated_as_a_local_source(self):
+        framework = self.tmp / "library" / "frameworks" / "thinker.md"
+        text = framework.read_text(encoding="utf-8")
+        framework.write_text(text.replace("`library/books/foo.txt`",
+                                          "`mylibrary/books/foo.txt`"), encoding="utf-8")
+        r = check(Config.load(self.cfg_path))
+        self.assertFalse(r.ok)
+        self.assertTrue(any("thinker.md" in u for u in r.unmeasured), msg=r.unmeasured)
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +540,15 @@ class MatcherTests(unittest.TestCase):
 
     def test_broken_regex_marker_does_not_crash(self):
         self.assertFalse(resolve(Marker("(unclosed", regex=True), haystacks("text")).found)
+
+    def test_empty_regex_and_zero_occurrence_never_resolve(self):
+        hay = haystacks("alpha target beta")
+        for marker in (Marker("   ", regex=True),
+                       Marker("missing", regex=True, nth=0),
+                       Marker("missing", before="alpha", nth=0),
+                       Marker("missing", nth=0)):
+            with self.subTest(marker=marker):
+                self.assertFalse(resolve(marker, hay).found)
 
     def test_occurrence_index_and_ambiguity(self):
         hay = haystacks("foo bar foo baz foo qux")

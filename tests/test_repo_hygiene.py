@@ -23,6 +23,8 @@ class ReleaseIsGatedOnTheSuite(unittest.TestCase):
     """
 
     WF = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+    TAG_ONLY_GUARD = re.compile(
+        r"startsWith\(\s*github\.ref\s*,\s*(['\"])refs/tags/v\1\s*\)")
 
     def _jobs(self, name: str) -> dict[str, list[str]]:
         """`job name -> its needs`, from the two-space-indented job block. Enough structure for
@@ -84,8 +86,17 @@ class ReleaseIsGatedOnTheSuite(unittest.TestCase):
         block = body[body.index("  publish:"):]
         guard = re.search(r"^    if:\s*(.+)$", block, re.M)
         self.assertIsNotNone(guard, "the publish job has no `if:` guard — dispatch would publish")
-        self.assertIn("refs/tags/", guard.group(1),
-                      f"publish is guarded by {guard.group(1)!r}, which does not require a tag")
+        condition = guard.group(1).strip()
+        self.assertIsNotNone(
+            self.TAG_ONLY_GUARD.fullmatch(condition),
+            f"publish is guarded by {condition!r}, not a positive tag-only predicate")
+
+    def test_tag_guard_rejects_negation_and_non_tag_alternatives(self):
+        unsafe = ("!startsWith(github.ref, 'refs/tags/v')",
+                  "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'")
+        for condition in unsafe:
+            with self.subTest(condition=condition):
+                self.assertIsNone(self.TAG_ONLY_GUARD.fullmatch(condition))
 
 
 class PrintedCommandsAreRunnable(unittest.TestCase):
@@ -148,8 +159,14 @@ class PrintedCommandsAreRunnable(unittest.TestCase):
         import klode.lib.cli as cli
         self.assertEqual(cli.build_parser().prog, cli.PROG)
         src = (REPO / "klode" / "lib" / "cli.py").read_text(encoding="utf-8")
-        self.assertNotIn('prog="klode"', src,
-                         "the program name is spelled twice; it can drift again")
+        hardcoded = re.search(r"prog\s*=\s*(['\"])klode\1", src)
+        self.assertIsNone(hardcoded, "the program name is spelled twice; it can drift again")
+
+    def test_the_duplicate_name_guard_recognizes_both_quote_styles(self):
+        pattern = re.compile(r"prog\s*=\s*(['\"])klode\1")
+        for source in ('prog="klode"', "prog = 'klode'"):
+            with self.subTest(source=source):
+                self.assertIsNotNone(pattern.search(source))
 
     def test_the_guard_catches_the_original_wording(self):
         """A guard nobody has seen fire is a guard nobody knows the shape of."""
@@ -187,18 +204,65 @@ class TempFilesAreUnpredictable(unittest.TestCase):
     """A temp path derived from its target is guessable, and opening it follows a symlink planted
     there. Fixed once in gate/__main__.py, then found again in lib/ingest.py."""
 
+    @staticmethod
+    def _offenders(src, label="module.py"):
+        """Every `.tmp` path literal must belong to mkstemp, regardless of expression syntax."""
+        offenders = []
+        lines = src.splitlines()
+        tree = ast.parse(src)
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+
+        def belongs_to_mkstemp(node):
+            while node in parents:
+                node = parents[node]
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    return ((isinstance(func, ast.Attribute) and func.attr == "mkstemp")
+                            or (isinstance(func, ast.Name) and func.id == "mkstemp"))
+            return False
+
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and node.value.endswith(".tmp") and not belongs_to_mkstemp(node)):
+                line = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                offenders.append(f"{label}:{node.lineno}: {line[:70]}")
+        return offenders
+
     def test_no_module_builds_a_temp_path_by_string_concatenation(self):
         offenders = []
         for path in sorted(REPO.glob("klode/**/*.py")):
-            src = path.read_text(encoding="utf-8")
-            for lineno, line in enumerate(src.splitlines(), 1):
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    continue
-                if '.tmp"' in stripped and "mkstemp" not in src[:src.find(line)] + line:
-                    if "with_name" in stripped or "+ \".tmp\"" in stripped:
-                        offenders.append(f"{path.relative_to(REPO)}:{lineno}: {stripped[:70]}")
+            offenders.extend(self._offenders(path.read_text(encoding="utf-8"),
+                                             str(path.relative_to(REPO))))
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_an_earlier_mkstemp_does_not_exempt_a_later_concatenation(self):
+        src = ('fd, tmp = tempfile.mkstemp(suffix=".tmp")\n'
+               'candidate = target.with_name(target.name + ".tmp")\n')
+        self.assertEqual(len(self._offenders(src)), 1)
+
+    def test_quote_and_spacing_variants_are_equally_rejected(self):
+        variants = ("candidate = target.with_name(target.name + '.tmp')",
+                    'path = str(target)+".tmp"')
+        for src in variants:
+            with self.subTest(src=src):
+                self.assertEqual(len(self._offenders(src)), 1)
+
+    def test_multiline_and_f_string_variants_are_equally_rejected(self):
+        variants = ('candidate = target.with_name(\n    target.name +\n    ".tmp"\n)',
+                    'candidate = f"{target}.tmp"')
+        for src in variants:
+            with self.subTest(src=src):
+                self.assertEqual(len(self._offenders(src)), 1)
+
+    def test_percent_and_dot_format_variants_are_equally_rejected(self):
+        variants = ('candidate = "%s.tmp" % target',
+                    'candidate = "{}.tmp".format(target)')
+        for src in variants:
+            with self.subTest(src=src):
+                self.assertEqual(len(self._offenders(src)), 1)
+
+    def test_with_suffix_variant_is_rejected(self):
+        self.assertEqual(len(self._offenders('candidate = target.with_suffix(".tmp")')), 1)
 
 class CliProseGoesThroughTheSanitiser(unittest.TestCase):
     """`klode/lib/cli.py` shadows `print` so every prose line is sanitised at ONE boundary.
@@ -215,25 +279,72 @@ class CliProseGoesThroughTheSanitiser(unittest.TestCase):
                          else __builtins__.print)
         self.assertEqual(cli.print.__module__, "klode.lib.cli")
 
-    def test_no_call_site_reaches_around_the_shadow(self):
-        import ast
-        src = (REPO / "klode" / "lib" / "cli.py").read_text(encoding="utf-8")
+    @staticmethod
+    def _bypasses(src, label="cli.py"):
         tree = ast.parse(src)
-        shadow = next(n for n in ast.walk(tree)
-                      if isinstance(n, ast.FunctionDef) and n.name == "print")
-        inside = range(shadow.lineno, (shadow.end_lineno or shadow.lineno) + 1)
+        shadows = [n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "print"]
+        inside = {line for shadow in shadows
+                  for line in range(shadow.lineno, (shadow.end_lineno or shadow.lineno) + 1)}
         offenders = []
+        builtin_modules = {"builtins"}
+        raw_names = {"_builtin_print"}
+
         for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "builtins":
+                        builtin_modules.add(alias.asname or alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "print":
+                        bound = alias.asname or alias.name
+                        raw_names.add(bound)
+                        if bound != "_builtin_print":
+                            offenders.append(f"{label}:{node.lineno}: imports raw print as {bound}")
+
+        def raw_ref(node):
+            if isinstance(node, ast.Name) and node.id in raw_names:
+                return True
+            if isinstance(node, ast.Attribute) and node.attr == "print" \
+                    and isinstance(node.value, ast.Name) and node.value.id in builtin_modules:
+                return True
+            return (isinstance(node, ast.Attribute) and node.attr == "write"
+                    and isinstance(node.value, ast.Attribute) and node.value.attr == "stdout"
+                    and isinstance(node.value.value, ast.Name) and node.value.value.id == "sys")
+
+        for node in ast.walk(tree):
+            values = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                values = [node.value]
+            if values and any(raw_ref(value) for value in values):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names = [target.id for target in targets if isinstance(target, ast.Name)]
+                raw_names.update(names)
+                offenders.append(f"{label}:{node.lineno}: aliases raw output as {', '.join(names) or '?'}")
             if not isinstance(node, ast.Call):
                 continue
             f = node.func
             # `_builtin_print(...)` is legitimate ONLY inside the shadow's own body
             if isinstance(f, ast.Name) and f.id == "_builtin_print" and node.lineno not in inside:
-                offenders.append(f"cli.py:{node.lineno}: _builtin_print outside the shadow")
-            if isinstance(f, ast.Attribute) and f.attr == "print" \
-                    and isinstance(f.value, ast.Name) and f.value.id in ("builtins", "sys"):
-                offenders.append(f"cli.py:{node.lineno}: {f.value.id}.print bypasses the shadow")
+                offenders.append(f"{label}:{node.lineno}: _builtin_print outside the shadow")
+            elif raw_ref(f) and not (isinstance(f, ast.Name) and f.id == "_builtin_print"
+                                     and node.lineno in inside):
+                offenders.append(f"{label}:{node.lineno}: raw output bypasses the shadow")
+        return offenders
+
+    def test_no_call_site_reaches_around_the_shadow(self):
+        src = (REPO / "klode" / "lib" / "cli.py").read_text(encoding="utf-8")
+        offenders = self._bypasses(src)
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_raw_print_aliases_are_rejected(self):
+        bypasses = ("from builtins import print as raw\nraw('x')",
+                    "import builtins\nraw = builtins.print\nraw('x')",
+                    "import sys\nsys.stdout.write('x')")
+        for source in bypasses:
+            with self.subTest(source=source):
+                self.assertTrue(self._bypasses(source))
 
     def test_the_sanitiser_neuters_what_it_must_and_keeps_what_it_must(self):
         from klode.lib.cli import sane
@@ -243,6 +354,8 @@ class CliProseGoesThroughTheSanitiser(unittest.TestCase):
                 self.assertNotIn("\x1b", out)
                 self.assertNotIn("\x9b", out)
                 self.assertNotIn("\x7f", out)
+                self.assertNotIn("\x00", out)
+                self.assertNotIn("\x07", out)
                 self.assertTrue(out.startswith("a") and out.endswith("b"))
         # legitimate content is untouched, including tabs and every script klode supports
         for ok in ("plain ascii", "a\tb", "café — 世界 · Ελληνικά · русский", "emoji 🎯", "«quoted»"):

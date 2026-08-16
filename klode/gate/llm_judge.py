@@ -129,9 +129,13 @@ def anthropic_transport(model: str, *, api_key_env: str = "ANTHROPIC_API_KEY",
             # (ConnectionResetError, timeout) that URLError does not cover, and an uncaught one
             # crashes the review with a traceback instead of the documented JudgeError.
             raise JudgeError(f"judge transport failed: {e}") from e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            # HTTP 200 only says bytes arrived. Invalid UTF-8/JSON is still a transport failure and
+            # must stay behind the same fail-loud JudgeError boundary as a broken response shape.
+            raise JudgeError(f"unexpected model response encoding: {e}") from e
         try:
             return "".join(b.get("text", "") for b in payload["content"])
-        except (KeyError, TypeError) as e:
+        except (AttributeError, KeyError, TypeError) as e:
             raise JudgeError(f"unexpected model response shape: {payload!r:.200}") from e
     call.model = model      # declared, so a judge can verify its label matches the transport
     return call

@@ -80,8 +80,13 @@ jobs:
       # 0.000. This asserts the refusal — a silent zero used to look like a broken ranker.
       - name: Retrieval eval refuses a corpus it was not labelled for
         run: |
-          if python eval/retrieval.py -c tests/fixtures/kb-fixture/library.toml; then
-            echo "::error::retrieval.py should have exited non-zero on a mismatched corpus"
+          set +e
+          output=$(python eval/retrieval.py -c tests/fixtures/kb-fixture/library.toml 2>&1)
+          status=$?
+          set -e
+          if [[ $status -ne 1 || $output != *"none of the gold set's"* ]]; then
+            echo "::error::retrieval.py did not produce the expected mismatched-corpus refusal"
+            printf '%s\n' "$output"
             exit 1
           fi
 

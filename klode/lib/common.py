@@ -205,13 +205,19 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
     Optional `before`/`after` context or an `#n` index pins WHICH occurrence must resolve, so a
     quote that rotted at its intended spot is caught even when a coincidental copy survives."""
     flat, nohy = hays
+    phrase = _norm(m.phrase)
+    if not phrase or (m.nth is not None and m.nth < 1):
+        # Empty regexes match every boundary, and #0 makes `len(matches) >= nth` true even when
+        # nothing matched. `check.py` calls this primitive directly, so enforce the invariant here
+        # rather than relying only on the higher-level evidence service to reject those selectors.
+        return Resolution(False, 0, False)
     if m.regex:
         # A `grep-re:` pattern is the author's OWN, run against their own source — a catastrophic-
         # backtracking pattern can only hang the author's own `klode check`, never a third party.
         # stdlib `re` has no timeout, and a per-anchor thread/subprocess guard would be a heavy price
         # against the zero-dependency ethos for a self-inflicted risk; left as a documented limitation.
         try:
-            matches = list(re.finditer(_norm(m.phrase), flat))
+            matches = list(re.finditer(phrase, flat))
         except re.error:
             return Resolution(False, 0, False)
         pinned = bool(m.before or m.after)
@@ -227,7 +233,7 @@ def resolve(m: Marker, hays: tuple[str, str]) -> Resolution:
         # there is: `grep-re: .*` resolved as a clean, unambiguous hit and GROUNDED arbitrary text.
         return Resolution(bool(matches), len(matches), len(matches) > 1)
 
-    p = _norm(m.phrase)
+    p = phrase
     if m.before or m.after:
         # Context can ITSELF be line-wrapped in the source, so resolve the whole thing in the fully
         # de-hyphenated space — it tolerates any hyphenation state for the phrase AND its neighbours.
@@ -303,7 +309,11 @@ def src_path_re(cfg: Config) -> re.Pattern[str]:
     """Regex matching a valid shelf-source path (`<lib>/<shelf>/<name>.txt`), built from
     the configured library dir + shelves so it can't false-match a foreign path."""
     shelves = "|".join(re.escape(s) for s in cfg.shelves)
-    return re.compile(rf"{re.escape(cfg.lib_rel)}/(?:{shelves})/[A-Za-z0-9._-]+\.txt")
+    # This regex is also searched inside prose. A left path-character boundary prevents a foreign
+    # path such as `mylibrary/books/x.txt` from yielding the configured suffix
+    # `library/books/x.txt` and being mistaken for a valid local source declaration.
+    return re.compile(rf"(?<![A-Za-z0-9._/-]){re.escape(cfg.lib_rel)}/"
+                      rf"(?:{shelves})/[A-Za-z0-9._-]+\.txt")
 
 
 def shelf_txts(cfg: Config) -> list[str]:

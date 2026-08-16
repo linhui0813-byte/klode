@@ -326,9 +326,10 @@ class StructuralGuarantees(unittest.TestCase):
 
     def test_positional_ids_are_rejected(self):
         # `C1` is a position, not a name: every human label collected against it dies on a reorder
-        with self.assertRaises(SpecError) as e:
-            parse_spec(_doc(self.cfg, id="C1"))
-        self.assertIn("positional", str(e.exception))
+        for positional in ("C1", "C1a", "C1A"):
+            with self.subTest(positional=positional), self.assertRaises(SpecError) as e:
+                parse_spec(_doc(self.cfg, id=positional))
+            self.assertIn("positional", str(e.exception))
 
     def test_duplicate_ids_are_rejected(self):
         doc = _doc(self.cfg)
